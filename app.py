@@ -22,7 +22,14 @@ except Exception as e:
 
 
 # Initialize the Flask application
-app = Flask(__name__)
+app = Flask(__name__, static_url_path='/static')
+
+# Configure static files with correct MIME types
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+app.config['MIME_TYPES'] = {
+    '.js': 'application/javascript',
+    '.css': 'text/css'
+}
 
 # --- Load the material database from the CSV file ---
 try:
