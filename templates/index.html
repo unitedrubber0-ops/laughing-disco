@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drawing Material Analyzer</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Drawing Material Analyzer</h1>
+            <p>Upload a PDF drawing to automatically identify its material based on the specified Standard and Grade.</p>
+        </header>
+
+        <main>
+            <form id="upload-form">
+                <div class="upload-area">
+                    <label for="drawing-file">Click to select a PDF or drag it here</label>
+                    <input type="file" id="drawing-file" name="drawing" accept=".pdf" required>
+                    <p id="file-name"></p>
+                </div>
+                <button type="submit">Analyze Drawing</button>
+            </form>
+
+            <div id="loading-spinner" class="hidden"></div>
+
+            <div id="results-container" class="hidden">
+                <h2>Analysis Results</h2>
+                <div class="result-item">
+                    <strong>Part Number:</strong>
+                    <span id="result-part-number"></span>
+                </div>
+                <div class="result-item">
+                    <strong>Standard:</strong>
+                    <span id="result-standard"></span>
+                </div>
+                <div class="result-item">
+                    <strong>Grade:</strong>
+                    <span id="result-grade"></span>
+                </div>
+                <div class="result-item material">
+                    <strong>Identified Material:</strong>
+                    <span id="result-material"></span>
+                </div>
+                <div id="error-message" class="error hidden"></div>
+            </div>
+        </main>
+
+        <footer>
+            <p>&copy; 2025 Drawing Analyzer Inc.</p>
+        </footer>
+    </div>
+    <script src="/static/script.js"></script>
+</body>
+</html>
