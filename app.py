@@ -92,6 +92,63 @@ def calculate_development_length(coords):
     
     return total_length
 
+# Function to extract text with detailed logging
+def extract_text_from_pdf(pdf_bytes):
+    """Extract text from PDF with fallback to OCR and detailed logging."""
+    print("\n=== Starting PDF Text Extraction ===")
+    
+    # Step 1: Try direct text extraction
+    print("\n1. Attempting direct text extraction with PyMuPDF...")
+    pdf_document = fitz.open("pdf", pdf_bytes)
+    full_text = ""
+    page_count = 0
+    
+    for page in pdf_document:
+        page_count += 1
+        page_text = page.get_text()
+        full_text += page_text
+        print(f"  - Page {page_count}: Extracted {len(page_text)} characters")
+    
+    pdf_document.close()
+    
+    print(f"\nDirect Extraction Results:")
+    print("------------------------")
+    print(full_text)
+    print("------------------------")
+    print(f"Total characters extracted: {len(full_text)}")
+    
+    # Step 2: If direct extraction yields little text, try OCR
+    if len(full_text.strip()) < 100:
+        print("\n2. Direct extraction yielded limited text. Attempting OCR...")
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".pdf") as temp_pdf:
+                temp_pdf.write(pdf_bytes)
+                temp_pdf.flush()
+                
+                # Convert PDF pages to images one at a time
+                ocr_text = ""
+                images = convert_from_bytes(pdf_bytes)
+                
+                for i, image in enumerate(images):
+                    print(f"  - Processing page {i+1} with OCR...")
+                    page_text = pytesseract.image_to_string(image)
+                    ocr_text += page_text + "\n"
+                    print(f"    Extracted {len(page_text)} characters")
+                
+                print("\nOCR Results:")
+                print("-----------")
+                print(ocr_text)
+                print("-----------")
+                print(f"Total OCR characters: {len(ocr_text)}")
+                
+                return ocr_text if ocr_text.strip() else full_text
+                
+        except Exception as e:
+            print(f"\nError during OCR processing: {str(e)}")
+            return full_text
+    
+    return full_text
+
 # --- Configuration ---
 # 1. SET YOUR API KEY HERE
 # It's best practice to set this as an environment variable, but you can paste it directly for testing.
@@ -131,7 +188,7 @@ except FileNotFoundError:
 
 # --- NEW: Enhanced function to analyze the PDF text using Gemini API ---
 def analyze_drawing_with_gemini(pdf_bytes):
-    print("--- New analysis request received ---")
+    print("\n=== Starting Drawing Analysis ===")
     results = {
         "child_part": "Not Found",
         "description": "Not Found",
@@ -141,6 +198,15 @@ def analyze_drawing_with_gemini(pdf_bytes):
         "thickness": "Not Found",
         "centerline_length": "Not Found",
         "development_length_mm": "Not Found",
+        "working_pressure_kpag": "Not Found",
+        "burst_pressure_bar": "Not Found",
+        "coordinates": [],
+        "error": None
+    }
+    
+    try:
+        # Extract text with detailed logging
+        full_text = extract_text_from_pdf(pdf_bytes)
         "burst_pressure_bar": "Not Found",
         "error": None,
         "coordinates": []
@@ -243,19 +309,28 @@ def analyze_drawing_with_gemini(pdf_bytes):
 # --- API endpoint for file analysis (now uses the Gemini function) ---
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
+    print("\n=== New Analysis Request Started ===")
+    
     if 'drawing' not in request.files:
+        print("Error: No file part in request")
         return jsonify({"error": "No file part in the request"}), 400
     
     file = request.files['drawing']
     
     if file.filename == '':
+        print("Error: No file selected")
         return jsonify({"error": "No file selected"}), 400
     
     if file and file.filename.lower().endswith('.pdf'):
+        print(f"\nProcessing file: {file.filename}")
         pdf_bytes = file.read()
-        analysis_results = analyze_drawing_with_gemini(pdf_bytes) # Use the new Gemini function
+        print(f"File size: {len(pdf_bytes)} bytes")
+        
+        analysis_results = analyze_drawing_with_gemini(pdf_bytes)
+        print("\nAnalysis completed. Results:", json.dumps(analysis_results, indent=2))
         return jsonify(analysis_results)
     else:
+        print("Error: Invalid file type")
         return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
 
 # --- Route for the main webpage (no change) ---
