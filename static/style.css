@@ -9,6 +9,38 @@ body {
     margin: 0;
 }
 
+.results-table, .coordinates-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    background-color: white;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    border-radius: 4px;
+}
+
+.results-table td, .coordinates-table td,
+.results-table th, .coordinates-table th {
+    padding: 12px;
+    border-bottom: 1px solid #eee;
+    text-align: left;
+}
+
+.results-table td:first-child {
+    font-weight: 600;
+    width: 40%;
+    color: #555;
+}
+
+.coordinates-table th {
+    background-color: #f8f9fa;
+    font-weight: 600;
+    color: #555;
+}
+
+.coordinates-table tr:hover {
+    background-color: #f8f9fa;
+}
+
 .container {
     background-color: #fff;
     padding: 40px;

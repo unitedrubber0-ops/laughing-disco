@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import math
 import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
@@ -11,6 +12,85 @@ from pdf2image import convert_from_bytes
 from PIL import Image
 import io
 import tempfile
+
+# --- Helper Functions for Detailed Analysis ---
+def extract_specific_info(text):
+    """Extracts key-value data from the drawing text using regex."""
+    info = {
+        'child_part': 'Not Found',
+        'description': 'Not Found',
+        'specification': 'Not Found',
+        'material': 'Not Found',
+        'od': 'Not Found',
+        'thickness': 'Not Found',
+        'centerline_length': 'Not Found',
+        'working_pressure_kpag': 'Not Found'
+    }
+
+    # Part number pattern (e.g., 4717736X1)
+    part_num_match = re.search(r'(\d{7}[Cc]\d)', text)
+    if part_num_match:
+        info['child_part'] = part_num_match.group(1)
+
+    # Standard pattern (e.g., MPAPS F-30)
+    spec_match = re.search(r'MPAPS\s+F-30', text)
+    if spec_match:
+        info['specification'] = spec_match.group(0)
+
+    # Grade pattern
+    grade_match = re.search(r'GRADE\s+(\w+)', text)
+    if grade_match:
+        info['material'] = f"GRADE {grade_match.group(1)}"
+
+    # Additional measurements
+    od_match = re.search(r'OD[:\s]+(\d+\.?\d*)', text)
+    if od_match:
+        info['od'] = od_match.group(1)
+
+    thickness_match = re.search(r'THICKNESS[:\s]+(\d+\.?\d*)', text)
+    if thickness_match:
+        info['thickness'] = thickness_match.group(1)
+
+    length_match = re.search(r'LENGTH[:\s]+(\d+\.?\d*)', text)
+    if length_match:
+        info['centerline_length'] = length_match.group(1)
+
+    return info
+
+def extract_coordinates(text):
+    """Extracts P0, P1, P2... coordinates from the text."""
+    coords = {}
+    # Pattern for finding coordinates (P0 X Y Z format)
+    pattern = re.compile(r'P(\d)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)')
+    matches = pattern.findall(text)
+    
+    for match in matches:
+        point_id = f"P{match[0]}"
+        coords[point_id] = {
+            'x': float(match[1]),
+            'y': float(match[2]),
+            'z': float(match[3])
+        }
+    
+    return sorted([coords[f'P{i}'] for i in range(len(coords)) if f'P{i}' in coords], 
+                 key=lambda x: int(next(k[1] for k in coords.keys() if coords[k] == x)))
+
+def calculate_development_length(coords):
+    """Calculates the total length by summing distances between consecutive points."""
+    if len(coords) < 2:
+        return 0.0
+
+    total_length = 0.0
+    for i in range(len(coords) - 1):
+        p1, p2 = coords[i], coords[i + 1]
+        distance = math.sqrt(
+            (p2['x'] - p1['x'])**2 +
+            (p2['y'] - p1['y'])**2 +
+            (p2['z'] - p1['z'])**2
+        )
+        total_length += distance
+    
+    return total_length
 
 # --- Configuration ---
 # 1. SET YOUR API KEY HERE
@@ -49,15 +129,21 @@ except FileNotFoundError:
     print("Error: material_data.csv not found. Please ensure the file exists.")
     material_df = pd.DataFrame()
 
-# --- NEW: Function to analyze the PDF text using Gemini API ---
+# --- NEW: Enhanced function to analyze the PDF text using Gemini API ---
 def analyze_drawing_with_gemini(pdf_bytes):
     print("--- New analysis request received ---")
     results = {
-        "part_number": "Not Found",
-        "standard": "Not Found",
-        "grade": "Not Found",
+        "child_part": "Not Found",
+        "description": "Not Found",
+        "specification": "Not Found",
         "material": "Not Found",
-        "error": None
+        "od": "Not Found",
+        "thickness": "Not Found",
+        "centerline_length": "Not Found",
+        "development_length_mm": "Not Found",
+        "burst_pressure_bar": "Not Found",
+        "error": None,
+        "coordinates": []
     }
     
     try:

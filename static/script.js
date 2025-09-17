@@ -55,10 +55,37 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        document.getElementById('result-part-number').textContent = data.part_number;
-        document.getElementById('result-standard').textContent = data.standard;
-        document.getElementById('result-grade').textContent = data.grade;
+        // Update main results
+        document.getElementById('result-child-part').textContent = data.child_part;
+        document.getElementById('result-description').textContent = data.description;
+        document.getElementById('result-specification').textContent = data.specification;
         document.getElementById('result-material').textContent = data.material;
+        document.getElementById('result-od').textContent = data.od;
+        document.getElementById('result-thickness').textContent = data.thickness;
+        document.getElementById('result-centerline').textContent = data.centerline_length;
+        document.getElementById('result-development').textContent = data.development_length_mm;
+        document.getElementById('result-burst-pressure').textContent = data.burst_pressure_bar;
+
+        // Display coordinates if available
+        const coordsContainer = document.getElementById('coordinates-container');
+        const coordsBody = document.getElementById('coordinates-body');
+        
+        if (data.coordinates && data.coordinates.length > 0) {
+            coordsBody.innerHTML = ''; // Clear existing coordinates
+            data.coordinates.forEach((coord, index) => {
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>P${index}</td>
+                    <td>${coord.x.toFixed(2)}</td>
+                    <td>${coord.y.toFixed(2)}</td>
+                    <td>${coord.z.toFixed(2)}</td>
+                `;
+                coordsBody.appendChild(row);
+            });
+            coordsContainer.classList.remove('hidden');
+        } else {
+            coordsContainer.classList.add('hidden');
+        }
         
         resultsContainer.classList.remove('hidden');
     }

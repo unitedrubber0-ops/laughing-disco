@@ -26,22 +26,58 @@
             <div id="loading-spinner" class="hidden"></div>
 
             <div id="results-container" class="hidden">
-                <h2>Analysis Results</h2>
-                <div class="result-item">
-                    <strong>Part Number:</strong>
-                    <span id="result-part-number"></span>
-                </div>
-                <div class="result-item">
-                    <strong>Standard:</strong>
-                    <span id="result-standard"></span>
-                </div>
-                <div class="result-item">
-                    <strong>Grade:</strong>
-                    <span id="result-grade"></span>
-                </div>
-                <div class="result-item material">
-                    <strong>Identified Material:</strong>
-                    <span id="result-material"></span>
+                <h2>Drawing Analysis Results</h2>
+                <table class="results-table">
+                    <tr>
+                        <td>Child Part:</td>
+                        <td id="result-child-part"></td>
+                    </tr>
+                    <tr>
+                        <td>Description:</td>
+                        <td id="result-description"></td>
+                    </tr>
+                    <tr>
+                        <td>Specification:</td>
+                        <td id="result-specification"></td>
+                    </tr>
+                    <tr>
+                        <td>Material:</td>
+                        <td id="result-material"></td>
+                    </tr>
+                    <tr>
+                        <td>OD (mm):</td>
+                        <td id="result-od"></td>
+                    </tr>
+                    <tr>
+                        <td>Thickness (mm):</td>
+                        <td id="result-thickness"></td>
+                    </tr>
+                    <tr>
+                        <td>Centerline Length (mm):</td>
+                        <td id="result-centerline"></td>
+                    </tr>
+                    <tr>
+                        <td>Development Length (mm):</td>
+                        <td id="result-development"></td>
+                    </tr>
+                    <tr>
+                        <td>Burst Pressure (bar):</td>
+                        <td id="result-burst-pressure"></td>
+                    </tr>
+                </table>
+                <div id="coordinates-container" class="hidden">
+                    <h3>Coordinate Points</h3>
+                    <table id="coordinates-table" class="coordinates-table">
+                        <thead>
+                            <tr>
+                                <th>Point</th>
+                                <th>X</th>
+                                <th>Y</th>
+                                <th>Z</th>
+                            </tr>
+                        </thead>
+                        <tbody id="coordinates-body"></tbody>
+                    </table>
                 </div>
                 <div id="error-message" class="error hidden"></div>
             </div>
