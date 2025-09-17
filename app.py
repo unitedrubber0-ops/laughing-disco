@@ -5,6 +5,10 @@ import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
+import pytesseract
+from pdf2image import convert_from_bytes
+from PIL import Image
+import io
 
 # --- Configuration ---
 # 1. SET YOUR API KEY HERE
@@ -54,14 +58,41 @@ def analyze_drawing_with_gemini(pdf_bytes):
     
     try:
         # --- Step 1: Extract text from PDF ---
+        # First try normal PDF text extraction
         pdf_document = fitz.open("pdf", pdf_bytes)
         full_text = ""
         for page in pdf_document:
-            full_text += page.get_text()
-        
+            page_text = page.get_text()
+            full_text += page_text
+
+        # If no text was found, try OCR
         if not full_text.strip():
-            results["error"] = "Could not extract any text from the PDF."
-            return results
+            try:
+                # Convert PDF to images
+                images = convert_from_bytes(pdf_bytes)
+                full_text = ""
+                
+                # Process each page with OCR
+                for image in images:
+                    # Convert PIL image to bytes for OCR
+                    with io.BytesIO() as bio:
+                        image.save(bio, format='PNG')
+                        image_bytes = bio.getvalue()
+                    
+                    # Open image with PIL
+                    pil_image = Image.open(io.BytesIO(image_bytes))
+                    
+                    # Perform OCR
+                    page_text = pytesseract.image_to_string(pil_image)
+                    full_text += page_text + "\n"
+                
+                if not full_text.strip():
+                    results["error"] = "No text could be extracted from the PDF, even with OCR."
+                    return results
+                    
+            except Exception as e:
+                results["error"] = f"Error during OCR processing: {str(e)}"
+                return results
 
         # --- Step 2: Prepare the prompt for the Gemini API ---
         model = genai.GenerativeModel('gemini-1.5-flash') # Use a fast and capable model
