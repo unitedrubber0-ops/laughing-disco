@@ -10,6 +10,7 @@ import pytesseract
 from pdf2image import convert_from_bytes
 from PIL import Image
 import io
+import tempfile
 
 # --- Configuration ---
 # 1. SET YOUR API KEY HERE
@@ -50,6 +51,7 @@ except FileNotFoundError:
 
 # --- NEW: Function to analyze the PDF text using Gemini API ---
 def analyze_drawing_with_gemini(pdf_bytes):
+    print("--- New analysis request received ---")
     results = {
         "part_number": "Not Found",
         "standard": "Not Found",
@@ -60,39 +62,42 @@ def analyze_drawing_with_gemini(pdf_bytes):
     
     try:
         # --- Step 1: Extract text from PDF ---
-        # First, try fast direct text extraction using PyMuPDF
+        print("Attempting direct text extraction...")
         pdf_document = fitz.open("pdf", pdf_bytes)
         full_text = ""
         for page in pdf_document:
-            page_text = page.get_text()
-            full_text += page_text
+            full_text += page.get_text()
+        pdf_document.close()
+        print(f"Direct extraction found {len(full_text)} characters.")
 
-        # --- NEW: OCR Fallback Logic ---
-        # If no text was found, the PDF is likely an image. Fall back to OCR.
+        # --- OCR Fallback Logic ---
         if not full_text.strip():
-            print("No selectable text found. Attempting OCR...")
-            try:
-                # Convert PDF pages to a list of images
-                images = convert_from_bytes(pdf_bytes)
+            print("No selectable text found. Attempting memory-efficient OCR fallback.")
+            full_text = ""
+            # Use a temporary file to avoid holding everything in memory
+            with tempfile.NamedTemporaryFile(suffix=".pdf") as temp:
+                temp.write(pdf_bytes)
+                temp.flush()
                 
-                # Reset full_text to build it with OCR results
-                full_text = ""
+                # Get the number of pages
+                page_count = len(fitz.open(temp.name))
                 
-                # Process each page with Tesseract OCR
-                for image in images:
-                    page_text = pytesseract.image_to_string(image)
-                    full_text += page_text + "\n"
-                
-                print("OCR processing complete.")
-                
-                # If even OCR finds no text, the document is likely blank
-                if not full_text.strip():
-                    results["error"] = "No text could be extracted from the PDF, even with OCR. The document may be empty."
-                    return results
-                    
-            except Exception as e:
-                # Catch errors during the OCR process
-                results["error"] = f"An error occurred during OCR processing: {str(e)}"
+                # Process one page at a time
+                for i in range(page_count):
+                    print(f"Converting and processing OCR for page {i+1}/{page_count}...")
+                    try:
+                        # Convert only the single page to an image
+                        page_image = convert_from_bytes(pdf_bytes, first_page=i+1, last_page=i+1)
+                        if page_image:
+                            page_text = pytesseract.image_to_string(page_image[0])
+                            full_text += page_text + "\n"
+                    except Exception as page_e:
+                        print(f"Could not process page {i+1}: {page_e}")
+                        continue # Move to the next page
+
+            print(f"OCR processing complete. Found {len(full_text)} characters.")
+            if not full_text.strip():
+                results["error"] = "No text could be extracted via OCR."
                 return results
 
         # --- Step 2: Prepare the prompt for the Gemini API ---
