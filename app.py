@@ -60,40 +60,39 @@ def analyze_drawing_with_gemini(pdf_bytes):
     
     try:
         # --- Step 1: Extract text from PDF ---
-        # First try normal PDF text extraction
+        # First, try fast direct text extraction using PyMuPDF
         pdf_document = fitz.open("pdf", pdf_bytes)
         full_text = ""
         for page in pdf_document:
             page_text = page.get_text()
             full_text += page_text
 
-        # If no text was found, try OCR
+        # --- NEW: OCR Fallback Logic ---
+        # If no text was found, the PDF is likely an image. Fall back to OCR.
         if not full_text.strip():
+            print("No selectable text found. Attempting OCR...")
             try:
-                # Convert PDF to images
+                # Convert PDF pages to a list of images
                 images = convert_from_bytes(pdf_bytes)
+                
+                # Reset full_text to build it with OCR results
                 full_text = ""
                 
-                # Process each page with OCR
+                # Process each page with Tesseract OCR
                 for image in images:
-                    # Convert PIL image to bytes for OCR
-                    with io.BytesIO() as bio:
-                        image.save(bio, format='PNG')
-                        image_bytes = bio.getvalue()
-                    
-                    # Open image with PIL
-                    pil_image = Image.open(io.BytesIO(image_bytes))
-                    
-                    # Perform OCR
-                    page_text = pytesseract.image_to_string(pil_image)
+                    page_text = pytesseract.image_to_string(image)
                     full_text += page_text + "\n"
                 
+                print("OCR processing complete.")
+                
+                # If even OCR finds no text, the document is likely blank
                 if not full_text.strip():
-                    results["error"] = "No text could be extracted from the PDF, even with OCR."
+                    results["error"] = "No text could be extracted from the PDF, even with OCR. The document may be empty."
                     return results
                     
             except Exception as e:
-                results["error"] = f"Error during OCR processing: {str(e)}"
+                # Catch errors during the OCR process
+                results["error"] = f"An error occurred during OCR processing: {str(e)}"
                 return results
 
         # --- Step 2: Prepare the prompt for the Gemini API ---
