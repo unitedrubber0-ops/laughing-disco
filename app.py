@@ -5,6 +5,7 @@ import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS  # Added for CORS support
 import pytesseract
 from pdf2image import convert_from_bytes
 from PIL import Image
@@ -27,6 +28,7 @@ except Exception as e:
 
 # Initialize the Flask application
 app = Flask(__name__, static_url_path='/static')
+CORS(app)  # Enable CORS for all routes
 
 # Configure static files with correct MIME types
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0

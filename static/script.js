@@ -28,7 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
         formData.append('drawing', fileInput.files[0]);
 
         try {
-            const response = await fetch('https://laughing-disco-k2z6.onrender.com/api/analyze', {
+            const response = await fetch('https://laughing-disco-docker.onrender.com/api/analyze', {
                 method: 'POST',
                 body: formData,
             });
