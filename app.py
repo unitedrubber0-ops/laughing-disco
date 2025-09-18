@@ -2,24 +2,29 @@ import os
 import re
 import json
 import math
-import base64
 import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
-from flask_cors import CORS  # Added for CORS support
+from flask_cors import CORS
+import pytesseract
 from pdf2image import convert_from_bytes
 from PIL import Image
 import io
 import tempfile
+import gc
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Try to import psutil with fallback
 try:
     import psutil
 except ImportError:
     psutil = None
-    print("Warning: psutil not found. Memory logging disabled.")
-import os
+    logger.warning("psutil not found. Memory logging disabled.")
 
 def get_memory_usage():
     """Returns current memory usage in MB, or None if psutil is not available."""
@@ -29,54 +34,12 @@ def get_memory_usage():
         process = psutil.Process(os.getpid())
         return process.memory_info().rss / 1024 / 1024
     except Exception as e:
-        print(f"Error getting memory usage: {str(e)}")
+        logger.error(f"Error getting memory usage: {str(e)}")
         return None
-        
-def process_page_with_gemini(page_image):
-    """Process an image using Gemini Vision API to extract text.
-    
-    Args:
-        page_image: A PIL Image object containing the page to process
-    
-    Returns:
-        str: Extracted text from the image, or empty string if extraction fails
-    """
-    try:
-        # Convert PIL Image to bytes
-        with io.BytesIO() as bio:
-            page_image.save(bio, format='JPEG')
-            image_bytes = bio.getvalue()
-            
-        # Encode image for Gemini
-        encoded_image = base64.b64encode(image_bytes).decode('utf-8')
-        
-        # Configure Gemini model
-        genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
-        model = genai.GenerativeModel('gemini-pro-vision')
-        
-        # Create image part for the model
-        image_part = {
-            'mime_type': 'image/jpeg',
-            'data': encoded_image
-        }
-        
-        # Generate content with image
-        prompt = "Extract and return all visible text from this engineering drawing image. Include numbers, labels, and technical specifications."
-        response = model.generate_content([prompt, image_part])
-        
-        # Return the extracted text
-        return response.text if response.text else ""
-        
-    except Exception as e:
-        print(f"Error in Gemini Vision processing: {str(e)}")
-        return ""
 
 # --- Helper Functions for Detailed Analysis ---
 def extract_specific_info(text):
-    """
-    Extracts key-value data with more flexible regex patterns.
-    Now updated to handle formats from the 4403886C2 drawing.
-    """
+    """Extracts key-value data with more flexible regex patterns."""
     info = {
         'child_part': "Not Found",
         'description': "Not Found",
@@ -91,37 +54,37 @@ def extract_specific_info(text):
         'thickness': "Not Found"
     }
 
-    # Part Number: Find the specific C-number format directly
+    # Part Number
     part_num_match = re.search(r'(\d{7}[Cc]\d)', text, re.IGNORECASE)
     if part_num_match:
         info['child_part'] = part_num_match.group(1)
 
-    # Description: Find the "HOSE, ..." pattern
+    # Description
     desc_match = re.search(r'(HOSE,[\s\w,]+)', text, re.IGNORECASE)
     if desc_match:
         info['description'] = desc_match.group(1).strip()
         
-    # Specification: Find MPAPS F-30
+    # Specification
     spec_match = re.search(r'(MPAPS\s+F-30)', text, re.IGNORECASE)
     if spec_match:
         info['specification'] = spec_match.group(0)
 
-    # Material: Find the Grade
+    # Material
     material_match = re.search(r'GRADE\s+([\w\d]+)', text, re.IGNORECASE)
     if material_match:
         info['material'] = f"GRADE {material_match.group(1)}"
 
-    # ID: Look for "HOSE ID" with an equals sign
+    # ID
     id_match = re.search(r'HOSE ID\s*=\s*([\d\.]+)', text, re.IGNORECASE)
     if id_match:
         info['id'] = id_match.group(1)
 
-    # Centerline Length: Handle various formats
+    # Centerline Length
     ctr_length_match = re.search(r'(?:APPROX\s+)?(?:CTRLINE\s+)?LENGTH\s*[=:]?\s*([\d\.]+)', text, re.IGNORECASE)
     if ctr_length_match:
         info['centerline_length'] = ctr_length_match.group(1)
 
-    # Burst pressure (looking for specific format)
+    # Burst pressure
     burst_match = re.search(r'Burst\s+Pressure\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:bar|BAR)', text, re.IGNORECASE)
     if burst_match:
         info['burst_pressure_bar'] = burst_match.group(1)
@@ -143,16 +106,10 @@ def extract_specific_info(text):
     return info
 
 def extract_coordinates(text):
-    """
-    Extracts P0, P1, P2... coordinates.
-    Updated with a stricter regex to only match valid floating-point numbers.
-    """
+    """Extracts P0, P1, P2... coordinates with stricter regex."""
     coords = {}
-    # This pattern matches an optional hyphen ONLY at the start of a number.
-    # It prevents matching strings with hyphens in the middle.
     valid_float_pattern = r'-?\d+\.?\d*'
     
-    # The overall pattern now looks for P<num> followed by 3 or 4 valid numbers.
     pattern = re.compile(
         r'^P(\d+)\s+(' + valid_float_pattern + r')\s+(' + valid_float_pattern + r')\s+(' + valid_float_pattern + r')(?:\s+' + valid_float_pattern + r')?$',
         re.MULTILINE
@@ -189,103 +146,84 @@ def calculate_development_length(coords):
     
     return total_length
 
-# Function to extract text with detailed logging
 def extract_text_from_pdf(pdf_bytes):
-    """Extract text with PyMuPDF first, fallback to Gemini Vision."""
-    print("\n=== Starting PDF Text Extraction ===")
+    """Extract text from PDF with fallback to OCR and memory optimization."""
+    logger.info("Starting PDF Text Extraction")
     
-    # Step 1: Direct extraction
-    print("\n1. Attempting direct text extraction with PyMuPDF...")
+    # Step 1: Try direct text extraction
+    logger.info("Attempting direct text extraction with PyMuPDF...")
     pdf_document = fitz.open("pdf", pdf_bytes)
     full_text = ""
-    page_count = 0
     
-    for page in pdf_document:
-        page_count += 1
+    for page_num, page in enumerate(pdf_document):
         page_text = page.get_text()
         full_text += page_text
-        print(f"  - Page {page_count}: Extracted {len(page_text)} characters")
+        logger.info(f"Page {page_num + 1}: Extracted {len(page_text)} characters")
     
     pdf_document.close()
     
-    print(f"\nDirect Extraction Results:")
-    print("------------------------")
-    print(full_text)
-    print("------------------------")
-    print(f"Total characters extracted: {len(full_text)}")
+    logger.info(f"Direct extraction found {len(full_text)} characters")
     
-    # Step 2: If direct extraction yields little text, use Gemini Vision
+    # Step 2: If direct extraction yields little text, try OCR with memory optimization
     if len(full_text.strip()) < 100:
-        print("\n2. Direct extraction limited. Using Gemini Vision...")
+        logger.info("Direct extraction yielded limited text. Attempting optimized OCR...")
         try:
-            # Lightweight conversion (first page for simplicity)
-            page_image = convert_from_bytes(pdf_bytes, 
-                                         first_page=1, 
-                                         last_page=1, 
-                                         dpi=100, 
-                                         fmt='jpeg')
+            # Use a temporary file to avoid memory issues
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
+                temp_pdf.write(pdf_bytes)
+                temp_pdf_path = temp_pdf.name
             
-            # Base64 encode
-            buffered = io.BytesIO()
-            page_image[0].save(buffered, format="JPEG")
-            img_base64 = base64.b64encode(buffered.getvalue()).decode()
+            # Process one page at a time to save memory
+            ocr_text = ""
+            pdf_document = fitz.open(temp_pdf_path)
             
-            # Gemini model configuration
-            model = genai.GenerativeModel('gemini-1.5-pro')  # Using pro for better accuracy
+            for page_num in range(len(pdf_document)):
+                # Convert only the current page to an image
+                images = convert_from_bytes(
+                    pdf_bytes, 
+                    first_page=page_num + 1, 
+                    last_page=page_num + 1,
+                    dpi=100,  # Lower DPI to reduce memory
+                    fmt='jpeg',
+                    thread_count=1  # Single thread to reduce memory usage
+                )
+                
+                if images:
+                    image = images[0]
+                    # Convert to grayscale and resize to reduce memory
+                    image = image.convert('L')
+                    image = image.resize((int(image.width * 0.5), int(image.height * 0.5)))
+                    
+                    page_text = pytesseract.image_to_string(image, config='--oem 3 --psm 6')
+                    ocr_text += page_text + "\n"
+                    
+                    # Clean up
+                    image.close()
+                    del images
+                    gc.collect()
             
-            # Prompt for extraction
-            prompt = """Extract all readable text from this engineering drawing image. Focus on:
-            - Part numbers (e.g., 7 digits + C + digit)
-            - Material standards (e.g., MPAPS F-30)
-            - Grades
-            - Coordinates (P0-Pn with X/Y/Z values)
-            - Dimensions and measurements
-            - Pressure specifications
-            - Part descriptions
-            Output as clean, structured text with clear labeling."""
+            pdf_document.close()
+            os.unlink(temp_pdf_path)
             
-            # Generate content with image
-            response = model.generate_content([
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
-            ])
-            
-            # Update full text with Gemini Vision results
-            full_text = response.text
-            
-            # Cleanup
-            del page_image, buffered
-            
-            print("\nGemini Vision Results:")
-            print("------------------------")
-            print(full_text)
-            print("------------------------")
-            return full_text
+            logger.info(f"OCR extracted {len(ocr_text)} characters")
+            return ocr_text if ocr_text.strip() else full_text
                 
         except Exception as e:
-            print(f"\nError during text extraction: {str(e)}")
+            logger.error(f"Error during OCR processing: {str(e)}")
             return full_text
     
     return full_text
 
 # --- Configuration ---
-# 1. SET YOUR API KEY HERE
-# It's best practice to set this as an environment variable, but you can paste it directly for testing.
-# To set an environment variable:
-# On Windows: set GEMINI_API_KEY=YOUR_API_KEY
-# On macOS/Linux: export GEMINI_API_KEY=YOUR_API_KEY
 try:
     api_key = os.environ.get("GEMINI_API_KEY")
     genai.configure(api_key=api_key)
 except Exception as e:
-    print(f"API Key not found in environment variables. Please set GEMINI_API_KEY. Error: {e}")
-    # For quick testing, you can uncomment the line below and paste your key
-    # genai.configure(api_key="YOUR_API_KEY_HERE")
-
+    logger.error(f"API Key not found in environment variables: {e}")
 
 # Initialize the Flask application
 app = Flask(__name__, static_url_path='/static')
-CORS(app)  # Enable CORS for all routes
+CORS(app)
 
 # Configure static files with correct MIME types
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
@@ -318,218 +256,129 @@ try:
     material_df.columns = material_df.columns.str.strip()
     material_df['STANDARD'] = material_df['STANDARD'].str.strip()
     material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
-    print("Material database loaded successfully.")
+    logger.info("Material database loaded successfully.")
 except FileNotFoundError:
-    print("Error: material_data.csv not found. Please ensure the file exists.")
+    logger.error("material_data.csv not found. Please ensure the file exists.")
     material_df = pd.DataFrame()
 
-# --- NEW: Enhanced function to analyze the PDF text using Gemini API ---
+# --- Enhanced function to analyze the PDF text using Gemini API ---
 def analyze_drawing_with_gemini(pdf_bytes):
-    print("\n=== Starting Drawing Analysis ===")
+    logger.info("Starting Drawing Analysis")
     
-    # Initialize results dictionary before the try block
-    final_results = {
-        "child_part": "Not Found",
-        "description": "Not Found",
-        "specification": "Not Found",
-        "material": "Not Found",
-        "od": "Not Found",
-        "thickness": "Not Found",
-        "centerline_length": "Not Found",
-        "development_length_mm": "Not Found",
-        "working_pressure_kpag": "Not Found",
-        "burst_pressure_bar": "Not Found",
-        "coordinates": [],
-        "error": None
-    }
+    # Initialize results dictionary
+    final_results = get_default_results()
     
     try:
-        print("\n----------- STARTING PDF ANALYSIS -----------")
-        print("[1/3] Attempting text extraction...")
+        logger.info("Attempting text extraction...")
         
         # Extract text with detailed logging
         full_text = extract_text_from_pdf(pdf_bytes)
         
-        print("\n----------- RAW EXTRACTED TEXT -----------")
-        print(full_text if full_text else "[No text extracted]")
-        print("------------------------------------------")
-        
         if not full_text:
-            print("[ERROR] Text extraction failed")
-            return {
-                "burst_pressure_bar": "Not Found",
-                "error": "Failed to extract text from PDF",
-                "coordinates": []
-            }
+            logger.error("Text extraction failed")
+            final_results["error"] = "Failed to extract text from PDF"
+            return final_results
             
-        print("[2/3] Text extraction successful. Length:", len(full_text))
+        logger.info(f"Text extraction successful. Length: {len(full_text)}")
         
         # Process the extracted text
-        print("[3/3] Processing extracted text for specific information...")
-        # --- Step 1: Extract text from PDF ---
-        print("Attempting pattern matching on extracted text...")
-        pdf_document = fitz.open("pdf", pdf_bytes)
-        full_text = ""
-        for page in pdf_document:
-            full_text += page.get_text()
-        pdf_document.close()
-        print(f"Direct extraction found {len(full_text)} characters.")
-
-        # --- OCR Fallback Logic ---
-        if not full_text.strip():
-            print("No selectable text found. Attempting memory-efficient OCR fallback.")
-            mem_usage = get_memory_usage()
-            if mem_usage is not None:
-                print(f"Initial memory usage: {mem_usage:.2f} MB")
-            full_text = ""
-
-            # Check file size before proceeding
-            if len(pdf_bytes) > 5 * 1024 * 1024:  # 5MB limit
-                raise ValueError("File too large for OCR processing (>5MB)")
-
-            # Use a temporary file to avoid holding everything in memory
-            with tempfile.NamedTemporaryFile(suffix=".pdf") as temp:
-                temp.write(pdf_bytes)
-                temp.flush()
-                
-                # Get the number of pages
-                page_count = len(fitz.open(temp.name))
-                
-                # Process one page at a time
-                for i in range(page_count):
-                    print(f"Converting and processing OCR for page {i+1}/{page_count}...")
-                    mem_usage = get_memory_usage()
-                    if mem_usage is not None:
-                        print(f"Memory before page {i+1}: {mem_usage:.2f} MB")
-                    
-                    try:
-                        # Convert only the single page to an image with optimized parameters
-                        page_image = convert_from_bytes(pdf_bytes, 
-                                                      first_page=i+1, 
-                                                      last_page=i+1, 
-                                                      dpi=150,  # Lower DPI
-                                                      fmt='jpeg',  # Use JPEG format
-                                                      thread_count=1)  # Reduce thread usage
-                        
-                        if page_image:
-                            # Process with Gemini Vision
-                            page_text = process_page_with_gemini(page_image[0])
-                            if page_text:
-                                full_text += page_text + "\n"
-                                
-                    except Exception as e:
-                        print(f"Error during Gemini Vision processing: {str(e)}")
-                        mem_usage = get_memory_usage()
-                        if mem_usage is not None:
-                            print(f"Memory at error: {mem_usage:.2f} MB")
-                        continue  # Try next page instead of returning
-
-                print(f"Gemini Vision processing complete. Found {len(full_text)} characters.")
-                final_results["error"] = "No text could be extracted from the PDF."
-                return final_results
-
-        # --- Step 2: Process with Gemini Vision API ---
-        model = genai.GenerativeModel('gemini-1.5-flash') # Use a fast and capable model
+        logger.info("Processing extracted text for specific information...")
         
-        prompt = f"""
-        Analyze the following text extracted from a technical engineering drawing. Your task is to find three specific pieces of information: the part number, the material standard, and the grade.
-
-        Respond ONLY with a valid JSON object containing these keys: "part_number", "standard", "grade".
-
-        - The 'part_number' is typically a 7-digit number followed by a 'C' and another digit (e.g., 4403886C2).
-        - The 'standard' is likely to be 'MPAPS F-30'.
-        - The 'grade' is a short code that often follows the word 'GRADE' (e.g., 1B).
-
-        If you cannot find a value for any key, the value in the JSON should be "Not Found".
-
-        Here is the text to analyze:
-        ---
-        {full_text}
-        ---
-        """
-
-        # --- Step 3: Call the Gemini API ---
-        response = model.generate_content(prompt)
-        
-        # Clean the response to ensure it's valid JSON
-        # The model might sometimes wrap the JSON in ```json ... ```
-        cleaned_response = re.sub(r'```json\s*|\s*```', '', response.text.strip())
-        
-        # Parse the JSON response from the model
-        ai_results = json.loads(cleaned_response)
-
-        # Get regex-based results
-        print("\nExtracting information using regex patterns...")
+        # Extract information using regex patterns
         regex_results = extract_specific_info(full_text)
         
         # Extract coordinates
-        print("Extracting coordinates...")
         coordinates = extract_coordinates(full_text)
         
         # Merge the results, preferring regex results when available
-        final_results = get_default_results()
-        
-        # Update from regex results
         for key, value in regex_results.items():
             if value != "Not Found":
                 final_results[key] = value
-        
-        # Update from AI results if regex didn't find them
-        if final_results["child_part"] == "Not Found" and ai_results.get("part_number", "Not Found") != "Not Found":
-            final_results["child_part"] = ai_results["part_number"]
-            
-        if final_results["specification"] == "Not Found" and ai_results.get("standard", "Not Found") != "Not Found":
-            final_results["specification"] = ai_results["standard"]
-            
-        if final_results["material"] == "Not Found" and ai_results.get("grade", "Not Found") != "Not Found":
-            grade = ai_results["grade"]
-            standard = ai_results.get("standard", "")
-            
-            # Look up in material database if we have both standard and grade
-            if standard and grade != "Not Found":
-                match = material_df[
-                    material_df['STANDARD'].str.contains(standard, na=False, case=False) &
-                    (material_df['GRADE'] == grade)
-                ]
-                if not match.empty:
-                    final_results["material"] = match.iloc[0]['MATERIAL']
-                else:
-                    final_results["material"] = f"GRADE {grade}"
         
         # Add coordinates and calculate development length
         final_results["coordinates"] = coordinates
         if coordinates:
             final_results["development_length_mm"] = f"{calculate_development_length(coordinates):.2f}"
+        
+        # Use Gemini API only if essential information is missing
+        if final_results["child_part"] == "Not Found" or final_results["specification"] == "Not Found":
+            logger.info("Using Gemini API to extract missing information...")
             
-        print("\nAnalysis Results:")
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            prompt = f"""
+            Analyze the following text extracted from a technical engineering drawing. Find:
+            1. Part number (typically a 7-digit number followed by a 'C' and another digit)
+            2. Standard (likely 'MPAPS F-30')
+            3. Grade (short code that often follows the word 'GRADE')
+            
+            Respond ONLY with a valid JSON object containing these keys: "part_number", "standard", "grade".
+            If you cannot find a value, use "Not Found".
+            
+            Text to analyze:
+            ---
+            {full_text[:4000]}  # Limit text size to avoid token limits
+            ---
+            """
+            
+            response = model.generate_content(prompt)
+            cleaned_response = re.sub(r'```json\s*|\s*```', '', response.text.strip())
+            
+            try:
+                ai_results = json.loads(cleaned_response)
+                
+                # Update from AI results if regex didn't find them
+                if final_results["child_part"] == "Not Found" and ai_results.get("part_number", "Not Found") != "Not Found":
+                    final_results["child_part"] = ai_results["part_number"]
+                    
+                if final_results["specification"] == "Not Found" and ai_results.get("standard", "Not Found") != "Not Found":
+                    final_results["specification"] = ai_results["standard"]
+                    
+                if final_results["material"] == "Not Found" and ai_results.get("grade", "Not Found") != "Not Found":
+                    grade = ai_results["grade"]
+                    standard = ai_results.get("standard", "")
+                    
+                    # Look up in material database
+                    if standard and grade != "Not Found":
+                        match = material_df[
+                            material_df['STANDARD'].str.contains(standard, na=False, case=False) &
+                            (material_df['GRADE'] == grade)
+                        ]
+                        if not match.empty:
+                            final_results["material"] = match.iloc[0]['MATERIAL']
+                        else:
+                            final_results["material"] = f"GRADE {grade}"
+            except json.JSONDecodeError:
+                logger.warning("AI model returned a non-JSON response")
+        
+        logger.info("Analysis completed successfully")
         for key, value in final_results.items():
             if key != "coordinates":  # Skip coordinates to keep output clean
-                print(f"{key}: {value}")
+                logger.info(f"{key}: {value}")
 
-    except json.JSONDecodeError:
-        final_results["error"] = "AI model returned a non-JSON response. Please try again."
     except Exception as e:
+        logger.error(f"An unexpected error occurred: {str(e)}")
         final_results["error"] = f"An unexpected error occurred: {str(e)}"
     
     return final_results
 
-# --- API endpoint for file analysis (now uses the Gemini function) ---
+# --- API endpoint for file analysis ---
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
-    print("\n=== New Analysis Request Started ===")
+    logger.info("New Analysis Request Started")
     mem_usage = get_memory_usage()
     if mem_usage is not None:
-        print(f"Initial memory usage: {mem_usage:.2f} MB")
+        logger.info(f"Initial memory usage: {mem_usage:.2f} MB")
     
     try:
         if 'drawing' not in request.files:
-            print("Error: No file part in request")
+            logger.error("No file part in request")
             return jsonify({"error": "No file part in the request"}), 400
         
         file = request.files['drawing']
         
         if file.filename == '':
-            print("Error: No file selected")
+            logger.error("No file selected")
             return jsonify({"error": "No file selected"}), 400
             
         # Check file size before processing
@@ -538,53 +387,60 @@ def upload_and_analyze():
         file.seek(0)  # Reset file pointer
         
         if file_size > 5:
-            print(f"Error: File too large ({file_size:.1f}MB)")
+            logger.error(f"File too large ({file_size:.1f}MB)")
             return jsonify({
                 "error": "File too large. Please upload a PDF smaller than 5MB"
             }), 400
+            
+        if file and file.filename.lower().endswith('.pdf'):
+            logger.info(f"Processing file: {file.filename}")
+            pdf_bytes = file.read()
+            logger.info(f"File size: {len(pdf_bytes)} bytes")
+            
+            mem_before = get_memory_usage()
+            if mem_before is not None:
+                logger.info(f"Memory before analysis: {mem_before:.2f} MB")
+            
+            try:
+                analysis_results = analyze_drawing_with_gemini(pdf_bytes)
+                
+                mem_after = get_memory_usage()
+                if mem_after is not None:
+                    logger.info(f"Final memory usage: {mem_after:.2f} MB")
+                
+                return jsonify(analysis_results)
+            except MemoryError:
+                mem_usage = get_memory_usage()
+                if mem_usage is not None:
+                    logger.error(f"Memory error occurred. Current usage: {mem_usage:.2f} MB")
+                return jsonify({
+                    "error": "Server memory limit reached. Please try a smaller or simpler PDF file."
+                }), 507
+            except ValueError as ve:
+                logger.error(f"Validation error: {str(ve)}")
+                return jsonify({"error": str(ve)}), 400
+            except Exception as e:
+                logger.error(f"Error processing file: {str(e)}")
+                mem_usage = get_memory_usage()
+                if mem_usage is not None:
+                    logger.error(f"Memory at error: {mem_usage:.2f} MB")
+                return jsonify({
+                    "error": "An error occurred while processing the file",
+                    "details": str(e)
+                }), 500
+        else:
+            logger.error("Invalid file type")
+            return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
+            
     except Exception as e:
-        print(f"Error handling file upload: {str(e)}")
+        logger.error(f"Error handling file upload: {str(e)}")
         return jsonify({"error": "Error processing file upload"}), 500
-    
-    if file and file.filename.lower().endswith('.pdf'):
-        print(f"\nProcessing file: {file.filename}")
-        pdf_bytes = file.read()
-        print(f"File size: {len(pdf_bytes)} bytes")
-        print(f"Memory before analysis: {get_memory_usage():.2f} MB")
-        
-        try:
-            analysis_results = analyze_drawing_with_gemini(pdf_bytes)
-            print("\nAnalysis completed. Results:", json.dumps(analysis_results, indent=2))
-            print(f"Final memory usage: {get_memory_usage():.2f} MB")
-            return jsonify(analysis_results)
-        except MemoryError:
-            mem_usage = get_memory_usage()
-            if mem_usage is not None:
-                print(f"Memory error occurred. Current usage: {mem_usage:.2f} MB")
-            return jsonify({
-                "error": "Server memory limit reached. Please try a smaller or simpler PDF file."
-            }), 507  # 507 Insufficient Storage
-        except ValueError as ve:
-            print(f"Validation error: {str(ve)}")
-            return jsonify({"error": str(ve)}), 400
-        except Exception as e:
-            print(f"Error processing file: {str(e)}")
-            mem_usage = get_memory_usage()
-            if mem_usage is not None:
-                print(f"Memory at error: {mem_usage:.2f} MB")
-            return jsonify({
-                "error": "An error occurred while processing the file",
-                "details": str(e)
-            }), 500
-    else:
-        print("Error: Invalid file type")
-        return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
 
-# --- Route for the main webpage (no change) ---
+# --- Route for the main webpage ---
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# --- Run the application (no change) ---
+# --- Run the application ---
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=True, threaded=True)
