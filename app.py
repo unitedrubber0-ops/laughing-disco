@@ -15,53 +15,83 @@ import tempfile
 
 # --- Helper Functions for Detailed Analysis ---
 def extract_specific_info(text):
-    """Extracts key-value data from the drawing text using regex."""
+    """
+    Extracts key-value data with more flexible regex patterns.
+    Now updated to handle formats from the 4403886C2 drawing.
+    """
     info = {
-        'child_part': 'Not Found',
-        'description': 'Not Found',
-        'specification': 'Not Found',
-        'material': 'Not Found',
-        'od': 'Not Found',
-        'thickness': 'Not Found',
-        'centerline_length': 'Not Found',
-        'working_pressure_kpag': 'Not Found'
+        'child_part': "Not Found",
+        'description': "Not Found",
+        'specification': "Not Found",
+        'material': "Not Found",
+        'id': "Not Found",
+        'centerline_length': "Not Found",
+        'burst_pressure_bar': "Not Found",
+        'working_pressure_kpag': "Not Found",
+        'development_length_mm': "Not Found",
+        'od': "Not Found",
+        'thickness': "Not Found"
     }
 
-    # Part number pattern (e.g., 4717736X1)
-    part_num_match = re.search(r'(\d{7}[Cc]\d)', text)
+    # Part Number: Find the specific C-number format directly
+    part_num_match = re.search(r'(\d{7}[Cc]\d)', text, re.IGNORECASE)
     if part_num_match:
         info['child_part'] = part_num_match.group(1)
 
-    # Standard pattern (e.g., MPAPS F-30)
-    spec_match = re.search(r'MPAPS\s+F-30', text)
+    # Description: Find the "HOSE, ..." pattern
+    desc_match = re.search(r'(HOSE,[\s\w,]+)', text, re.IGNORECASE)
+    if desc_match:
+        info['description'] = desc_match.group(1).strip()
+        
+    # Specification: Find MPAPS F-30
+    spec_match = re.search(r'(MPAPS\s+F-30)', text, re.IGNORECASE)
     if spec_match:
         info['specification'] = spec_match.group(0)
 
-    # Grade pattern
-    grade_match = re.search(r'GRADE\s+(\w+)', text)
-    if grade_match:
-        info['material'] = f"GRADE {grade_match.group(1)}"
+    # Material: Find the Grade
+    material_match = re.search(r'GRADE\s+([\w\d]+)', text, re.IGNORECASE)
+    if material_match:
+        info['material'] = f"GRADE {material_match.group(1)}"
+
+    # ID: Look for "HOSE ID" with an equals sign
+    id_match = re.search(r'HOSE ID\s*=\s*([\d\.]+)', text, re.IGNORECASE)
+    if id_match:
+        info['id'] = id_match.group(1)
+
+    # Centerline Length: Handle various formats
+    ctr_length_match = re.search(r'(?:APPROX\s+)?(?:CTRLINE\s+)?LENGTH\s*[=:]?\s*([\d\.]+)', text, re.IGNORECASE)
+    if ctr_length_match:
+        info['centerline_length'] = ctr_length_match.group(1)
+
+    # Burst pressure (looking for specific format)
+    burst_match = re.search(r'Burst\s+Pressure\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:bar|BAR)', text, re.IGNORECASE)
+    if burst_match:
+        info['burst_pressure_bar'] = burst_match.group(1)
+
+    # Working pressure
+    working_match = re.search(r'Working\s+Pressure\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:kPag|KPAG)', text, re.IGNORECASE)
+    if working_match:
+        info['working_pressure_kpag'] = working_match.group(1)
 
     # Additional measurements
-    od_match = re.search(r'OD[:\s]+(\d+\.?\d*)', text)
+    od_match = re.search(r'OD\s*[=:]?\s*(\d+\.?\d*)', text, re.IGNORECASE)
     if od_match:
         info['od'] = od_match.group(1)
 
-    thickness_match = re.search(r'THICKNESS[:\s]+(\d+\.?\d*)', text)
+    thickness_match = re.search(r'THICKNESS\s*[=:]?\s*(\d+\.?\d*)', text, re.IGNORECASE)
     if thickness_match:
         info['thickness'] = thickness_match.group(1)
-
-    length_match = re.search(r'LENGTH[:\s]+(\d+\.?\d*)', text)
-    if length_match:
-        info['centerline_length'] = length_match.group(1)
-
+        
     return info
 
 def extract_coordinates(text):
-    """Extracts P0, P1, P2... coordinates from the text."""
+    """
+    Extracts P0, P1, P2... coordinates from the text.
+    Updated to handle an optional fourth value (Radius).
+    """
     coords = {}
-    # Pattern for finding coordinates (P0 X Y Z format)
-    pattern = re.compile(r'P(\d)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)')
+    # Regex now handles 3 or 4 numbers per line. It only captures the first 3 (X, Y, Z).
+    pattern = re.compile(r'^P(\d)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)(?:\s+[-\d.]+)?$', re.MULTILINE)
     matches = pattern.findall(text)
     
     for match in matches:
@@ -72,8 +102,9 @@ def extract_coordinates(text):
             'z': float(match[3])
         }
     
-    return sorted([coords[f'P{i}'] for i in range(len(coords)) if f'P{i}' in coords], 
-                 key=lambda x: int(next(k[1] for k in coords.keys() if coords[k] == x)))
+    # Sort coordinates by point number (P0, P1, P2, etc.)
+    sorted_coords = [coords[f'P{i}'] for i in range(len(coords) + 1) if f'P{i}' in coords]
+    return sorted_coords
 
 def calculate_development_length(coords):
     """Calculates the total length by summing distances between consecutive points."""
@@ -189,7 +220,7 @@ except FileNotFoundError:
 # --- NEW: Enhanced function to analyze the PDF text using Gemini API ---
 def analyze_drawing_with_gemini(pdf_bytes):
     print("\n=== Starting Drawing Analysis ===")
-    results = {
+    default_results = {
         "child_part": "Not Found",
         "description": "Not Found",
         "specification": "Not Found",
@@ -294,31 +325,62 @@ def analyze_drawing_with_gemini(pdf_bytes):
         cleaned_response = re.sub(r'```json\s*|\s*```', '', response.text.strip())
         
         # Parse the JSON response from the model
-        extracted_data = json.loads(cleaned_response)
+        ai_results = json.loads(cleaned_response)
 
-        results["part_number"] = extracted_data.get("part_number", "Not Found")
-        results["standard"] = extracted_data.get("standard", "Not Found")
-        results["grade"] = extracted_data.get("grade", "Not Found")
-
-        # --- Step 4: Look up the material in the DataFrame ---
-        if results["standard"] != "Not Found" and results["grade"] != "Not Found":
-            standard_key = results["standard"]
-            grade_key = results["grade"]
+        # Get regex-based results
+        print("\nExtracting information using regex patterns...")
+        regex_results = extract_specific_info(full_text)
+        
+        # Extract coordinates
+        print("Extracting coordinates...")
+        coordinates = extract_coordinates(full_text)
+        
+        # Merge the results, preferring regex results when available
+        final_results = default_results.copy()
+        
+        # Update from regex results
+        for key, value in regex_results.items():
+            if value != "Not Found":
+                final_results[key] = value
+        
+        # Update from AI results if regex didn't find them
+        if final_results["child_part"] == "Not Found" and ai_results.get("part_number", "Not Found") != "Not Found":
+            final_results["child_part"] = ai_results["part_number"]
             
-            match = material_df[
-                material_df['STANDARD'].str.contains(standard_key, na=False, case=False) &
-                (material_df['GRADE'] == grade_key)
-            ]
+        if final_results["specification"] == "Not Found" and ai_results.get("standard", "Not Found") != "Not Found":
+            final_results["specification"] = ai_results["standard"]
             
-            if not match.empty:
-                results["material"] = match.iloc[0]['MATERIAL']
+        if final_results["material"] == "Not Found" and ai_results.get("grade", "Not Found") != "Not Found":
+            grade = ai_results["grade"]
+            standard = ai_results.get("standard", "")
+            
+            # Look up in material database if we have both standard and grade
+            if standard and grade != "Not Found":
+                match = material_df[
+                    material_df['STANDARD'].str.contains(standard, na=False, case=False) &
+                    (material_df['GRADE'] == grade)
+                ]
+                if not match.empty:
+                    final_results["material"] = match.iloc[0]['MATERIAL']
+                else:
+                    final_results["material"] = f"GRADE {grade}"
+        
+        # Add coordinates and calculate development length
+        final_results["coordinates"] = coordinates
+        if coordinates:
+            final_results["development_length_mm"] = f"{calculate_development_length(coordinates):.2f}"
+            
+        print("\nAnalysis Results:")
+        for key, value in final_results.items():
+            if key != "coordinates":  # Skip coordinates to keep output clean
+                print(f"{key}: {value}")
 
     except json.JSONDecodeError:
-        results["error"] = "AI model returned a non-JSON response. Please try again."
+        final_results["error"] = "AI model returned a non-JSON response. Please try again."
     except Exception as e:
-        results["error"] = f"An unexpected error occurred: {str(e)}"
+        final_results["error"] = f"An unexpected error occurred: {str(e)}"
     
-    return results
+    return final_results
 
 # --- API endpoint for file analysis (now uses the Gemini function) ---
 @app.route('/api/analyze', methods=['POST'])
