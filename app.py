@@ -31,6 +31,45 @@ def get_memory_usage():
     except Exception as e:
         print(f"Error getting memory usage: {str(e)}")
         return None
+        
+def process_page_with_gemini(page_image):
+    """Process an image using Gemini Vision API to extract text.
+    
+    Args:
+        page_image: A PIL Image object containing the page to process
+    
+    Returns:
+        str: Extracted text from the image, or empty string if extraction fails
+    """
+    try:
+        # Convert PIL Image to bytes
+        with io.BytesIO() as bio:
+            page_image.save(bio, format='JPEG')
+            image_bytes = bio.getvalue()
+            
+        # Encode image for Gemini
+        encoded_image = base64.b64encode(image_bytes).decode('utf-8')
+        
+        # Configure Gemini model
+        genai.configure(api_key=os.getenv('GEMINI_API_KEY'))
+        model = genai.GenerativeModel('gemini-pro-vision')
+        
+        # Create image part for the model
+        image_part = {
+            'mime_type': 'image/jpeg',
+            'data': encoded_image
+        }
+        
+        # Generate content with image
+        prompt = "Extract and return all visible text from this engineering drawing image. Include numbers, labels, and technical specifications."
+        response = model.generate_content([prompt, image_part])
+        
+        # Return the extracted text
+        return response.text if response.text else ""
+        
+    except Exception as e:
+        print(f"Error in Gemini Vision processing: {str(e)}")
+        return ""
 
 # --- Helper Functions for Detailed Analysis ---
 def extract_specific_info(text):
@@ -221,17 +260,10 @@ def extract_text_from_pdf(pdf_bytes):
             print("------------------------")
             print(full_text)
             print("------------------------")
-                
-                print("\nOCR Results:")
-                print("-----------")
-                print(ocr_text)
-                print("-----------")
-                print(f"Total OCR characters: {len(ocr_text)}")
-                
-                return ocr_text if ocr_text.strip() else full_text
+            return full_text
                 
         except Exception as e:
-            print(f"\nError during OCR processing: {str(e)}")
+            print(f"\nError during text extraction: {str(e)}")
             return full_text
     
     return full_text
@@ -380,19 +412,23 @@ def analyze_drawing_with_gemini(pdf_bytes):
                                                       thread_count=1)  # Reduce thread usage
                         
                         if page_image:
-                            # Preprocess image to reduce memory usage
-            except Exception as e:
-                print(f"Error during Gemini Vision processing: {str(e)}")
-                mem_usage = get_memory_usage()
-                if mem_usage is not None:
-                    print(f"Memory at error: {mem_usage:.2f} MB")
-                return full_text  # Return whatever we got from direct extraction
+                            # Process with Gemini Vision
+                            page_text = process_page_with_gemini(page_image[0])
+                            if page_text:
+                                full_text += page_text + "\n"
+                                
+                    except Exception as e:
+                        print(f"Error during Gemini Vision processing: {str(e)}")
+                        mem_usage = get_memory_usage()
+                        if mem_usage is not None:
+                            print(f"Memory at error: {mem_usage:.2f} MB")
+                        continue  # Try next page instead of returning
 
-            print(f"Gemini Vision processing complete. Found {len(full_text)} characters.")
-                final_results["error"] = "No text could be extracted via OCR."
+                print(f"Gemini Vision processing complete. Found {len(full_text)} characters.")
+                final_results["error"] = "No text could be extracted from the PDF."
                 return final_results
 
-        # --- Step 2: Prepare the prompt for the Gemini API ---
+        # --- Step 2: Process with Gemini Vision API ---
         model = genai.GenerativeModel('gemini-1.5-flash') # Use a fast and capable model
         
         prompt = f"""
@@ -491,9 +527,6 @@ def upload_and_analyze():
             return jsonify({"error": "No file part in the request"}), 400
         
         file = request.files['drawing']
-    except Exception as e:
-        print(f"Error handling file upload: {str(e)}")
-        return jsonify({"error": "Error processing file upload"}), 500
         
         if file.filename == '':
             print("Error: No file selected")
@@ -509,7 +542,9 @@ def upload_and_analyze():
             return jsonify({
                 "error": "File too large. Please upload a PDF smaller than 5MB"
             }), 400
-        return jsonify({"error": "No file selected"}), 400
+    except Exception as e:
+        print(f"Error handling file upload: {str(e)}")
+        return jsonify({"error": "Error processing file upload"}), 500
     
     if file and file.filename.lower().endswith('.pdf'):
         print(f"\nProcessing file: {file.filename}")
