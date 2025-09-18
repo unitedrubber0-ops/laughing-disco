@@ -12,13 +12,25 @@ from pdf2image import convert_from_bytes
 from PIL import Image
 import io
 import tempfile
-import psutil
+
+# Try to import psutil with fallback
+try:
+    import psutil
+except ImportError:
+    psutil = None
+    print("Warning: psutil not found. Memory logging disabled.")
 import os
 
 def get_memory_usage():
-    """Returns current memory usage in MB."""
-    process = psutil.Process(os.getpid())
-    return process.memory_info().rss / 1024 / 1024
+    """Returns current memory usage in MB, or None if psutil is not available."""
+    if psutil is None:
+        return None
+    try:
+        process = psutil.Process(os.getpid())
+        return process.memory_info().rss / 1024 / 1024
+    except Exception as e:
+        print(f"Error getting memory usage: {str(e)}")
+        return None
 
 # --- Helper Functions for Detailed Analysis ---
 def extract_specific_info(text):
@@ -305,7 +317,9 @@ def analyze_drawing_with_gemini(pdf_bytes):
         # --- OCR Fallback Logic ---
         if not full_text.strip():
             print("No selectable text found. Attempting memory-efficient OCR fallback.")
-            print(f"Initial memory usage: {get_memory_usage():.2f} MB")
+            mem_usage = get_memory_usage()
+            if mem_usage is not None:
+                print(f"Initial memory usage: {mem_usage:.2f} MB")
             full_text = ""
 
             # Check file size before proceeding
@@ -323,7 +337,9 @@ def analyze_drawing_with_gemini(pdf_bytes):
                 # Process one page at a time
                 for i in range(page_count):
                     print(f"Converting and processing OCR for page {i+1}/{page_count}...")
-                    print(f"Memory before page {i+1}: {get_memory_usage():.2f} MB")
+                    mem_usage = get_memory_usage()
+                    if mem_usage is not None:
+                        print(f"Memory before page {i+1}: {mem_usage:.2f} MB")
                     
                     try:
                         # Convert only the single page to an image with optimized parameters
@@ -360,7 +376,9 @@ def analyze_drawing_with_gemini(pdf_bytes):
                             
                     except Exception as page_e:
                         print(f"Could not process page {i+1}: {page_e}")
-                        print(f"Memory at error: {get_memory_usage():.2f} MB")
+                        mem_usage = get_memory_usage()
+                        if mem_usage is not None:
+                            print(f"Memory at error: {mem_usage:.2f} MB")
                         continue  # Move to the next page
 
             print(f"OCR processing complete. Found {len(full_text)} characters.")
@@ -457,7 +475,9 @@ def analyze_drawing_with_gemini(pdf_bytes):
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
     print("\n=== New Analysis Request Started ===")
-    print(f"Initial memory usage: {get_memory_usage():.2f} MB")
+    mem_usage = get_memory_usage()
+    if mem_usage is not None:
+        print(f"Initial memory usage: {mem_usage:.2f} MB")
     
     try:
         if 'drawing' not in request.files:
@@ -497,7 +517,9 @@ def upload_and_analyze():
             print(f"Final memory usage: {get_memory_usage():.2f} MB")
             return jsonify(analysis_results)
         except MemoryError:
-            print(f"Memory error occurred. Current usage: {get_memory_usage():.2f} MB")
+            mem_usage = get_memory_usage()
+            if mem_usage is not None:
+                print(f"Memory error occurred. Current usage: {mem_usage:.2f} MB")
             return jsonify({
                 "error": "Server memory limit reached. Please try a smaller or simpler PDF file."
             }), 507  # 507 Insufficient Storage
@@ -506,7 +528,9 @@ def upload_and_analyze():
             return jsonify({"error": str(ve)}), 400
         except Exception as e:
             print(f"Error processing file: {str(e)}")
-            print(f"Memory at error: {get_memory_usage():.2f} MB")
+            mem_usage = get_memory_usage()
+            if mem_usage is not None:
+                print(f"Memory at error: {mem_usage:.2f} MB")
             return jsonify({
                 "error": "An error occurred while processing the file",
                 "details": str(e)
