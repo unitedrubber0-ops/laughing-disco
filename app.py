@@ -2,6 +2,7 @@ import os
 import re
 import json
 import math
+import base64
 import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
@@ -34,6 +35,51 @@ def get_memory_usage():
     except Exception as e:
         logger.error(f"Error getting memory usage: {str(e)}")
         return None
+
+def process_page_with_gemini(page_image):
+    """Process a page image using Gemini Vision API.
+    
+    Args:
+        page_image: A PIL Image object containing the page to process
+        
+    Returns:
+        str: Extracted text from the image, or empty string if extraction fails
+    """
+    try:
+        # Convert PIL Image to bytes
+        buffered = io.BytesIO()
+        page_image.save(buffered, format="JPEG")
+        img_bytes = buffered.getvalue()
+        
+        # Encode image for Gemini
+        img_base64 = base64.b64encode(img_bytes).decode()
+        
+        # Configure and use Gemini model
+        model = genai.GenerativeModel('gemini-pro-vision')
+        prompt = """Extract all readable text from this engineering drawing image. Focus on:
+        - Part numbers (e.g., 7 digits + C + digit)
+        - Material standards (e.g., MPAPS F-30)
+        - Grades
+        - Coordinates (P0-Pn with X/Y/Z values)
+        - Dimensions and measurements
+        - Pressure specifications
+        - Part descriptions
+        Output as clean, structured text with clear labeling."""
+        
+        # Generate content with image
+        response = model.generate_content([
+            prompt,
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
+        ])
+        
+        # Clean up
+        del buffered, img_bytes, img_base64
+        
+        return response.text if response.text else ""
+        
+    except Exception as e:
+        logger.error(f"Error in Gemini Vision processing: {str(e)}")
+        return ""
 
 # --- Helper Functions for Detailed Analysis ---
 def extract_specific_info(text):
@@ -187,27 +233,25 @@ def extract_text_from_pdf(pdf_bytes):
                 )
                 
                 if images:
-                    image = images[0]
-                    # Convert to grayscale and resize to reduce memory
-                    image = image.convert('L')
-                    image = image.resize((int(image.width * 0.5), int(image.height * 0.5)))
-                    
-                    page_text = pytesseract.image_to_string(image, config='--oem 3 --psm 6')
-                    ocr_text += page_text + "\n"
+                    # Process with Gemini Vision
+                    page_text = process_page_with_gemini(images[0])
+                    if page_text:
+                        full_text += page_text + "\n"
                     
                     # Clean up
-                    image.close()
+                    for img in images:
+                        img.close()
                     del images
-                    gc.collect()
             
             pdf_document.close()
-            os.unlink(temp_pdf_path)
+            if 'temp_pdf_path' in locals():
+                os.unlink(temp_pdf_path)
             
-            logger.info(f"OCR extracted {len(ocr_text)} characters")
-            return ocr_text if ocr_text.strip() else full_text
+            logger.info(f"Text extraction complete. Found {len(full_text)} characters")
+            return full_text
                 
         except Exception as e:
-            logger.error(f"Error during OCR processing: {str(e)}")
+            logger.error(f"Error during text extraction: {str(e)}")
             return full_text
     
     return full_text
