@@ -222,12 +222,6 @@ def extract_text_from_pdf(pdf_bytes):
             print(full_text)
             print("------------------------")
                 
-                for i, image in enumerate(images):
-                    print(f"  - Processing page {i+1} with OCR...")
-                    page_text = pytesseract.image_to_string(image)
-                    ocr_text += page_text + "\n"
-                    print(f"    Extracted {len(page_text)} characters")
-                
                 print("\nOCR Results:")
                 print("-----------")
                 print(ocr_text)
@@ -387,37 +381,14 @@ def analyze_drawing_with_gemini(pdf_bytes):
                         
                         if page_image:
                             # Preprocess image to reduce memory usage
-                            img = page_image[0].convert('L')  # Convert to grayscale
-                            # Resize to 75% while maintaining aspect ratio
-                            new_width = int(img.width * 0.75)
-                            new_height = int(img.height * 0.75)
-                            img = img.resize((new_width, new_height))
-                            
-                            # OCR with optimized configuration
-                            page_text = pytesseract.image_to_string(
-                                img,
-                                config='--oem 3 --psm 6'  # Assume uniform text block
-                            )
-                            full_text += page_text + "\n"
-                            
-                            # Clean up to free memory
-                            img.close()
-                            page_image[0].close()
-                            del img
-                            del page_image
-                            
-                            # Clean Tesseract temporary files
-                            pytesseract.pytesseract.cleanup('/tmp/tess*')
-                            
-                    except Exception as page_e:
-                        print(f"Could not process page {i+1}: {page_e}")
-                        mem_usage = get_memory_usage()
-                        if mem_usage is not None:
-                            print(f"Memory at error: {mem_usage:.2f} MB")
-                        continue  # Move to the next page
+            except Exception as e:
+                print(f"Error during Gemini Vision processing: {str(e)}")
+                mem_usage = get_memory_usage()
+                if mem_usage is not None:
+                    print(f"Memory at error: {mem_usage:.2f} MB")
+                return full_text  # Return whatever we got from direct extraction
 
-            print(f"OCR processing complete. Found {len(full_text)} characters.")
-            if not full_text.strip():
+            print(f"Gemini Vision processing complete. Found {len(full_text)} characters.")
                 final_results["error"] = "No text could be extracted via OCR."
                 return final_results
 
