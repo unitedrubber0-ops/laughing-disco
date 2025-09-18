@@ -221,6 +221,24 @@ app.config['MIME_TYPES'] = {
     '.css': 'text/css'
 }
 
+# --- Helper function to initialize default results ---
+def get_default_results():
+    """Returns a dictionary with default values for analysis results."""
+    return {
+        "child_part": "Not Found",
+        "description": "Not Found",
+        "specification": "Not Found",
+        "material": "Not Found",
+        "od": "Not Found",
+        "thickness": "Not Found",
+        "centerline_length": "Not Found",
+        "development_length_mm": "Not Found",
+        "working_pressure_kpag": "Not Found",
+        "burst_pressure_bar": "Not Found",
+        "coordinates": [],
+        "error": None
+    }
+
 # --- Load the material database from the CSV file ---
 try:
     material_df = pd.read_csv('material_data.csv')
@@ -389,7 +407,7 @@ def analyze_drawing_with_gemini(pdf_bytes):
         coordinates = extract_coordinates(full_text)
         
         # Merge the results, preferring regex results when available
-        final_results = default_results.copy()
+        final_results = get_default_results()
         
         # Update from regex results
         for key, value in regex_results.items():
@@ -447,6 +465,9 @@ def upload_and_analyze():
             return jsonify({"error": "No file part in the request"}), 400
         
         file = request.files['drawing']
+    except Exception as e:
+        print(f"Error handling file upload: {str(e)}")
+        return jsonify({"error": "Error processing file upload"}), 500
         
         if file.filename == '':
             print("Error: No file selected")
