@@ -76,12 +76,14 @@ def process_page_with_gemini(page_image):
         img_size_mb = len(img_bytes) / (1024 * 1024)
         logger.info(f"Image size: {img_size_mb:.2f} MB")
         
-        # Encode image for Gemini
-        img_base64 = base64.b64encode(img_bytes).decode()
-        
         # Configure and use Gemini model
-        logger.info("Initializing Gemini model...")
-        model = genai.GenerativeModel('gemini-pro-vision')
+        logger.info("Initializing Gemini Vision model...")
+        # Use a model that is explicitly listed as available for vision tasks
+        # 'gemini-1.5-flash-latest' or 'gemini-1.5-pro-latest' are good options
+        # You might also want to try 'gemini-pro-vision' if you confirm its availability
+        # and API version in your environment.
+        model = genai.GenerativeModel('gemini-1.5-flash-latest') # Changed model name
+        
         prompt = """Extract all readable text from this engineering drawing image. Focus on:
         - Part numbers (e.g., 7 digits + C + digit)
         - Material standards (e.g., MPAPS F-30)
@@ -95,7 +97,7 @@ def process_page_with_gemini(page_image):
         # Prepare the content parts
         content_parts = [
             prompt,
-            {"mime_type": "image/jpeg", "data": img_base64}
+            Image.open(io.BytesIO(img_bytes)) # Pass PIL Image object directly
         ]
         
         # Generate content with image
@@ -103,7 +105,7 @@ def process_page_with_gemini(page_image):
         response = model.generate_content(content_parts)
         
         # Clean up
-        del buffered, img_bytes, img_base64
+        del buffered, img_bytes
         
         if response and response.text:
             logger.info(f"Gemini Vision processing successful. Extracted {len(response.text)} characters")
@@ -279,18 +281,19 @@ def extract_text_from_pdf(pdf_bytes):
         logger.info("Direct extraction yielded limited text. Attempting Gemini Vision...")
         try:
             # Convert PDF to images one page at a time to manage memory
+            # Use tempfile to write PDF bytes for convert_from_bytes
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
                 temp_pdf.write(pdf_bytes)
-                temp_pdf_path = temp_pdf.name
+            temp_pdf_path = temp_pdf.name
             
             # Initialize text collection
             full_text = ""
-            pdf_document = fitz.open(temp_pdf_path)
+            pdf_document = fitz.open(temp_pdf_path) # Re-open PDF with path for convert_from_path
             
             for page_num in range(len(pdf_document)):
-                # Convert only the current page to an image
-                images = convert_from_bytes(
-                    pdf_bytes, 
+                # Convert only the current page to an image from the temporary file path
+                images = convert_from_path(
+                    temp_pdf_path,
                     first_page=page_num + 1, 
                     last_page=page_num + 1,
                     dpi=100,  # Lower DPI to reduce memory
@@ -310,14 +313,13 @@ def extract_text_from_pdf(pdf_bytes):
                     del images
             
             pdf_document.close()
-            if 'temp_pdf_path' in locals():
-                os.unlink(temp_pdf_path)
+            os.unlink(temp_pdf_path) # Delete the temporary PDF file
             
             logger.info(f"Text extraction complete. Found {len(full_text)} characters")
             return full_text
                 
         except Exception as e:
-            logger.error(f"Error during text extraction: {str(e)}")
+            logger.error(f"Error during text extraction with Gemini Vision: {str(e)}")
             return full_text
     
     return full_text
@@ -325,9 +327,11 @@ def extract_text_from_pdf(pdf_bytes):
 # --- Configuration ---
 try:
     api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("GEMINI_API_KEY environment variable not set.")
     genai.configure(api_key=api_key)
 except Exception as e:
-    logger.error(f"API Key not found in environment variables: {e}")
+    logger.error(f"Failed to configure Gemini API: {e}")
 
 # Initialize the Flask application
 app = Flask(__name__, static_url_path='/static')
@@ -357,17 +361,6 @@ def get_default_results():
         "coordinates": [],
         "error": None
     }
-
-# --- Load the material database from the CSV file ---
-try:
-    material_df = pd.read_csv('material_data.csv')
-    material_df.columns = material_df.columns.str.strip()
-    material_df['STANDARD'] = material_df['STANDARD'].str.strip()
-    material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
-    logger.info("Material database loaded successfully.")
-except FileNotFoundError:
-    logger.error("material_data.csv not found. Please ensure the file exists.")
-    material_df = pd.DataFrame()
 
 # --- Enhanced function to analyze the PDF text using Gemini API ---
 def analyze_drawing_with_gemini(pdf_bytes):
@@ -412,7 +405,8 @@ def analyze_drawing_with_gemini(pdf_bytes):
         if final_results["child_part"] == "Not Found" or final_results["specification"] == "Not Found":
             logger.info("Using Gemini API to extract missing information...")
             
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            # Using 'gemini-1.5-flash-latest' for text-only processing as well
+            model = genai.GenerativeModel('gemini-1.5-flash-latest') 
             
             prompt = f"""
             Analyze the following text extracted from a technical engineering drawing. Find:
@@ -448,16 +442,19 @@ def analyze_drawing_with_gemini(pdf_bytes):
                     
                     # Look up in material database
                     if standard and grade != "Not Found":
+                        # Normalize standard for better matching
+                        normalized_standard_ai = str(standard).upper().replace("-", "").replace(" ", "").replace("/", "")
+                        
                         match = material_df[
-                            material_df['STANDARD'].str.contains(standard, na=False, case=False) &
-                            (material_df['GRADE'] == grade)
+                            material_df['STANDARD'].apply(lambda x: str(x).upper().replace("-", "").replace(" ", "").replace("/", "")).str.contains(normalized_standard_ai, na=False) &
+                            (material_df['GRADE'].astype(str).str.upper() == grade.upper())
                         ]
                         if not match.empty:
                             final_results["material"] = match.iloc[0]['MATERIAL']
                         else:
                             final_results["material"] = f"GRADE {grade}"
             except json.JSONDecodeError:
-                logger.warning("AI model returned a non-JSON response")
+                logger.warning(f"AI model returned a non-JSON response: {cleaned_response}")
         
         logger.info("Analysis completed successfully")
         for key, value in final_results.items():
@@ -490,9 +487,8 @@ def upload_and_analyze():
             return jsonify({"error": "No file selected"}), 400
             
         # Check file size before processing
-        file.seek(0, 2)  # Seek to end of file
-        file_size = file.tell() / (1024 * 1024)  # Size in MB
-        file.seek(0)  # Reset file pointer
+        file_content = file.read() # Read content once to check size and pass to functions
+        file_size = len(file_content) / (1024 * 1024)  # Size in MB
         
         if file_size > 5:
             logger.error(f"File too large ({file_size:.1f}MB)")
@@ -502,7 +498,7 @@ def upload_and_analyze():
             
         if file and file.filename.lower().endswith('.pdf'):
             logger.info(f"Processing file: {file.filename}")
-            pdf_bytes = file.read()
+            pdf_bytes = file_content # Use the already read content
             logger.info(f"File size: {len(pdf_bytes)} bytes")
             
             mem_before = get_memory_usage()
