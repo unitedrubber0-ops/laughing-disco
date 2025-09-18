@@ -12,6 +12,13 @@ from pdf2image import convert_from_bytes
 from PIL import Image
 import io
 import tempfile
+import psutil
+import os
+
+def get_memory_usage():
+    """Returns current memory usage in MB."""
+    process = psutil.Process(os.getpid())
+    return process.memory_info().rss / 1024 / 1024
 
 # --- Helper Functions for Detailed Analysis ---
 def extract_specific_info(text):
@@ -280,7 +287,13 @@ def analyze_drawing_with_gemini(pdf_bytes):
         # --- OCR Fallback Logic ---
         if not full_text.strip():
             print("No selectable text found. Attempting memory-efficient OCR fallback.")
+            print(f"Initial memory usage: {get_memory_usage():.2f} MB")
             full_text = ""
+
+            # Check file size before proceeding
+            if len(pdf_bytes) > 5 * 1024 * 1024:  # 5MB limit
+                raise ValueError("File too large for OCR processing (>5MB)")
+
             # Use a temporary file to avoid holding everything in memory
             with tempfile.NamedTemporaryFile(suffix=".pdf") as temp:
                 temp.write(pdf_bytes)
@@ -292,15 +305,45 @@ def analyze_drawing_with_gemini(pdf_bytes):
                 # Process one page at a time
                 for i in range(page_count):
                     print(f"Converting and processing OCR for page {i+1}/{page_count}...")
+                    print(f"Memory before page {i+1}: {get_memory_usage():.2f} MB")
+                    
                     try:
-                        # Convert only the single page to an image
-                        page_image = convert_from_bytes(pdf_bytes, first_page=i+1, last_page=i+1)
+                        # Convert only the single page to an image with optimized parameters
+                        page_image = convert_from_bytes(pdf_bytes, 
+                                                      first_page=i+1, 
+                                                      last_page=i+1, 
+                                                      dpi=150,  # Lower DPI
+                                                      fmt='jpeg',  # Use JPEG format
+                                                      thread_count=1)  # Reduce thread usage
+                        
                         if page_image:
-                            page_text = pytesseract.image_to_string(page_image[0])
+                            # Preprocess image to reduce memory usage
+                            img = page_image[0].convert('L')  # Convert to grayscale
+                            # Resize to 75% while maintaining aspect ratio
+                            new_width = int(img.width * 0.75)
+                            new_height = int(img.height * 0.75)
+                            img = img.resize((new_width, new_height))
+                            
+                            # OCR with optimized configuration
+                            page_text = pytesseract.image_to_string(
+                                img,
+                                config='--oem 3 --psm 6'  # Assume uniform text block
+                            )
                             full_text += page_text + "\n"
+                            
+                            # Clean up to free memory
+                            img.close()
+                            page_image[0].close()
+                            del img
+                            del page_image
+                            
+                            # Clean Tesseract temporary files
+                            pytesseract.pytesseract.cleanup('/tmp/tess*')
+                            
                     except Exception as page_e:
                         print(f"Could not process page {i+1}: {page_e}")
-                        continue # Move to the next page
+                        print(f"Memory at error: {get_memory_usage():.2f} MB")
+                        continue  # Move to the next page
 
             print(f"OCR processing complete. Found {len(full_text)} characters.")
             if not full_text.strip():
@@ -396,25 +439,57 @@ def analyze_drawing_with_gemini(pdf_bytes):
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
     print("\n=== New Analysis Request Started ===")
+    print(f"Initial memory usage: {get_memory_usage():.2f} MB")
     
-    if 'drawing' not in request.files:
-        print("Error: No file part in request")
-        return jsonify({"error": "No file part in the request"}), 400
-    
-    file = request.files['drawing']
-    
-    if file.filename == '':
-        print("Error: No file selected")
+    try:
+        if 'drawing' not in request.files:
+            print("Error: No file part in request")
+            return jsonify({"error": "No file part in the request"}), 400
+        
+        file = request.files['drawing']
+        
+        if file.filename == '':
+            print("Error: No file selected")
+            return jsonify({"error": "No file selected"}), 400
+            
+        # Check file size before processing
+        file.seek(0, 2)  # Seek to end of file
+        file_size = file.tell() / (1024 * 1024)  # Size in MB
+        file.seek(0)  # Reset file pointer
+        
+        if file_size > 5:
+            print(f"Error: File too large ({file_size:.1f}MB)")
+            return jsonify({
+                "error": "File too large. Please upload a PDF smaller than 5MB"
+            }), 400
         return jsonify({"error": "No file selected"}), 400
     
     if file and file.filename.lower().endswith('.pdf'):
         print(f"\nProcessing file: {file.filename}")
         pdf_bytes = file.read()
         print(f"File size: {len(pdf_bytes)} bytes")
+        print(f"Memory before analysis: {get_memory_usage():.2f} MB")
         
-        analysis_results = analyze_drawing_with_gemini(pdf_bytes)
-        print("\nAnalysis completed. Results:", json.dumps(analysis_results, indent=2))
-        return jsonify(analysis_results)
+        try:
+            analysis_results = analyze_drawing_with_gemini(pdf_bytes)
+            print("\nAnalysis completed. Results:", json.dumps(analysis_results, indent=2))
+            print(f"Final memory usage: {get_memory_usage():.2f} MB")
+            return jsonify(analysis_results)
+        except MemoryError:
+            print(f"Memory error occurred. Current usage: {get_memory_usage():.2f} MB")
+            return jsonify({
+                "error": "Server memory limit reached. Please try a smaller or simpler PDF file."
+            }), 507  # 507 Insufficient Storage
+        except ValueError as ve:
+            print(f"Validation error: {str(ve)}")
+            return jsonify({"error": str(ve)}), 400
+        except Exception as e:
+            print(f"Error processing file: {str(e)}")
+            print(f"Memory at error: {get_memory_usage():.2f} MB")
+            return jsonify({
+                "error": "An error occurred while processing the file",
+                "details": str(e)
+            }), 500
     else:
         print("Error: Invalid file type")
         return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
