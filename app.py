@@ -81,7 +81,7 @@ def process_page_with_gemini(page_image):
         
         # Configure and use Gemini model
         logger.info("Initializing Gemini model...")
-        model = genai.GenerativeModel('gemini-1.0-pro-vision-latest')
+        model = genai.GenerativeModel('gemini-pro-vision')
         prompt = """Extract all readable text from this engineering drawing image. Focus on:
         - Part numbers (e.g., 7 digits + C + digit)
         - Material standards (e.g., MPAPS F-30)
