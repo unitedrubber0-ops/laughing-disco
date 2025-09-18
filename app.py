@@ -21,13 +21,20 @@ logger = logging.getLogger(__name__)
 ## --- Load the material database from the Excel file ---
 try:
     material_df = pd.read_excel('MATERIAL WITH STANDARD.xlsx', sheet_name='Sheet1')
+    
+    # Clean up column names and data
     material_df.columns = material_df.columns.str.strip()
     material_df['STANDARD'] = material_df['STANDARD'].astype(str).str.strip()
     material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
     material_df['MATERIAL'] = material_df['MATERIAL'].astype(str).str.strip()
+    
+    # Handle multi-line materials by replacing newlines with spaces
+    material_df['MATERIAL'] = material_df['MATERIAL'].str.replace('\n', ' ', regex=False)
+    
     logger.info("Material database loaded successfully.")
-except FileNotFoundError:
-    logger.error("MATERIAL WITH STANDARD.xlsx not found. Please ensure the file exists.")
+    logger.info(f"Found {len(material_df)} material entries")
+except Exception as e:
+    logger.error(f"Error loading material database: {str(e)}")
     material_df = pd.DataFrame()
 
 # Try to import psutil with fallback
@@ -138,22 +145,26 @@ def extract_specific_info(text):
     if spec_match:
         info['specification'] = spec_match.group(0).replace(" ", "")
     
-    # Material: Find the Grade
+    # Material: Find the Grade and look up in database
     material_match = re.search(r'GRADE\s+([\w\d]+)', text, re.IGNORECASE)
     if material_match:
         grade = material_match.group(1)
         
         # Try to find the material type based on standard and grade
         if info['specification'] != "Not Found":
-            # Look up in material database
+            # Create a normalized version of the specification for matching
+            normalized_spec = info['specification'].upper().replace("-", "").replace(" ", "")
+            
+            # Look for matches in the database
             match = material_df[
-                material_df['STANDARD'].str.contains(info['specification'], na=False, case=False) &
-                (material_df['GRADE'] == grade)
+                material_df['STANDARD'].apply(lambda x: str(x).upper().replace("-", "").replace(" ", "").replace("/", "")).str.contains(normalized_spec, na=False) &
+                (material_df['GRADE'].astype(str).str.upper() == grade.upper())
             ]
+            
             if not match.empty:
                 info['material'] = match.iloc[0]['MATERIAL']
             else:
-                info['material'] = f"GRADE {grade}"
+                info['material'] = f"GRADE {grade} (Material not found in database)"
         else:
             info['material'] = f"GRADE {grade}"
 
