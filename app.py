@@ -2,12 +2,12 @@ import os
 import re
 import json
 import math
+import base64
 import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS  # Added for CORS support
-import pytesseract
 from pdf2image import convert_from_bytes
 from PIL import Image
 import io
@@ -152,10 +152,10 @@ def calculate_development_length(coords):
 
 # Function to extract text with detailed logging
 def extract_text_from_pdf(pdf_bytes):
-    """Extract text from PDF with fallback to OCR and detailed logging."""
+    """Extract text with PyMuPDF first, fallback to Gemini Vision."""
     print("\n=== Starting PDF Text Extraction ===")
     
-    # Step 1: Try direct text extraction
+    # Step 1: Direct extraction
     print("\n1. Attempting direct text extraction with PyMuPDF...")
     pdf_document = fitz.open("pdf", pdf_bytes)
     full_text = ""
@@ -175,17 +175,52 @@ def extract_text_from_pdf(pdf_bytes):
     print("------------------------")
     print(f"Total characters extracted: {len(full_text)}")
     
-    # Step 2: If direct extraction yields little text, try OCR
+    # Step 2: If direct extraction yields little text, use Gemini Vision
     if len(full_text.strip()) < 100:
-        print("\n2. Direct extraction yielded limited text. Attempting OCR...")
+        print("\n2. Direct extraction limited. Using Gemini Vision...")
         try:
-            with tempfile.NamedTemporaryFile(suffix=".pdf") as temp_pdf:
-                temp_pdf.write(pdf_bytes)
-                temp_pdf.flush()
-                
-                # Convert PDF pages to images one at a time
-                ocr_text = ""
-                images = convert_from_bytes(pdf_bytes)
+            # Lightweight conversion (first page for simplicity)
+            page_image = convert_from_bytes(pdf_bytes, 
+                                         first_page=1, 
+                                         last_page=1, 
+                                         dpi=100, 
+                                         fmt='jpeg')
+            
+            # Base64 encode
+            buffered = io.BytesIO()
+            page_image[0].save(buffered, format="JPEG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode()
+            
+            # Gemini model configuration
+            model = genai.GenerativeModel('gemini-1.5-pro')  # Using pro for better accuracy
+            
+            # Prompt for extraction
+            prompt = """Extract all readable text from this engineering drawing image. Focus on:
+            - Part numbers (e.g., 7 digits + C + digit)
+            - Material standards (e.g., MPAPS F-30)
+            - Grades
+            - Coordinates (P0-Pn with X/Y/Z values)
+            - Dimensions and measurements
+            - Pressure specifications
+            - Part descriptions
+            Output as clean, structured text with clear labeling."""
+            
+            # Generate content with image
+            response = model.generate_content([
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
+            ])
+            
+            # Update full text with Gemini Vision results
+            full_text = response.text
+            
+            # Cleanup
+            del page_image, buffered
+            
+            print("\nGemini Vision Results:")
+            print("------------------------")
+            print(full_text)
+            print("------------------------")
                 
                 for i, image in enumerate(images):
                     print(f"  - Processing page {i+1} with OCR...")
