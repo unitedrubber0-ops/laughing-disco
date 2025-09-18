@@ -86,12 +86,19 @@ def extract_specific_info(text):
 
 def extract_coordinates(text):
     """
-    Extracts P0, P1, P2... coordinates from the text.
-    Updated to handle an optional fourth value (Radius).
+    Extracts P0, P1, P2... coordinates.
+    Updated with a stricter regex to only match valid floating-point numbers.
     """
     coords = {}
-    # Regex now handles 3 or 4 numbers per line. It only captures the first 3 (X, Y, Z).
-    pattern = re.compile(r'^P(\d)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)(?:\s+[-\d.]+)?$', re.MULTILINE)
+    # This pattern matches an optional hyphen ONLY at the start of a number.
+    # It prevents matching strings with hyphens in the middle.
+    valid_float_pattern = r'-?\d+\.?\d*'
+    
+    # The overall pattern now looks for P<num> followed by 3 or 4 valid numbers.
+    pattern = re.compile(
+        r'^P(\d+)\s+(' + valid_float_pattern + r')\s+(' + valid_float_pattern + r')\s+(' + valid_float_pattern + r')(?:\s+' + valid_float_pattern + r')?$',
+        re.MULTILINE
+    )
     matches = pattern.findall(text)
     
     for match in matches:
@@ -102,8 +109,9 @@ def extract_coordinates(text):
             'z': float(match[3])
         }
     
-    # Sort coordinates by point number (P0, P1, P2, etc.)
-    sorted_coords = [coords[f'P{i}'] for i in range(len(coords) + 1) if f'P{i}' in coords]
+    # Sort by integer value of the point number
+    sorted_keys = sorted(coords.keys(), key=lambda p: int(p[1:]))
+    sorted_coords = [coords[key] for key in sorted_keys]
     return sorted_coords
 
 def calculate_development_length(coords):
@@ -220,7 +228,9 @@ except FileNotFoundError:
 # --- NEW: Enhanced function to analyze the PDF text using Gemini API ---
 def analyze_drawing_with_gemini(pdf_bytes):
     print("\n=== Starting Drawing Analysis ===")
-    default_results = {
+    
+    # Initialize results dictionary before the try block
+    final_results = {
         "child_part": "Not Found",
         "description": "Not Found",
         "specification": "Not Found",
@@ -294,8 +304,8 @@ def analyze_drawing_with_gemini(pdf_bytes):
 
             print(f"OCR processing complete. Found {len(full_text)} characters.")
             if not full_text.strip():
-                results["error"] = "No text could be extracted via OCR."
-                return results
+                final_results["error"] = "No text could be extracted via OCR."
+                return final_results
 
         # --- Step 2: Prepare the prompt for the Gemini API ---
         model = genai.GenerativeModel('gemini-1.5-flash') # Use a fast and capable model
