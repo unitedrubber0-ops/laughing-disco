@@ -82,6 +82,29 @@ def process_page_with_gemini(page_image):
         return ""
 
 # --- Helper Functions for Detailed Analysis ---
+def load_feasibility_data():
+    """Load data from FEASIBILITY 24251022.xlsx worksheet 'FETCH FROM DRAWING'"""
+    try:
+        # Read the Excel file
+        df = pd.read_excel('FEASIBILITY 24251022.xlsx', sheet_name='FETCH FROM DRAWING')
+        
+        # Extract the relevant row (assuming it's the last row with data)
+        material_data = df.iloc[-1] if len(df) > 0 else None
+        
+        if material_data is not None:
+            return {
+                'specification': material_data.get('SPECIFICATION', 'Not Found'),
+                'material': material_data.get('MATERIAL', 'Not Found'),
+                'reinforcement': material_data.get('REINFORCEMENT', 'Not Found'),
+                'id': material_data.get('ID1 AS PER 2D (MM)', 'Not Found'),
+                'centerline_length': material_data.get('CENTERLINE LENGTH AS PER 2D (MM)', 'Not Found'),
+                'burst_pressure': material_data.get('BURST PRESSURE AS PER 2D (BAR)', 'Not Found')
+            }
+        return {}
+    except Exception as e:
+        logger.error(f"Error loading feasibility data: {str(e)}")
+        return {}
+
 def extract_specific_info(text):
     """Extracts key-value data with more flexible regex patterns."""
     info = {
@@ -89,6 +112,7 @@ def extract_specific_info(text):
         'description': "Not Found",
         'specification': "Not Found",
         'material': "Not Found",
+        'reinforcement': "Not Found",
         'id': "Not Found",
         'centerline_length': "Not Found",
         'burst_pressure_bar': "Not Found",
@@ -98,40 +122,68 @@ def extract_specific_info(text):
         'thickness': "Not Found"
     }
 
-    # Part Number
-    part_num_match = re.search(r'(\d{7}[Cc]\d)', text, re.IGNORECASE)
+    # Load data from feasibility worksheet
+    feasibility_data = load_feasibility_data()
+    
+    # Part Number: Find the specific C-number format directly
+    part_num_match = re.search(r'(\d{7}[Cc]\d(?: Rev [A-Z])?)', text, re.IGNORECASE)
     if part_num_match:
         info['child_part'] = part_num_match.group(1)
 
-    # Description
+    # Description: Find the "HOSE, ..." pattern
     desc_match = re.search(r'(HOSE,[\s\w,]+)', text, re.IGNORECASE)
     if desc_match:
         info['description'] = desc_match.group(1).strip()
         
-    # Specification
-    spec_match = re.search(r'(MPAPS\s+F-30)', text, re.IGNORECASE)
+    # Specification: Find MPAPS F-30 or similar
+    spec_match = re.search(r'(MPAPS\s*F[- ]*\d+)', text, re.IGNORECASE)
     if spec_match:
-        info['specification'] = spec_match.group(0)
+        info['specification'] = spec_match.group(0).replace(" ", "")
+    elif feasibility_data.get('specification'):
+        info['specification'] = feasibility_data['specification']
 
-    # Material
+    # Material: Find the Grade
     material_match = re.search(r'GRADE\s+([\w\d]+)', text, re.IGNORECASE)
     if material_match:
-        info['material'] = f"GRADE {material_match.group(1)}"
+        grade = material_match.group(1)
+        info['material'] = f"GRADE {grade}"
+        
+        # Try to find the material type based on standard and grade
+        if info['specification'] != "Not Found":
+            # Look up in material database
+            match = material_df[
+                material_df['STANDARD'].str.contains(info['specification'], na=False, case=False) &
+                (material_df['GRADE'] == grade)
+            ]
+            if not match.empty:
+                info['material'] = match.iloc[0]['MATERIAL']
+    elif feasibility_data.get('material'):
+        info['material'] = feasibility_data['material']
 
-    # ID
-    id_match = re.search(r'HOSE ID\s*=\s*([\d\.]+)', text, re.IGNORECASE)
+    # Reinforcement
+    if feasibility_data.get('reinforcement'):
+        info['reinforcement'] = feasibility_data['reinforcement']
+
+    # ID: Look for "HOSE ID" with an equals sign
+    id_match = re.search(r'HOSE ID\s*=\s*([\d\.\u00b1]+)', text, re.IGNORECASE)
     if id_match:
         info['id'] = id_match.group(1)
+    elif feasibility_data.get('id'):
+        info['id'] = feasibility_data['id']
 
-    # Centerline Length
+    # Centerline Length: Handle various formats
     ctr_length_match = re.search(r'(?:APPROX\s+)?(?:CTRLINE\s+)?LENGTH\s*[=:]?\s*([\d\.]+)', text, re.IGNORECASE)
     if ctr_length_match:
         info['centerline_length'] = ctr_length_match.group(1)
+    elif feasibility_data.get('centerline_length'):
+        info['centerline_length'] = feasibility_data['centerline_length']
 
-    # Burst pressure
+    # Burst pressure (looking for specific format)
     burst_match = re.search(r'Burst\s+Pressure\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:bar|BAR)', text, re.IGNORECASE)
     if burst_match:
         info['burst_pressure_bar'] = burst_match.group(1)
+    elif feasibility_data.get('burst_pressure'):
+        info['burst_pressure_bar'] = feasibility_data['burst_pressure']
 
     # Working pressure
     working_match = re.search(r'Working\s+Pressure\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:kPag|KPAG)', text, re.IGNORECASE)
