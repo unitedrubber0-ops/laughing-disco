@@ -65,16 +65,23 @@ def process_page_with_gemini(page_image):
         str: Extracted text from the image, or empty string if extraction fails
     """
     try:
+        logger.info("Starting Gemini Vision processing...")
+        
         # Convert PIL Image to bytes
         buffered = io.BytesIO()
-        page_image.save(buffered, format="JPEG")
+        page_image.save(buffered, format="JPEG", quality=95)
         img_bytes = buffered.getvalue()
+        
+        # Check image size
+        img_size_mb = len(img_bytes) / (1024 * 1024)
+        logger.info(f"Image size: {img_size_mb:.2f} MB")
         
         # Encode image for Gemini
         img_base64 = base64.b64encode(img_bytes).decode()
         
         # Configure and use Gemini model
-        model = genai.GenerativeModel('gemini-pro-vision')
+        logger.info("Initializing Gemini model...")
+        model = genai.GenerativeModel('gemini-1.0-pro-vision-latest')
         prompt = """Extract all readable text from this engineering drawing image. Focus on:
         - Part numbers (e.g., 7 digits + C + digit)
         - Material standards (e.g., MPAPS F-30)
@@ -92,12 +99,18 @@ def process_page_with_gemini(page_image):
         ]
         
         # Generate content with image
+        logger.info("Sending request to Gemini Vision API...")
         response = model.generate_content(content_parts)
         
         # Clean up
         del buffered, img_bytes, img_base64
         
-        return response.text if response.text else ""
+        if response and response.text:
+            logger.info(f"Gemini Vision processing successful. Extracted {len(response.text)} characters")
+            return response.text
+        else:
+            logger.warning("Gemini Vision processing returned empty response")
+            return ""
         
     except Exception as e:
         logger.error(f"Error in Gemini Vision processing: {str(e)}")
