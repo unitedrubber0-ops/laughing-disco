@@ -1,9 +1,9 @@
 # Step A: Define the base image
 FROM python:3.13-slim
 
-# Step B: Install Tesseract OCR AND Poppler for pdf2image
+# Step B: Install Poppler for pdf2image
 RUN apt-get update && \
-    apt-get install -y tesseract-ocr poppler-utils && \
+    apt-get install -y poppler-utils && \
     # Clean up to keep the image size small
     rm -rf /var/lib/apt/lists/*
 

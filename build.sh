@@ -5,7 +5,6 @@ set -o errexit
 # Install system dependencies
 apt-get update
 apt-get install -y --no-install-recommends \
-    tesseract-ocr \
     poppler-utils
 
 # Install Python dependencies

@@ -7,12 +7,10 @@ import fitz  # PyMuPDF
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-import pytesseract
 from pdf2image import convert_from_bytes
 from PIL import Image
 import io
 import tempfile
-import gc
 import logging
 
 # Configure logging
