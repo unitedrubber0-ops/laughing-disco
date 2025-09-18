@@ -205,18 +205,30 @@ def analyze_drawing_with_gemini(pdf_bytes):
     }
     
     try:
+        print("\n----------- STARTING PDF ANALYSIS -----------")
+        print("[1/3] Attempting text extraction...")
+        
         # Extract text with detailed logging
         full_text = extract_text_from_pdf(pdf_bytes)
+        
+        print("\n----------- RAW EXTRACTED TEXT -----------")
+        print(full_text if full_text else "[No text extracted]")
+        print("------------------------------------------")
+        
         if not full_text:
+            print("[ERROR] Text extraction failed")
             return {
                 "burst_pressure_bar": "Not Found",
                 "error": "Failed to extract text from PDF",
                 "coordinates": []
             }
             
+        print("[2/3] Text extraction successful. Length:", len(full_text))
+        
         # Process the extracted text
+        print("[3/3] Processing extracted text for specific information...")
         # --- Step 1: Extract text from PDF ---
-        print("Attempting direct text extraction...")
+        print("Attempting pattern matching on extracted text...")
         pdf_document = fitz.open("pdf", pdf_bytes)
         full_text = ""
         for page in pdf_document:
