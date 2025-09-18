@@ -191,7 +191,7 @@ def calculate_development_length(coords):
     return total_length
 
 def extract_text_from_pdf(pdf_bytes):
-    """Extract text from PDF with fallback to OCR and memory optimization."""
+    """Extract text from PDF with fallback to Gemini Vision API."""
     logger.info("Starting PDF Text Extraction")
     
     # Step 1: Try direct text extraction
@@ -208,17 +208,17 @@ def extract_text_from_pdf(pdf_bytes):
     
     logger.info(f"Direct extraction found {len(full_text)} characters")
     
-    # Step 2: If direct extraction yields little text, try OCR with memory optimization
+    # Step 2: If direct extraction yields little text, try Gemini Vision
     if len(full_text.strip()) < 100:
-        logger.info("Direct extraction yielded limited text. Attempting optimized OCR...")
+        logger.info("Direct extraction yielded limited text. Attempting Gemini Vision...")
         try:
-            # Use a temporary file to avoid memory issues
+            # Convert PDF to images one page at a time to manage memory
             with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
                 temp_pdf.write(pdf_bytes)
                 temp_pdf_path = temp_pdf.name
             
-            # Process one page at a time to save memory
-            ocr_text = ""
+            # Initialize text collection
+            full_text = ""
             pdf_document = fitz.open(temp_pdf_path)
             
             for page_num in range(len(pdf_document)):
