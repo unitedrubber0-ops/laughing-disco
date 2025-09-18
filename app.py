@@ -85,11 +85,14 @@ def process_page_with_gemini(page_image):
         - Part descriptions
         Output as clean, structured text with clear labeling."""
         
-        # Generate content with image
-        response = model.generate_content([
+        # Prepare the content parts
+        content_parts = [
             prompt,
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
-        ])
+            {"mime_type": "image/jpeg", "data": img_base64}
+        ]
+        
+        # Generate content with image
+        response = model.generate_content(content_parts)
         
         # Clean up
         del buffered, img_bytes, img_base64
