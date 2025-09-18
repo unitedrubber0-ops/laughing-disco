@@ -8,7 +8,7 @@ import fitz  # PyMuPDF
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-from pdf2image import convert_from_bytes
+from pdf2image import convert_from_bytes, convert_from_path
 from PIL import Image
 import io
 import tempfile
@@ -281,20 +281,17 @@ def extract_text_from_pdf(pdf_bytes):
         logger.info("Direct extraction yielded limited text. Attempting Gemini Vision...")
         try:
             # Convert PDF to images one page at a time to manage memory
-            # Use tempfile to write PDF bytes for convert_from_bytes
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
-                temp_pdf.write(pdf_bytes)
-            temp_pdf_path = temp_pdf.name
+            # Use convert_from_bytes directly
+            pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf") # Open PDF from bytes
             
             # Initialize text collection
             full_text = ""
-            pdf_document = fitz.open(temp_pdf_path) # Re-open PDF with path for convert_from_path
             
             for page_num in range(len(pdf_document)):
-                # Convert only the current page to an image from the temporary file path
-                images = convert_from_path(
-                    temp_pdf_path,
-                    first_page=page_num + 1, 
+                # Convert only the current page to an image using bytes
+                images = convert_from_bytes(
+                    pdf_bytes,
+                    first_page=page_num + 1,
                     last_page=page_num + 1,
                     dpi=100,  # Lower DPI to reduce memory
                     fmt='jpeg',
