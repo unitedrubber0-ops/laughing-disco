@@ -267,26 +267,11 @@ def calculate_development_length(coords):
     return total_length
 
 def extract_text_from_pdf(pdf_bytes):
-    """Extract text from PDF with fallback to Gemini Vision API."""
-    logger.info("Starting PDF Text Extraction")
+    """Extract text from PDF using Gemini Vision API."""
+    logger.info("Starting PDF Text Extraction with Gemini Vision")
     
-    # Step 1: Try direct text extraction
-    logger.info("Attempting direct text extraction with PyMuPDF...")
     full_text = ""
-    try:
-        with fitz.open("pdf", pdf_bytes) as pdf_document:
-            for page_num, page in enumerate(pdf_document):
-                page_text = page.get_text()
-                full_text += page_text
-                logger.info(f"Page {page_num + 1}: Extracted {len(page_text)} characters")
-    except Exception as e:
-        logger.error(f"PyMuPDF failed to open PDF: {e}")
-        full_text = "" # Ensure text is empty if parsing fails
-
-    logger.info(f"Direct extraction found {len(full_text)} characters")
-    
-    # Step 2: If direct extraction yields little text, try Gemini Vision
-    if len(full_text.strip()) < 100:
+    temp_pdf_path = None  # Initialize path variable
         logger.info("Direct extraction yielded limited text. Attempting Gemini Vision...")
         temp_pdf_path = None  # Initialize path variable
         try:
