@@ -5,6 +5,7 @@ import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
 
 # --- Configuration ---
 # 1. SET YOUR API KEY HERE
@@ -23,6 +24,17 @@ except Exception as e:
 
 # Initialize the Flask application
 app = Flask(__name__, static_url_path='/static')
+
+# Enable CORS
+CORS(app, resources={
+    r"/api/*": {
+        "origins": [
+            "https://laughing-disco-docker.onrender.com",
+            "http://localhost:5000",
+            "http://127.0.0.1:5000"
+        ]
+    }
+})
 
 # Configure static files with correct MIME types
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
