@@ -132,72 +132,82 @@ def load_material_data():
         return pd.DataFrame()
 
 def extract_specific_info(text):
-    """Extracts key-value data with more flexible regex patterns."""
+    """Extracts key-value data with more flexible and robust regex patterns."""
     info = {
         'child_part': "Not Found",
         'description': "Not Found",
         'specification': "Not Found",
         'material': "Not Found",
-        'reinforcement': "Not Found",
-        'id': "Not Found",
-        'centerline_length': "Not Found",
-        'burst_pressure_bar': "Not Found",
-        'working_pressure_kpag': "Not Found",
-        'development_length_mm': "Not Found",
         'od': "Not Found",
-        'thickness': "Not Found"
+        'thickness': "Not Found",
+        'centerline_length': "Not Found",
+        'working_pressure_kpag': "Not Found", # Added this field
+        'burst_pressure_bar': "Not Found" # Kept for consistency
+        # development_length is calculated separately
     }
     
-    # Part Number: Find the specific C-number format directly
-    part_num_match = re.search(r'(\d{7}[Cc]\d(?: Rev [A-Z])?)', text, re.IGNORECASE)
+    # Part Number: Prioritize the main part number from the title block
+    part_num_match = re.search(r'PART NO\.\s*([0-9A-Z]+X[0-9])', text, re.IGNORECASE)
     if part_num_match:
         info['child_part'] = part_num_match.group(1)
+    else:
+        # Fallback to the stamped part number if the main one isn't found
+        part_num_match_fallback = re.search(r'(\d{7}[Cc]\d)', text, re.IGNORECASE)
+        if part_num_match_fallback:
+            info['child_part'] = part_num_match_fallback.group(1)
 
-    # Description: Find the "HOSE, ..." pattern
-    desc_match = re.search(r'(HOSE,[\s\w,]+)', text, re.IGNORECASE)
+    # Description: Find the "HOSE, ..." pattern from the title block
+    desc_match = re.search(r'NAME\s+(HOSE,[\s\w,]+TO[\s\w,]+)', text, re.IGNORECASE)
     if desc_match:
         info['description'] = desc_match.group(1).strip()
         
-    # Specification: Find MPAPS F-30 or similar
-    spec_match = re.search(r'(MPAPS\s*F[- ]*\d+)', text, re.IGNORECASE)
+    # Specification: Look for the specific F-30 standard mentioned in the material block
+    spec_match = re.search(r'PER\s+(MPAPS\s*F[- ]*30)', text, re.IGNORECASE)
     if spec_match:
-        info['specification'] = spec_match.group(0).replace(" ", "")
+        info['specification'] = spec_match.group(1).replace(" ", "")
     
-    # Material: Find the Grade and look up in database
+    # Material: Find the Grade and look up in the database
+    # This logic remains largely the same but will now work better with the correct specification
     material_match = re.search(r'GRADE\s+([\w\d]+)', text, re.IGNORECASE)
     if material_match:
         grade = material_match.group(1)
-        
-        # Try to find the material type based on standard and grade
         if info['specification'] != "Not Found":
-            # Create a normalized version of the specification for matching
             normalized_spec = info['specification'].upper().replace("-", "").replace(" ", "")
-            
-            # Look for matches in the database
             match = material_df[
                 material_df['STANDARD'].apply(lambda x: str(x).upper().replace("-", "").replace(" ", "").replace("/", "")).str.contains(normalized_spec, na=False) &
                 (material_df['GRADE'].astype(str).str.upper() == grade.upper())
             ]
-            
             if not match.empty:
                 info['material'] = match.iloc[0]['MATERIAL']
             else:
-                info['material'] = f"GRADE {grade} (Material not found in database)"
+                info['material'] = f"GRADE {grade} (Material not found for {info['specification']})"
         else:
             info['material'] = f"GRADE {grade}"
 
-    # ID: Look for "HOSE ID" with an equals sign
-    id_match = re.search(r'HOSE ID\s*=\s*([\d\.±]+)', text, re.IGNORECASE)
-    if id_match:
-        info['id'] = id_match.group(1)
+    # OD and Thickness from the specific table
+    od_match = re.search(r'TUBING\s+OD\s*=\s*([\d\.]+)', text, re.IGNORECASE)
+    if od_match:
+        info['od'] = od_match.group(1)
 
-    # Centerline Length: Handle various formats
-    ctr_length_match = re.search(r'(?:APPROX\s+)?(?:CTRLINE\s+)?LENGTH\s*[=:]?\s*([\d\.]+)', text, re.IGNORECASE)
+    thickness_match = re.search(r'WALL\s+THICKNESS\s*=\s*([\d\.]+)', text, re.IGNORECASE)
+    if thickness_match:
+        info['thickness'] = thickness_match.group(1)
+
+    # Centerline Length from the table
+    ctr_length_match = re.search(r'APPROX\s+CTRLINE\s+LENGTH\s*=\s*([\d\.]+)', text, re.IGNORECASE)
     if ctr_length_match:
         info['centerline_length'] = ctr_length_match.group(1)
 
-    # Burst pressure (looking for specific format)
-    burst_match = re.search(r'Burst\s+Pressure\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:bar|BAR)', text, re.IGNORECASE)
+    # Working pressure (looking for "WP" abbreviation)
+    working_match = re.search(r'(?:WP|Working\s+Pressure)\s+(\d+)\s*kPag', text, re.IGNORECASE)
+    if working_match:
+        info['working_pressure_kpag'] = working_match.group(1)
+
+    # ID: Look for "HOSE ID" (no change needed here, but kept for completeness)
+    id_match = re.search(r'HOSE ID\s*=\s*([\d\.±]+)', text, re.IGNORECASE)
+    if id_match:
+        # Assuming you might want to add an 'id' field to your info dict
+        info['id'] = id_match.group(1)
     if burst_match:
         info['burst_pressure_bar'] = burst_match.group(1)
 
