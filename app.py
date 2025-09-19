@@ -102,8 +102,15 @@ def process_page_with_gemini(page_image):
         
         # Generate content with image
         logger.info("Sending request to Gemini Vision API...")
-        response = model.generate_content(content_parts)
-        
+        try:
+            response = model.generate_content(
+                content_parts,
+                generation_config={'timeout': 30}  # 30 second timeout
+            )
+        except Exception as e:
+            logger.error(f"Gemini API call failed: {str(e)}")
+            return ""
+            
         # Clean up
         del buffered, img_bytes
         
@@ -352,6 +359,9 @@ def get_default_results():
 # --- Enhanced function to analyze the PDF text using Gemini API ---
 def analyze_drawing_with_gemini(pdf_bytes):
     logger.info("Starting Drawing Analysis")
+    mem_usage = get_memory_usage()
+    if mem_usage is not None:
+        logger.info(f"Memory at start of analysis: {mem_usage:.2f} MB")
     
     # Initialize results dictionary
     final_results = get_default_results()

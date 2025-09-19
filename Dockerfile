@@ -17,5 +17,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Step E: Copy the rest of your application code into the container
 COPY . .
 
-# Step F: Define the start command
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:10000"]
+# Load environment variables
+ENV GUNICORN_TIMEOUT=${GUNICORN_TIMEOUT:-120}
+ENV GUNICORN_WORKERS=${GUNICORN_WORKERS:-2}
+ENV GUNICORN_THREADS=${GUNICORN_THREADS:-4}
+ENV MAX_REQUESTS=${MAX_REQUESTS:-1000}
+ENV MAX_REQUESTS_JITTER=${MAX_REQUESTS_JITTER:-50}
+
+# Step F: Define the start command with enhanced configuration
+CMD gunicorn --bind 0.0.0.0:${PORT} \
+    --timeout ${GUNICORN_TIMEOUT} \
+    --workers ${GUNICORN_WORKERS} \
+    --threads ${GUNICORN_THREADS} \
+    --max-requests ${MAX_REQUESTS} \
+    --max-requests-jitter ${MAX_REQUESTS_JITTER} \
+    app:app
+CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:${PORT}"]
