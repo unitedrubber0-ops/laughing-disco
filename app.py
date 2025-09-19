@@ -171,8 +171,10 @@ def process_page_with_gemini(page_image):
     Raises:
         RequestTimeout: If processing takes longer than timeout
         ServiceUnavailable: If server is under high load
+        ValueError: If text extraction fails
         Exception: If Gemini API fails after retries
     """
+    extracted_text = ""
     try:
         # Check memory usage before processing
         check_memory()
@@ -206,9 +208,22 @@ def process_page_with_gemini(page_image):
         try:
             model = genai.GenerativeModel('gemini-1.5-flash')  # Using stable version
             logger.info("Gemini model initialized successfully")
+            
+            # Process image with model
+            response = model.generate_content([page_image], stream=False)
+            extracted_text = response.text
+            
+            # Validate extracted text
+            if not extracted_text or len(extracted_text.strip()) < 10:  # Minimum viable text
+                logger.error("Insufficient text extracted from image")
+                raise ValueError("Text extraction failed - the PDF might be scanned or image-based")
+                
+            logger.info(f"Successfully extracted {len(extracted_text)} characters")
+            return extracted_text
+            
         except Exception as e:
-            logger.error(f"Failed to load Gemini model: {str(e)}")
-            raise ServiceUnavailable("Model initialization failed")
+            logger.error(f"Error in Gemini Vision processing: {str(e)}")
+            raise ValueError(f"Text extraction failed: {str(e)}")
         
         prompt = """Extract all readable text from this engineering drawing image. Focus on:
         - Part numbers (e.g., 7 digits + C + digit)
@@ -501,8 +516,16 @@ def analyze_drawing_with_gemini(pdf_bytes):
         full_text = extract_text_from_pdf(pdf_bytes)
         
         if not full_text:
-            logger.error("Text extraction failed")
-            final_results["error"] = "Failed to extract text from PDF"
+            logger.error("No text extracted from PDF")
+            final_results["error"] = "No text extracted - please ensure the PDF is text-selectable"
+            return final_results
+            
+        logger.info(f"Successfully extracted {len(full_text)} characters")
+        
+        # Validate extracted text
+        if len(full_text.strip()) < 10:  # Minimum viable text
+            logger.error("Insufficient text content extracted")
+            final_results["error"] = "Insufficient text content - the PDF might be scanned or image-based"
             return final_results
             
         logger.info(f"Text extraction successful. Length: {len(full_text)}")

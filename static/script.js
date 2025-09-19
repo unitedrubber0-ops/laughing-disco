@@ -86,10 +86,16 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function displayResults(data) {
-        if (data.error) {
-            displayErrorWithLogging(new Error(data.error));
+        // Check for error or empty results
+        if (data.error || Object.values(data).every(v => !v || v === "Not Found")) {
+            const errorMessage = data.error || "No data could be extracted - please ensure the PDF is text-selectable";
+            console.error('Analysis failed:', data);  // Log for debugging
+            displayErrorWithLogging(new Error(errorMessage));
             return;
         }
+
+        console.log('Displaying results:', data);  // Log for debugging
+        resultsContainer.classList.remove('hidden');
 
         // Update main results
         document.getElementById('result-child-part').textContent = data.child_part;
