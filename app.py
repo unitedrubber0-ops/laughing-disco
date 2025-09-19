@@ -24,6 +24,23 @@ import gc  # For garbage collection
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def check_memory():
+    """Monitor memory usage and force garbage collection if needed."""
+    gc.collect()
+    import psutil
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+    memory_usage_mb = memory_info.rss / 1024 / 1024
+    logger.info(f"Current memory usage: {memory_usage_mb:.2f} MB")
+    
+    # Force garbage collection if memory usage is too high
+    if memory_usage_mb > 1000:  # 1GB threshold
+        logger.warning("High memory usage detected, forcing garbage collection")
+        gc.collect()
+        memory_info = process.memory_info()
+        new_memory_usage_mb = memory_info.rss / 1024 / 1024
+        logger.info(f"Memory usage after GC: {new_memory_usage_mb:.2f} MB")
+
 def get_static_url():
     """Get the static file URL based on environment"""
     if os.environ.get('STATIC_URL'):
@@ -112,13 +129,6 @@ def timeout_handler(timeout=300):
             return result[0] if result else None
         return wrapper
     return decorator
-
-def check_memory():
-    """Check if memory usage is too high."""
-    memory_usage = get_memory_usage()
-    if memory_usage and memory_usage > 1024:  # More than 1GB
-        logger.warning(f"High memory usage detected: {memory_usage:.2f} MB")
-        raise ServiceUnavailable("Server is under high load, please try again later")
 
 ## --- Load the material database from the Excel file ---
 try:

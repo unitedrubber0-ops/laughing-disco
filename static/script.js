@@ -2,21 +2,12 @@
 const API_BASE_URL = window.API_BASE_URL || 'https://laughing-disco-docker.onrender.com';
 const LOCAL_API_URL = 'http://localhost:5000';
 
-// Helper function to display errors with console logging
-function displayErrorWithLogging(error, details = null) {
-    console.error('Upload error:', error);
-    if (details) console.error('Error details:', details);
-    errorMessage.textContent = error.message || 'An unexpected error occurred. Please try again.';
-    errorMessage.classList.remove('hidden');
-    loadingSpinner.classList.add('hidden');
-}
-
-// Global UI elements
-const loadingSpinner = document.getElementById('loading-spinner');
+// Get DOM elements
 const errorMessage = document.getElementById('error-message');
+const loadingSpinner = document.getElementById('loading-spinner');
 const resultsContainer = document.getElementById('results-container');
 
-// Error handling function
+// Helper function to display errors with console logging
 function displayErrorWithLogging(error, details = null) {
     console.error('Upload error:', error);
     if (details) console.error('Error details:', details);
@@ -125,25 +116,34 @@ document.addEventListener('DOMContentLoaded', () => {
     function displayResults(data) {
         // Check for error or empty results
         if (data.error || Object.values(data).every(v => !v || v === "Not Found")) {
-            const errorMessage = data.error || "No data could be extracted - please ensure the PDF is text-selectable";
-            console.error('Analysis failed:', data);  // Log for debugging
+            const errorMessage = data.error || "No data could be extracted from the PDF - the document might be scanned or image-based. The system will attempt to process it with enhanced OCR.";
+            console.error('Analysis failed:', data);
             displayErrorWithLogging(new Error(errorMessage));
             return;
         }
 
-        console.log('Displaying results:', data);  // Log for debugging
+        console.log('Processing results:', data);
         resultsContainer.classList.remove('hidden');
+        errorMessage.classList.add('hidden');  // Clear any previous errors
 
-        // Update main results
-        document.getElementById('result-child-part').textContent = data.child_part;
-        document.getElementById('result-description').textContent = data.description;
-        document.getElementById('result-specification').textContent = data.specification;
-        document.getElementById('result-material').textContent = data.material;
-        document.getElementById('result-od').textContent = data.od;
-        document.getElementById('result-thickness').textContent = data.thickness;
-        document.getElementById('result-centerline').textContent = data.centerline_length;
-        document.getElementById('result-development').textContent = data.development_length_mm;
-        document.getElementById('result-burst-pressure').textContent = data.burst_pressure_bar;
+        // Update main results with validation
+        const updateField = (id, value) => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.textContent = value || 'Not Found';
+                element.classList.toggle('text-muted', !value);
+            }
+        };
+
+        updateField('result-child-part', data.child_part);
+        updateField('result-description', data.description);
+        updateField('result-specification', data.specification);
+        updateField('result-material', data.material);
+        updateField('result-od', data.od);
+        updateField('result-thickness', data.thickness);
+        updateField('result-centerline', data.centerline_length);
+        updateField('result-development', data.development_length_mm);
+        updateField('result-burst-pressure', data.burst_pressure_bar);
 
         // Display coordinates if available
         const coordsContainer = document.getElementById('coordinates-container');
