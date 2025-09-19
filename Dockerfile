@@ -25,11 +25,10 @@ ENV MAX_REQUESTS=${MAX_REQUESTS:-1000}
 ENV MAX_REQUESTS_JITTER=${MAX_REQUESTS_JITTER:-50}
 
 # Step F: Define the start command with enhanced configuration
-CMD gunicorn --bind 0.0.0.0:${PORT} \
-    --timeout ${GUNICORN_TIMEOUT} \
-    --workers ${GUNICORN_WORKERS} \
-    --threads ${GUNICORN_THREADS} \
-    --max-requests ${MAX_REQUESTS} \
-    --max-requests-jitter ${MAX_REQUESTS_JITTER} \
-    app:app
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:${PORT}"]
+CMD ["gunicorn", "--bind", "0.0.0.0:${PORT}", \
+     "--timeout", "${GUNICORN_TIMEOUT}", \
+     "--workers", "${GUNICORN_WORKERS}", \
+     "--threads", "${GUNICORN_THREADS}", \
+     "--max-requests", "${MAX_REQUESTS}", \
+     "--max-requests-jitter", "${MAX_REQUESTS_JITTER}", \
+     "app:app"]

@@ -78,11 +78,12 @@ def process_page_with_gemini(page_image):
         
         # Configure and use Gemini model
         logger.info("Initializing Gemini Vision model...")
-        # Use a model that is explicitly listed as available for vision tasks
-        # 'gemini-1.5-flash-latest' or 'gemini-1.5-pro-latest' are good options
-        # You might also want to try 'gemini-pro-vision' if you confirm its availability
-        # and API version in your environment.
-        model = genai.GenerativeModel('gemini-1.5-flash-latest') # Changed model name
+        try:
+            model = genai.GenerativeModel('gemini-1.5-flash')  # Stable, vision-capable model
+            logger.info("Gemini model initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to load Gemini model: {str(e)}")
+            return ""
         
         prompt = """Extract all readable text from this engineering drawing image. Focus on:
         - Part numbers (e.g., 7 digits + C + digit)
@@ -105,7 +106,7 @@ def process_page_with_gemini(page_image):
         try:
             response = model.generate_content(
                 content_parts,
-                generation_config={'timeout': 30}  # 30 second timeout
+                generation_config={'timeout': 60}  # Increase timeout to 60 seconds
             )
         except Exception as e:
             logger.error(f"Gemini API call failed: {str(e)}")
@@ -113,6 +114,8 @@ def process_page_with_gemini(page_image):
             
         # Clean up
         del buffered, img_bytes
+        import gc
+        gc.collect()  # Force garbage collection
         
         if response and response.text:
             logger.info(f"Gemini Vision processing successful. Extracted {len(response.text)} characters")
@@ -468,30 +471,26 @@ def analyze_drawing_with_gemini(pdf_bytes):
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
     try:
-        logger.info("New Analysis Request Started")
+        logger.info("=== New Analysis Request Started ===")
         mem_usage = get_memory_usage()
         if mem_usage is not None:
-            logger.info(f"Initial memory usage: {mem_usage:.2f} MB")
-        print("API request started")  # Console log for Render dashboard
+            logger.info(f"Initial memory: {mem_usage:.2f} MB")
+        
         if 'drawing' not in request.files:
             logger.error("No file part in request")
-            return jsonify({"error": "No file part in the request"}), 400
+            return jsonify({"error": "No file part"}), 400
         
         file = request.files['drawing']
-        
         if file.filename == '':
             logger.error("No file selected")
             return jsonify({"error": "No file selected"}), 400
-            
-        # Check file size before processing
-        file_content = file.read() # Read content once to check size and pass to functions
-        file_size = len(file_content) / (1024 * 1024)  # Size in MB
         
-        if file_size > 5:
-            logger.error(f"File too large ({file_size:.1f}MB)")
-            return jsonify({
-                "error": "File too large. Please upload a PDF smaller than 5MB"
-            }), 400
+        file_content = file.read()
+        file_size_mb = len(file_content) / (1024 * 1024)
+        
+        if file_size_mb > 5:
+            logger.error(f"File too large ({file_size_mb:.1f}MB)")
+            return jsonify({"error": f"File too large ({file_size_mb:.1f}MB)"}), 413
             
         if file and file.filename.lower().endswith('.pdf'):
             logger.info(f"Processing file: {file.filename}")
@@ -502,40 +501,27 @@ def upload_and_analyze():
             if mem_before is not None:
                 logger.info(f"Memory before analysis: {mem_before:.2f} MB")
             
-            try:
-                analysis_results = analyze_drawing_with_gemini(pdf_bytes)
-                
-                mem_after = get_memory_usage()
-                if mem_after is not None:
-                    logger.info(f"Final memory usage: {mem_after:.2f} MB")
-                
-                return jsonify(analysis_results)
-            except MemoryError:
-                mem_usage = get_memory_usage()
-                if mem_usage is not None:
-                    logger.error(f"Memory error occurred. Current usage: {mem_usage:.2f} MB")
-                return jsonify({
-                    "error": "Server memory limit reached. Please try a smaller or simpler PDF file."
-                }), 507
-            except ValueError as ve:
-                logger.error(f"Validation error: {str(ve)}")
-                return jsonify({"error": str(ve)}), 400
-            except Exception as e:
-                logger.error(f"Error processing file: {str(e)}")
-                mem_usage = get_memory_usage()
-                if mem_usage is not None:
-                    logger.error(f"Memory at error: {mem_usage:.2f} MB")
-                return jsonify({
-                    "error": "An error occurred while processing the file",
-                    "details": str(e)
-                }), 500
+            logger.info(f"Processing {file.filename} ({file_size_mb:.1f}MB)")
+            analysis_results = analyze_drawing_with_gemini(file_content)  # Pass bytes directly
+            
+            mem_after = get_memory_usage()
+            if mem_after is not None:
+                logger.info(f"Analysis complete. Final memory: {mem_after:.2f} MB")
+            
+            return jsonify(analysis_results)
         else:
             logger.error("Invalid file type")
             return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
             
+    except MemoryError:
+        logger.error("MemoryError during analysis", exc_info=True)
+        return jsonify({"error": "Memory limit exceeded. Try a smaller PDF."}), 507
     except Exception as e:
-        logger.error(f"Error handling file upload: {str(e)}")
-        return jsonify({"error": "Error processing file upload"}), 500
+        logger.error(f"Unhandled error in /api/analyze: {str(e)}", exc_info=True)
+        mem_usage = get_memory_usage()
+        if mem_usage:
+            logger.error(f"Memory at crash: {mem_usage:.2f} MB")
+        return jsonify({"error": "Processing failed", "details": str(e)}), 500
 
 # --- Route for static files ---
 @app.route('/static/<path:filename>')
