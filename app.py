@@ -272,42 +272,41 @@ def extract_text_from_pdf(pdf_bytes):
     
     full_text = ""
     temp_pdf_path = None  # Initialize path variable
-        logger.info("Direct extraction yielded limited text. Attempting Gemini Vision...")
-        temp_pdf_path = None  # Initialize path variable
-        try:
-            # Create a temporary file to work with pdf2image
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
-                temp_pdf.write(pdf_bytes)
-                temp_pdf_path = temp_pdf.name
-            
-            # Re-initialize text collection for Gemini
-            vision_text = ""
-            
-            # Convert PDF pages to images using the file path
-            page_images = convert_from_path(
-                temp_pdf_path,
-                dpi=150,  # Higher DPI for better OCR
-                fmt='jpeg',
-                thread_count=1
-            )
-            
-            for image in page_images:
-                page_text = process_page_with_gemini(image)
-                if page_text:
-                    vision_text += page_text + "\n"
-                image.close()  # Clean up image object memory
-            
-            full_text = vision_text # Replace initial text with vision results
+    
+    try:
+        # Create a temporary file to work with pdf2image
+        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
+            temp_pdf.write(pdf_bytes)
+            temp_pdf_path = temp_pdf.name
+        
+        # Initialize text collection for Gemini
+        vision_text = ""
+        
+        # Convert PDF pages to images using the file path
+        page_images = convert_from_path(
+            temp_pdf_path,
+            dpi=150,  # Higher DPI for better OCR
+            fmt='jpeg',
+            thread_count=1
+        )
+        
+        for image in page_images:
+            page_text = process_page_with_gemini(image)
+            if page_text:
+                vision_text += page_text + "\n"
+            image.close()  # Clean up image object memory
+        
+        full_text = vision_text  # Use vision results
 
-        except Exception as e:
-            # Log the specific error during the Gemini process
-            logger.error(f"Error during text extraction with Gemini Vision: {str(e)}")
-            # Fallback to the (limited) text from the initial PyMuPDF attempt
-        finally:
-            # This block ALWAYS runs, ensuring the temporary file is deleted
-            if temp_pdf_path and os.path.exists(temp_pdf_path):
-                os.unlink(temp_pdf_path)
-                logger.info(f"Deleted temporary file: {temp_pdf_path}")
+    except Exception as e:
+        # Log the specific error during the Gemini process
+        logger.error(f"Error during text extraction with Gemini Vision: {str(e)}")
+        # Keep full_text empty if processing fails
+    finally:
+        # This block ALWAYS runs, ensuring the temporary file is deleted
+        if temp_pdf_path and os.path.exists(temp_pdf_path):
+            os.unlink(temp_pdf_path)
+            logger.info(f"Deleted temporary file: {temp_pdf_path}")
     
     logger.info(f"Text extraction complete. Found {len(full_text)} characters")
     return full_text
