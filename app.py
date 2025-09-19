@@ -75,20 +75,25 @@ def extract_dimensions_from_text(text):
         "angle": "Not Found"
     }
     
-    # Extract ID1 (look for patterns like "43.5±0.5")
+    # Extract ID1 (look for patterns like "43.5±0.5" or "43.5 ± 0.5")
     id_match = re.search(r'(\d+\.?\d*)\s*[±]\s*(\d+\.?\d*)', text)
     if id_match:
         dimensions["id1"] = id_match.group(1)
     
-    # Extract thickness (look for patterns like "4.050")
-    thickness_match = re.search(r'WALL THICKNESS\s*[-\s]*\s*(\d+\.?\d*)', text, re.IGNORECASE)
+    # Extract thickness (look for patterns like "4.050" after "WALL THICKNESS")
+    thickness_match = re.search(r'WALL THICKNESS[^\d]*(\d+\.?\d*)', text)
     if thickness_match:
         dimensions["thickness"] = thickness_match.group(1)
     
-    # Extract centerline length
+    # Extract centerline length with multiple patterns
     centerline_match = re.search(r'CTRLINE LENGTH\s*=\s*(\d+\.?\d*)', text, re.IGNORECASE)
     if centerline_match:
         dimensions["centerline_length"] = centerline_match.group(1)
+    else:
+        # Try alternative patterns
+        centerline_match2 = re.search(r'APPROX CTRLINE LENGTH\s*=\s*(\d+\.?\d*)', text, re.IGNORECASE)
+        if centerline_match2:
+            dimensions["centerline_length"] = centerline_match2.group(1)
     
     # Extract radius (look for patterns like (40) which might indicate radius)
     radius_match = re.search(r'\((\d+)\)', text)
@@ -100,6 +105,11 @@ def extract_dimensions_from_text(text):
     if angle_match:
         dimensions["angle"] = angle_match.group(1)
     
+    # Try to extract OD from tubing information
+    od_match = re.search(r'TUBING OD[^\d]*(\d+\.?\d*)', text, re.IGNORECASE)
+    if od_match:
+        dimensions["od1"] = od_match.group(1)
+    
     return dimensions
 
 # --- Function to calculate development length based on COSTING TOOLS.xlsx ---
@@ -110,20 +120,27 @@ def calculate_development_length(dimensions):
     """
     try:
         # Try to use radius and angle if available
-        if dimensions["radius"] != "Not Found" and dimensions["angle"] != "Not Found":
+        if (dimensions["radius"] != "Not Found" and 
+            dimensions["angle"] != "Not Found" and
+            dimensions["radius"].replace('.', '', 1).isdigit() and
+            dimensions["angle"].replace('.', '', 1).isdigit()):
+            
             radius = float(dimensions["radius"])
             angle = float(dimensions["angle"])
             return round(2 * math.pi * radius * (angle / 360), 2)
         
         # Fall back to centerline length if available
-        elif dimensions["centerline_length"] != "Not Found":
-            return float(dimensions["centerline_length"])
+        elif (dimensions["centerline_length"] != "Not Found" and
+              dimensions["centerline_length"].replace('.', '', 1).isdigit()):
+            
+            return round(float(dimensions["centerline_length"]), 2)
         
         # Default calculation if no specific dimensions found
         else:
             # Use typical values for hose bending
             return round(2 * math.pi * 40 * (90 / 360), 2)  # 40mm radius, 90° angle
-    except:
+    except Exception as e:
+        print(f"Error calculating development length: {e}")
         return "Calculation error"
 
 # --- Function to generate Excel sheet with all details ---
@@ -153,8 +170,25 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
         'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),
         'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)': development_length,
         'ADDITIONAL REQUIREMENT': 'CUTTING & CHECKING FIXTURE COST TO BE ADDED. Marking cost to be added.',
-        'REMARK': 'The drawing specifies MPAPS F 1, but we have considered the specification as MPAPS F 30. THERE IS MISMATCH IN ID 1 & ID 2'
+        'REMARK': ''
     }
+    
+    # Add remarks based on the data
+    remarks = []
+    if analysis_results.get('standard', '').startswith('MPAPS F 1'):
+        remarks.append('The drawing specifies MPAPS F 1, but we have considered the specification as MPAPS F 30.')
+    if dimensions.get('id1') != dimensions.get('id2') and dimensions.get('id1') != 'Not Found' and dimensions.get('id2') != 'Not Found':
+        remarks.append('THERE IS MISMATCH IN ID 1 & ID 2')
+    row_data['REMARK'] = ' '.join(remarks) if remarks else 'No specific remarks.'
+    
+    # Calculate thickness from ID/OD if available
+    if (dimensions.get('od1') != 'Not Found' and dimensions.get('id1') != 'Not Found' and
+        dimensions['od1'].replace('.', '', 1).isdigit() and dimensions['id1'].replace('.', '', 1).isdigit()):
+        try:
+            thickness = (float(dimensions['od1']) - float(dimensions['id1'])) / 2
+            row_data['THICKNESS AS PER ID OD DIFFERENCE'] = round(thickness, 3)
+        except:
+            row_data['THICKNESS AS PER ID OD DIFFERENCE'] = 'Calculation error'
     
     # Create DataFrame with the row data
     df = pd.DataFrame([row_data], columns=columns)
