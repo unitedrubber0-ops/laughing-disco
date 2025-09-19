@@ -6,7 +6,7 @@ import base64
 import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 from pdf2image import convert_from_bytes, convert_from_path
 from PIL import Image
@@ -473,12 +473,12 @@ def analyze_drawing_with_gemini(pdf_bytes):
 # --- API endpoint for file analysis ---
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
-    logger.info("New Analysis Request Started")
-    mem_usage = get_memory_usage()
-    if mem_usage is not None:
-        logger.info(f"Initial memory usage: {mem_usage:.2f} MB")
-    
     try:
+        logger.info("New Analysis Request Started")
+        mem_usage = get_memory_usage()
+        if mem_usage is not None:
+            logger.info(f"Initial memory usage: {mem_usage:.2f} MB")
+        print("API request started")  # Console log for Render dashboard
         if 'drawing' not in request.files:
             logger.error("No file part in request")
             return jsonify({"error": "No file part in the request"}), 400
@@ -542,6 +542,11 @@ def upload_and_analyze():
     except Exception as e:
         logger.error(f"Error handling file upload: {str(e)}")
         return jsonify({"error": "Error processing file upload"}), 500
+
+# --- Route for static files ---
+@app.route('/static/<path:filename>')
+def send_static(filename):
+    return send_from_directory('static', filename)
 
 # --- Route for the main webpage ---
 @app.route('/')
