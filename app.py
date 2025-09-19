@@ -208,16 +208,7 @@ def extract_specific_info(text):
         
     return info
 
-    # Additional measurements
-    od_match = re.search(r'OD\s*[=:]?\s*(\d+\.?\d*)', text, re.IGNORECASE)
-    if od_match:
-        info['od'] = od_match.group(1)
 
-    thickness_match = re.search(r'THICKNESS\s*[=:]?\s*(\d+\.?\d*)', text, re.IGNORECASE)
-    if thickness_match:
-        info['thickness'] = thickness_match.group(1)
-        
-    return info
 
 def extract_coordinates(text):
     """Extracts P0, P1, P2... coordinates with stricter regex."""
@@ -319,8 +310,6 @@ def extract_text_from_pdf(pdf_bytes):
                 logger.info(f"Deleted temporary file: {temp_pdf_path}")
     
     logger.info(f"Text extraction complete. Found {len(full_text)} characters")
-    return full_text
-    
     return full_text
 
 # --- Configuration ---
