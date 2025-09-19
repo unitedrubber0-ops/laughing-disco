@@ -1,6 +1,7 @@
 services:
+  # Main Python web service
   - type: web
-    name: feasibility-analyzer
+    name: feasibility-analyzer-api
     runtime: python
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --timeout 300 --workers 2 --threads 4 --worker-class gthread --worker-connections 1000 --max-requests 100 --max-requests-jitter 20 --keepalive 65 --log-level debug
@@ -14,3 +15,17 @@ services:
       maxInstances: 3
     healthCheckPath: /
     autoDeploy: true
+
+  # Static files web service
+  - type: web
+    name: feasibility-analyzer-static
+    runtime: static
+    buildCommand: echo "No build required"
+    staticPublishPath: ./static
+    envVars:
+      - key: ENABLE_CORS
+        value: "true"
+    headers:
+      - path: /*
+        name: Cache-Control
+        value: public, max-age=31536000

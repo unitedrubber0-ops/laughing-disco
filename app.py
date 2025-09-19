@@ -22,6 +22,16 @@ import threading
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def get_static_url():
+    """Get the static file URL based on environment"""
+    if os.environ.get('STATIC_URL'):
+        return os.environ.get('STATIC_URL')
+    return '/static'
+
+# Initialize Flask app with dynamic static url path
+app = Flask(__name__, static_url_path=get_static_url())
+CORS(app)
+
 def timeout_handler(timeout=300):
     """Decorator to handle timeouts for long-running functions."""
     def decorator(func):
