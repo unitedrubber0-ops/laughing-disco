@@ -17,6 +17,8 @@ from werkzeug.exceptions import RequestTimeout, ServiceUnavailable
 import signal
 from functools import wraps
 import threading
+import time
+import gc
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -43,6 +45,36 @@ CORS(app, resources={
         "allow_headers": ["Content-Type"]
     }
 })
+
+@app.errorhandler(Exception)
+def handle_error(error):
+    """Global error handler to ensure CORS headers are sent with error responses."""
+    logger.error(f"Unhandled error: {str(error)}", exc_info=True)
+    response = jsonify({
+        "error": str(error),
+        "type": error.__class__.__name__
+    })
+    response.headers.add('Access-Control-Allow-Origin', 'https://laughing-disco-10.onrender.com')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+    response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+    return response, 500 if not hasattr(error, 'code') else error.code
+
+def retry_on_failure(max_retries=3):
+    """Decorator to retry functions on failure with exponential backoff."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        raise
+                    logger.warning(f"Attempt {attempt+1} failed: {str(e)}. Retrying...")
+                    time.sleep(2 ** attempt)  # Exponential backoff
+            return None
+        return wrapper
+    return decorator
 
 def timeout_handler(timeout=300):
     """Decorator to handle timeouts for long-running functions."""
@@ -119,7 +151,8 @@ def get_memory_usage():
         logger.error(f"Error getting memory usage: {str(e)}")
         return None
 
-@timeout_handler(timeout=180)  # 3 minutes timeout for image processing
+@retry_on_failure(max_retries=3)
+@timeout_handler(timeout=120)  # 2 minutes timeout for image processing
 def process_page_with_gemini(page_image):
     """Process a page image using Gemini Vision API.
     
@@ -127,15 +160,19 @@ def process_page_with_gemini(page_image):
         page_image: A PIL Image object containing the page to process
         
     Returns:
-        str: Extracted text from the image, or empty string if extraction fails
-    
+        str: Extracted text from the image
+        
     Raises:
         RequestTimeout: If processing takes longer than timeout
         ServiceUnavailable: If server is under high load
+        Exception: If Gemini API fails after retries
     """
     try:
         # Check memory usage before processing
         check_memory()
+        
+        # Start with a clean slate
+        gc.collect()
         
         logger.info("Starting Gemini Vision processing...")
         
@@ -161,7 +198,7 @@ def process_page_with_gemini(page_image):
         # Configure and use Gemini model
         logger.info("Initializing Gemini Vision model...")
         try:
-            model = genai.GenerativeModel('gemini-pro-vision')  # Using pro-vision for better stability
+            model = genai.GenerativeModel('gemini-1.5-flash')  # Using stable version
             logger.info("Gemini model initialized successfully")
         except Exception as e:
             logger.error(f"Failed to load Gemini model: {str(e)}")
@@ -488,7 +525,7 @@ def analyze_drawing_with_gemini(pdf_bytes):
             logger.info("Using Gemini API to extract missing information...")
             
             # Using 'gemini-1.5-flash-latest' for text-only processing as well
-            model = genai.GenerativeModel('gemini-1.5-flash-latest') 
+            model = genai.GenerativeModel('gemini-1.5-flash')  # Using stable version
             
             prompt = f"""
             Analyze the following text extracted from a technical engineering drawing. Find:
@@ -645,11 +682,11 @@ def upload_and_analyze():
     finally:
         logger.info(f"=== Request {request_id} Completed ===")
         if 'file_content' in locals():
-            del file_content  # Explicit cleanup of large objects
+            del file_content  # Explicit cleanup
+            gc.collect()  # Force garbage collection
         mem_usage = get_memory_usage()
-        if mem_usage:
-            logger.error(f"Memory at crash: {mem_usage:.2f} MB")
-        return jsonify({"error": "Processing failed", "details": str(e)}), 500
+        if mem_usage is not None:
+            logger.info(f"[{request_id}] End memory: {mem_usage:.2f} MB")
 
 # --- Route for static files ---
 @app.route('/static/<path:filename>')
