@@ -33,6 +33,12 @@ def get_static_url():
 # Initialize Flask app with dynamic static url path
 app = Flask(__name__, static_url_path=get_static_url())
 
+# Configure API base URL based on environment
+if os.environ.get('RENDER'):
+    app.config['API_BASE_URL'] = 'https://laughing-disco-docker.onrender.com'
+else:
+    app.config['API_BASE_URL'] = 'http://localhost:5000'
+
 # Configure CORS to allow requests from the static site
 CORS(app, resources={
     r"/api/*": {

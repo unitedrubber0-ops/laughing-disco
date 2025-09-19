@@ -1,3 +1,16 @@
+// Configure API URL based on environment
+const API_BASE_URL = window.API_BASE_URL || 'https://laughing-disco-docker.onrender.com';
+const LOCAL_API_URL = 'http://localhost:5000';
+
+// Helper function to display errors with console logging
+function displayErrorWithLogging(error, details = null) {
+    console.error('Upload error:', error);
+    if (details) console.error('Error details:', details);
+    errorMessage.textContent = error.message || 'An unexpected error occurred. Please try again.';
+    errorMessage.classList.remove('hidden');
+    loadingSpinner.classList.add('hidden');
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const uploadForm = document.getElementById('upload-form');
     const fileInput = document.getElementById('drawing-file');
@@ -15,7 +28,7 @@ document.addEventListener('DOMContentLoaded', () => {
         event.preventDefault();
 
         if (fileInput.files.length === 0) {
-            alert('Please select a PDF file to analyze.');
+            displayErrorWithLogging(new Error('Please select a PDF file to analyze.'));
             return;
         }
 
@@ -28,15 +41,17 @@ document.addEventListener('DOMContentLoaded', () => {
         formData.append('drawing', fileInput.files[0]);
 
         try {
-            const apiUrl = process.env.NODE_ENV === 'production'
-                ? 'https://feasibility-analyzer-api.onrender.com/api/analyze'
-                : 'http://localhost:5000/api/analyze';
+            const apiUrl = window.location.hostname === 'localhost' 
+                ? `${LOCAL_API_URL}/api/analyze`
+                : `${API_BASE_URL}/api/analyze`;
+            
+            console.log('Sending request to:', apiUrl); // Debug log
             
             const response = await fetch(apiUrl, {
                 method: 'POST',
                 body: formData,
                 mode: 'cors',
-                credentials: 'same-origin',
+                credentials: 'include',
             });
 
             if (!response.ok) {
@@ -48,16 +63,31 @@ document.addEventListener('DOMContentLoaded', () => {
             displayResults(results);
 
         } catch (error) {
-            displayError(error.message);
+            console.error('Request failed:', error);
+            let errorMessage = error.message;
+            
+            // Check if it's a network error
+            if (error instanceof TypeError && error.message.includes('NetworkError')) {
+                errorMessage = 'Unable to connect to the server. Please check your connection and try again.';
+            }
+            
+            // Check if it's a timeout
+            if (error instanceof TypeError && error.message.includes('timeout')) {
+                errorMessage = 'The request timed out. Please try with a smaller PDF file.';
+            }
+            
+            displayErrorWithLogging(new Error(errorMessage), error);
         } finally {
-            // Hide loading spinner
+            // Hide loading spinner and reset form
             loadingSpinner.classList.add('hidden');
+            fileInput.value = '';
+            fileNameDisplay.textContent = '';
         }
     });
 
     function displayResults(data) {
         if (data.error) {
-            displayError(data.error);
+            displayErrorWithLogging(new Error(data.error));
             return;
         }
 
