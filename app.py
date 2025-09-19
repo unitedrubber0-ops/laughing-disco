@@ -6,17 +6,59 @@ import base64
 import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
-from flask import Flask, request, jsonify, render_template, send_from_directory
+from flask import Flask, request, jsonify, render_template, send_from_directory, current_app
 from flask_cors import CORS
 from pdf2image import convert_from_bytes, convert_from_path
 from PIL import Image
 import io
 import tempfile
 import logging
+from werkzeug.exceptions import RequestTimeout, ServiceUnavailable
+import signal
+from functools import wraps
+import threading
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def timeout_handler(timeout=300):
+    """Decorator to handle timeouts for long-running functions."""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            result = []
+            error = []
+            
+            def target():
+                try:
+                    result.append(func(*args, **kwargs))
+                except Exception as e:
+                    error.append(e)
+                    
+            thread = threading.Thread(target=target)
+            thread.daemon = True
+            thread.start()
+            thread.join(timeout)
+            
+            if thread.is_alive():
+                logger.error(f"Function {func.__name__} timed out after {timeout} seconds")
+                raise RequestTimeout(f"Operation timed out after {timeout} seconds")
+            
+            if error:
+                logger.error(f"Error in {func.__name__}: {str(error[0])}")
+                raise error[0]
+                
+            return result[0] if result else None
+        return wrapper
+    return decorator
+
+def check_memory():
+    """Check if memory usage is too high."""
+    memory_usage = get_memory_usage()
+    if memory_usage and memory_usage > 1024:  # More than 1GB
+        logger.warning(f"High memory usage detected: {memory_usage:.2f} MB")
+        raise ServiceUnavailable("Server is under high load, please try again later")
 
 ## --- Load the material database from the Excel file ---
 try:
@@ -55,6 +97,7 @@ def get_memory_usage():
         logger.error(f"Error getting memory usage: {str(e)}")
         return None
 
+@timeout_handler(timeout=180)  # 3 minutes timeout for image processing
 def process_page_with_gemini(page_image):
     """Process a page image using Gemini Vision API.
     
@@ -63,27 +106,44 @@ def process_page_with_gemini(page_image):
         
     Returns:
         str: Extracted text from the image, or empty string if extraction fails
+    
+    Raises:
+        RequestTimeout: If processing takes longer than timeout
+        ServiceUnavailable: If server is under high load
     """
     try:
+        # Check memory usage before processing
+        check_memory()
+        
         logger.info("Starting Gemini Vision processing...")
         
-        # Convert PIL Image to bytes
+        # Convert PIL Image to bytes with compression
         buffered = io.BytesIO()
-        page_image.save(buffered, format="JPEG", quality=95)
+        page_image.save(buffered, format="JPEG", quality=85)  # Reduced quality for better performance
         img_bytes = buffered.getvalue()
         
-        # Check image size
+        # Check image size and compress if too large
         img_size_mb = len(img_bytes) / (1024 * 1024)
         logger.info(f"Image size: {img_size_mb:.2f} MB")
+        
+        if img_size_mb > 4:  # If image is larger than 4MB
+            logger.warning("Image too large, applying additional compression")
+            img = Image.open(io.BytesIO(img_bytes))
+            max_size = (2000, 2000)  # Maximum dimensions
+            img.thumbnail(max_size, Image.Resampling.LANCZOS)
+            buffered = io.BytesIO()
+            img.save(buffered, format="JPEG", quality=80)
+            img_bytes = buffered.getvalue()
+            logger.info(f"Compressed image size: {len(img_bytes) / (1024 * 1024):.2f} MB")
         
         # Configure and use Gemini model
         logger.info("Initializing Gemini Vision model...")
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash')  # Stable, vision-capable model
+            model = genai.GenerativeModel('gemini-pro-vision')  # Using pro-vision for better stability
             logger.info("Gemini model initialized successfully")
         except Exception as e:
             logger.error(f"Failed to load Gemini model: {str(e)}")
-            return ""
+            raise ServiceUnavailable("Model initialization failed")
         
         prompt = """Extract all readable text from this engineering drawing image. Focus on:
         - Part numbers (e.g., 7 digits + C + digit)
@@ -470,54 +530,100 @@ def analyze_drawing_with_gemini(pdf_bytes):
 # --- API endpoint for file analysis ---
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
+    """Handle PDF upload and analysis with comprehensive error handling and monitoring."""
+    request_id = f"req_{threading.get_ident()}"
+    
     try:
-        logger.info("=== New Analysis Request Started ===")
-        mem_usage = get_memory_usage()
-        if mem_usage is not None:
-            logger.info(f"Initial memory: {mem_usage:.2f} MB")
+        logger.info(f"=== New Analysis Request Started (ID: {request_id}) ===")
+        check_memory()  # Check memory before processing
         
+        # Validate request
         if 'drawing' not in request.files:
-            logger.error("No file part in request")
+            logger.error(f"[{request_id}] No file part in request")
             return jsonify({"error": "No file part"}), 400
         
         file = request.files['drawing']
         if file.filename == '':
-            logger.error("No file selected")
+            logger.error(f"[{request_id}] No file selected")
             return jsonify({"error": "No file selected"}), 400
         
-        file_content = file.read()
-        file_size_mb = len(file_content) / (1024 * 1024)
+        # Read and validate file content
+        try:
+            file_content = file.read()
+            file_size_mb = len(file_content) / (1024 * 1024)
+        except Exception as e:
+            logger.error(f"[{request_id}] Failed to read file: {str(e)}")
+            return jsonify({"error": "Failed to read uploaded file"}), 400
         
+        # Size validation
         if file_size_mb > 5:
-            logger.error(f"File too large ({file_size_mb:.1f}MB)")
-            return jsonify({"error": f"File too large ({file_size_mb:.1f}MB)"}), 413
+            logger.error(f"[{request_id}] File too large ({file_size_mb:.1f}MB)")
+            return jsonify({
+                "error": f"File too large ({file_size_mb:.1f}MB)",
+                "limit": "5MB",
+                "uploaded": f"{file_size_mb:.1f}MB"
+            }), 413
             
-        if file and file.filename.lower().endswith('.pdf'):
-            logger.info(f"Processing file: {file.filename}")
-            pdf_bytes = file_content # Use the already read content
-            logger.info(f"File size: {len(pdf_bytes)} bytes")
+        # File type validation and processing
+        if not file.filename.lower().endswith('.pdf'):
+            logger.error(f"[{request_id}] Invalid file type: {file.filename}")
+            return jsonify({
+                "error": "Invalid file type. Please upload a PDF.",
+                "uploaded": file.filename
+            }), 400
             
-            mem_before = get_memory_usage()
-            if mem_before is not None:
-                logger.info(f"Memory before analysis: {mem_before:.2f} MB")
+        logger.info(f"[{request_id}] Processing file: {file.filename} ({file_size_mb:.1f}MB)")
+        
+        # Monitor memory throughout processing
+        mem_before = get_memory_usage()
+        if mem_before is not None:
+            logger.info(f"[{request_id}] Memory before analysis: {mem_before:.2f} MB")
+            if mem_before > 1024:  # 1GB limit
+                raise ServiceUnavailable("Server is under high load")
+        
+        # Process the PDF with timeout handling
+        try:
+            with current_app.app_context():
+                analysis_results = analyze_drawing_with_gemini(file_content)
+        except RequestTimeout:
+            logger.error(f"[{request_id}] Analysis timed out")
+            return jsonify({
+                "error": "Analysis timed out",
+                "suggestion": "Try a smaller PDF or try again later"
+            }), 504
+        
+        # Final memory check and cleanup
+        mem_after = get_memory_usage()
+        if mem_after is not None:
+            logger.info(f"[{request_id}] Analysis complete. Final memory: {mem_after:.2f} MB")
             
-            logger.info(f"Processing {file.filename} ({file_size_mb:.1f}MB)")
-            analysis_results = analyze_drawing_with_gemini(file_content)  # Pass bytes directly
-            
-            mem_after = get_memory_usage()
-            if mem_after is not None:
-                logger.info(f"Analysis complete. Final memory: {mem_after:.2f} MB")
-            
-            return jsonify(analysis_results)
-        else:
-            logger.error("Invalid file type")
-            return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
+        return jsonify(analysis_results)
             
     except MemoryError:
-        logger.error("MemoryError during analysis", exc_info=True)
-        return jsonify({"error": "Memory limit exceeded. Try a smaller PDF."}), 507
+        logger.error(f"[{request_id}] MemoryError during analysis", exc_info=True)
+        return jsonify({
+            "error": "Memory limit exceeded",
+            "suggestion": "Try a smaller PDF"
+        }), 507
+        
+    except ServiceUnavailable as e:
+        logger.error(f"[{request_id}] Service unavailable: {str(e)}")
+        return jsonify({
+            "error": str(e),
+            "retry_after": "60 seconds"
+        }), 503
+        
     except Exception as e:
-        logger.error(f"Unhandled error in /api/analyze: {str(e)}", exc_info=True)
+        logger.error(f"[{request_id}] Unhandled error in /api/analyze: {str(e)}", exc_info=True)
+        return jsonify({
+            "error": "Internal server error",
+            "request_id": request_id
+        }), 500
+        
+    finally:
+        logger.info(f"=== Request {request_id} Completed ===")
+        if 'file_content' in locals():
+            del file_content  # Explicit cleanup of large objects
         mem_usage = get_memory_usage()
         if mem_usage:
             logger.error(f"Memory at crash: {mem_usage:.2f} MB")
