@@ -28,9 +28,15 @@ document.addEventListener('DOMContentLoaded', () => {
         formData.append('drawing', fileInput.files[0]);
 
         try {
-            const response = await fetch('https://laughing-disco-docker.onrender.com/api/analyze', {
+            const apiUrl = process.env.NODE_ENV === 'production'
+                ? 'https://feasibility-analyzer-api.onrender.com/api/analyze'
+                : 'http://localhost:5000/api/analyze';
+            
+            const response = await fetch(apiUrl, {
                 method: 'POST',
                 body: formData,
+                mode: 'cors',
+                credentials: 'same-origin',
             });
 
             if (!response.ok) {

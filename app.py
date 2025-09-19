@@ -30,7 +30,19 @@ def get_static_url():
 
 # Initialize Flask app with dynamic static url path
 app = Flask(__name__, static_url_path=get_static_url())
-CORS(app)
+
+# Configure CORS to allow requests from the static site
+CORS(app, resources={
+    r"/api/*": {
+        "origins": [
+            "https://laughing-disco-10.onrender.com",
+            "http://localhost:5000",
+            "http://127.0.0.1:5000"
+        ],
+        "methods": ["POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
+    }
+})
 
 def timeout_handler(timeout=300):
     """Decorator to handle timeouts for long-running functions."""
