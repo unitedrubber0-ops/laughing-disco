@@ -11,13 +11,35 @@ function displayErrorWithLogging(error, details = null) {
     loadingSpinner.classList.add('hidden');
 }
 
+// Global UI elements
+const loadingSpinner = document.getElementById('loading-spinner');
+const errorMessage = document.getElementById('error-message');
+const resultsContainer = document.getElementById('results-container');
+
+// Error handling function
+function displayErrorWithLogging(error, details = null) {
+    console.error('Upload error:', error);
+    if (details) console.error('Error details:', details);
+    
+    if (errorMessage) {
+        errorMessage.textContent = error.message || 'An unexpected error occurred. Please try again.';
+        errorMessage.classList.remove('hidden');
+    }
+    
+    if (loadingSpinner) {
+        loadingSpinner.classList.add('hidden');
+    }
+    
+    // Hide results if there was an error
+    if (resultsContainer) {
+        resultsContainer.classList.add('hidden');
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const uploadForm = document.getElementById('upload-form');
     const fileInput = document.getElementById('drawing-file');
     const fileNameDisplay = document.getElementById('file-name');
-    const loadingSpinner = document.getElementById('loading-spinner');
-    const resultsContainer = document.getElementById('results-container');
-    const errorMessage = document.getElementById('error-message');
 
     // Display the name of the selected file
     fileInput.addEventListener('change', () => {
@@ -60,20 +82,35 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const results = await response.json();
+            
+            // Log the response for debugging
+            console.log('API Response:', results);
+            
+            // Check for API-level errors
+            if (results.error) {
+                throw new Error(results.error);
+            }
+            
+            // Check for empty results
+            if (Object.values(results).every(v => !v || v === "Not Found")) {
+                throw new Error("No data could be extracted from the PDF. Please ensure it's text-selectable.");
+            }
+            
             displayResults(results);
 
         } catch (error) {
             console.error('Request failed:', error);
             let errorMessage = error.message;
             
-            // Check if it's a network error
-            if (error instanceof TypeError && error.message.includes('NetworkError')) {
-                errorMessage = 'Unable to connect to the server. Please check your connection and try again.';
-            }
-            
-            // Check if it's a timeout
-            if (error instanceof TypeError && error.message.includes('timeout')) {
-                errorMessage = 'The request timed out. Please try with a smaller PDF file.';
+            // Enhance error messages based on error type
+            if (error instanceof TypeError) {
+                if (error.message.includes('NetworkError')) {
+                    errorMessage = 'Unable to connect to the server. Please check your connection and try again.';
+                } else if (error.message.includes('timeout')) {
+                    errorMessage = 'The request timed out. Please try with a smaller PDF file.';
+                } else {
+                    errorMessage = 'Network error occurred. Please try again.';
+                }
             }
             
             displayErrorWithLogging(new Error(errorMessage), error);

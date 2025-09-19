@@ -18,7 +18,7 @@ import signal
 from functools import wraps
 import threading
 import time
-import gc
+import gc  # For garbage collection
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -201,6 +201,10 @@ def process_page_with_gemini(page_image):
             buffered = io.BytesIO()
             img.save(buffered, format="JPEG", quality=80)
             img_bytes = buffered.getvalue()
+            
+            # Clean up original buffers
+            del img
+            buffered.close()
             logger.info(f"Compressed image size: {len(img_bytes) / (1024 * 1024):.2f} MB")
         
         # Configure and use Gemini model
