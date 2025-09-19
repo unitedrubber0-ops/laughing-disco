@@ -60,6 +60,41 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('result-grade').textContent = data.grade;
         document.getElementById('result-material').textContent = data.material;
         
+        // Add download button for Excel file if available
+        if (data.excel_data) {
+            // Remove existing download button if it exists
+            const existingButton = document.getElementById('download-excel');
+            if (existingButton) {
+                existingButton.remove();
+            }
+            
+            const downloadButton = document.createElement('button');
+            downloadButton.id = 'download-excel';
+            downloadButton.textContent = 'Download Excel Sheet';
+            downloadButton.style.marginTop = '20px';
+            downloadButton.addEventListener('click', () => {
+                // Convert base64 to blob and download
+                const byteCharacters = atob(data.excel_data);
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const blob = new Blob([byteArray], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+                
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = 'drawing_analysis.xlsx';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            });
+            
+            resultsContainer.appendChild(downloadButton);
+        }
+        
         resultsContainer.classList.remove('hidden');
     }
 

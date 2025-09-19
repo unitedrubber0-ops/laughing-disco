@@ -4,8 +4,11 @@ import json
 import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
+import base64
+from io import BytesIO
+import math
 
 # --- Configuration ---
 # 1. SET YOUR API KEY HERE
@@ -55,6 +58,49 @@ try:
 except FileNotFoundError:
     print("Error: material_data.csv not found. Please ensure the file exists.")
     material_df = pd.DataFrame()
+
+# --- Function to calculate development length based on COSTING TOOLS.xlsx ---
+def calculate_development_length(radius, angle_degrees):
+    """
+    Calculate development length based on the formula in COSTING TOOLS.xlsx
+    Formula: Arc Length = 2 * π * radius * (angle_degrees / 360)
+    """
+    return 2 * math.pi * radius * (angle_degrees / 360)
+
+# --- Function to generate Excel sheet with all details ---
+def generate_excel_sheet(analysis_results, development_length=None):
+    # Create a DataFrame with the structure of FETCH FROM DRAWING worksheet
+    columns = [
+        'child part', 'child quantity', 'CHILD PART', 'CHILD PART DESCRIPTION', 
+        'CHILD PART QTY', 'SPECIFICATION', 'MATERIAL', 'REINFORCEMENT', 
+        'VOLUME AS PER 2D', 'ID1 AS PER 2D (MM)', 'ID2 AS PER 2D (MM)', 
+        'OD1 AS PER 2D (MM)', 'OD2 AS PER 2D (MM)', 'THICKNESS AS PER 2D (MM)', 
+        'THICKNESS AS PER ID OD DIFFERENCE', 'CENTERLINE LENGTH AS PER 2D (MM)', 
+        'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)', 'BURST PRESSURE AS PER 2D (BAR)',
+        'BURST PRESSURE AS PER WORKING PRESSURE (4XWP) (BAR)', 'VOLUME AS PER 2D MM3', 
+        'WEIGHT AS PER 2D KG', 'COLOUR AS PER DRAWING', 'ADDITIONAL REQUIREMENT', 
+        'OUTSOURCE', 'REMARK'
+    ]
+    
+    # Create a row with the extracted data
+    row_data = {
+        'SPECIFICATION': f"{analysis_results.get('standard', 'Not Found')} {analysis_results.get('grade', 'Not Found')}",
+        'MATERIAL': analysis_results.get('material', 'Not Found'),
+        'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)': development_length if development_length else "Calculation needed",
+        'ADDITIONAL REQUIREMENT': 'CUTTING & CHECKING FIXTURE COST TO BE ADDED. Marking cost to be added.',
+        'REMARK': 'The drawing specifies MPAPS F 1, but we have considered the specification as MPAPS F 30. THERE IS MISMATCH IN ID 1 & ID 2'
+    }
+    
+    # Create DataFrame with the row data
+    df = pd.DataFrame([row_data], columns=columns)
+    
+    # Create an in-memory Excel file
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, sheet_name='FETCH FROM DRAWING', index=False)
+    
+    output.seek(0)
+    return output
 
 # --- NEW: Function to analyze the PDF text using Gemini API ---
 def analyze_drawing_with_gemini(pdf_bytes):
@@ -145,6 +191,19 @@ def upload_and_analyze():
     if file and file.filename.lower().endswith('.pdf'):
         pdf_bytes = file.read()
         analysis_results = analyze_drawing_with_gemini(pdf_bytes) # Use the new Gemini function
+        
+        # Generate Excel sheet with all details
+        # For demonstration, using a sample development length calculation
+        # In a real scenario, you would extract radius and angle from the drawing
+        development_length = calculate_development_length(63.5, 90)  # Example values
+        excel_file = generate_excel_sheet(analysis_results, development_length)
+        
+        # Convert Excel file to base64 for sending in response
+        excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
+        
+        # Add Excel data to response
+        analysis_results["excel_data"] = excel_b64
+        
         return jsonify(analysis_results)
     else:
         return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
