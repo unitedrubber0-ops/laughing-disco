@@ -16,15 +16,19 @@ services:
     healthCheckPath: /
     autoDeploy: true
 
-  # Static files web service
+  # Static site
   - type: web
-    name: feasibility-analyzer-static
+    name: laughing-disco-10
     runtime: static
-    buildCommand: echo "No build required"
-    staticPublishPath: ./static
+    buildCommand: bash ./build.sh
+    staticPublishPath: ./build
     envVars:
-      - key: ENABLE_CORS
-        value: "true"
+      - key: GEMINI_API_KEY
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     headers:
       - path: /*
         name: Cache-Control
