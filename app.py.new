@@ -1,0 +1,46 @@
+@app.route('/api/analyze', methods=['POST'])
+def upload_and_analyze():
+    try:
+        logger.info("=== New Analysis Request Started ===")
+        mem_usage = get_memory_usage()
+        if mem_usage is not None:
+            logger.info(f"Initial memory: {mem_usage:.2f} MB")
+        
+        if 'drawing' not in request.files:
+            logger.error("No file part in request")
+            return jsonify({"error": "No file part"}), 400
+        
+        file = request.files['drawing']
+        if file.filename == '':
+            logger.error("No file selected")
+            return jsonify({"error": "No file selected"}), 400
+        
+        file_content = file.read()
+        file_size_mb = len(file_content) / (1024 * 1024)
+        
+        if file_size_mb > 5:
+            logger.error(f"File too large ({file_size_mb:.1f}MB)")
+            return jsonify({"error": f"File too large ({file_size_mb:.1f}MB)"}), 413
+        
+        if not file.filename.lower().endswith('.pdf'):
+            logger.error("Invalid file type")
+            return jsonify({"error": "Upload a PDF"}), 400
+        
+        logger.info(f"Processing {file.filename} ({file_size_mb:.1f}MB)")
+        analysis_results = analyze_drawing_with_gemini(file_content)  # Pass bytes directly
+        
+        mem_after = get_memory_usage()
+        if mem_after is not None:
+            logger.info(f"Analysis complete. Final memory: {mem_after:.2f} MB")
+        
+        return jsonify(analysis_results)
+        
+    except MemoryError:
+        logger.error("MemoryError during analysis", exc_info=True)
+        return jsonify({"error": "Memory limit exceeded. Try a smaller PDF."}), 507
+    except Exception as e:
+        logger.error(f"Unhandled error in /api/analyze: {str(e)}", exc_info=True)
+        mem_usage = get_memory_usage()
+        if mem_usage:
+            logger.error(f"Memory at crash: {mem_usage:.2f} MB")
+        return jsonify({"error": "Processing failed", "details": str(e)}), 500
