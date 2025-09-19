@@ -25,14 +25,16 @@ except Exception as e:
 # Initialize the Flask application
 app = Flask(__name__, static_url_path='/static')
 
-# Enable CORS
+# Enable CORS with more permissive settings
 CORS(app, resources={
     r"/api/*": {
         "origins": [
             "https://laughing-disco-docker.onrender.com",
             "http://localhost:5000",
             "http://127.0.0.1:5000"
-        ]
+        ],
+        "methods": ["GET", "POST", "OPTIONS"],
+        "allow_headers": ["Content-Type"]
     }
 })
 
