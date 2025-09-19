@@ -141,8 +141,9 @@ def extract_specific_info(text):
         'od': "Not Found",
         'thickness': "Not Found",
         'centerline_length': "Not Found",
-        'working_pressure_kpag': "Not Found",
-        'burst_pressure_bar': "Not Found"
+        'working_pressure_kpag': "Not Found", # Added this field
+        'burst_pressure_bar': "Not Found" # Kept for consistency
+        # development_length is calculated separately
     }
     
     # Part Number: Prioritize the main part number from the title block
@@ -166,6 +167,7 @@ def extract_specific_info(text):
         info['specification'] = spec_match.group(1).replace(" ", "")
     
     # Material: Find the Grade and look up in the database
+    # This logic remains largely the same but will now work better with the correct specification
     material_match = re.search(r'GRADE\s+([\w\d]+)', text, re.IGNORECASE)
     if material_match:
         grade = material_match.group(1)
@@ -196,19 +198,32 @@ def extract_specific_info(text):
     if ctr_length_match:
         info['centerline_length'] = ctr_length_match.group(1)
 
-    # Working pressure (looking for "WP" abbreviation or full text)
+    # Working pressure (looking for "WP" abbreviation)
     working_match = re.search(r'(?:WP|Working\s+Pressure)\s+(\d+)\s*kPag', text, re.IGNORECASE)
     if working_match:
         info['working_pressure_kpag'] = working_match.group(1)
 
-    # Burst pressure (handle this even if not present to avoid NameError)
+    # ID: Look for "HOSE ID" (no change needed here, but kept for completeness)
+    id_match = re.search(r'HOSE ID\s*=\s*([\d\.±]+)', text, re.IGNORECASE)
+    if id_match:
+        # Assuming you might want to add an 'id' field to your info dict
+        info['id'] = id_match.group(1)
+
+    # Burst pressure
     burst_match = re.search(r'Burst\s+Pressure\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:bar|BAR)', text, re.IGNORECASE)
     if burst_match:
         info['burst_pressure_bar'] = burst_match.group(1)
+
+    # Additional measurements
+    od_match = re.search(r'OD\s*[=:]?\s*(\d+\.?\d*)', text, re.IGNORECASE)
+    if od_match:
+        info['od'] = od_match.group(1)
+
+    thickness_match = re.search(r'THICKNESS\s*[=:]?\s*(\d+\.?\d*)', text, re.IGNORECASE)
+    if thickness_match:
+        info['thickness'] = thickness_match.group(1)
         
     return info
-
-
 
 def extract_coordinates(text):
     """Extracts P0, P1, P2... coordinates with stricter regex."""
