@@ -59,16 +59,75 @@ except FileNotFoundError:
     print("Error: material_data.csv not found. Please ensure the file exists.")
     material_df = pd.DataFrame()
 
+# --- Function to extract dimensions from PDF text ---
+def extract_dimensions_from_text(text):
+    """
+    Extract dimensions from the PDF text using regex patterns
+    """
+    dimensions = {
+        "id1": "Not Found",
+        "id2": "Not Found",
+        "od1": "Not Found",
+        "od2": "Not Found",
+        "thickness": "Not Found",
+        "centerline_length": "Not Found",
+        "radius": "Not Found",
+        "angle": "Not Found"
+    }
+    
+    # Extract ID1 (look for patterns like "43.5±0.5")
+    id_match = re.search(r'(\d+\.?\d*)\s*[±]\s*(\d+\.?\d*)', text)
+    if id_match:
+        dimensions["id1"] = id_match.group(1)
+    
+    # Extract thickness (look for patterns like "4.050")
+    thickness_match = re.search(r'WALL THICKNESS\s*[-\s]*\s*(\d+\.?\d*)', text, re.IGNORECASE)
+    if thickness_match:
+        dimensions["thickness"] = thickness_match.group(1)
+    
+    # Extract centerline length
+    centerline_match = re.search(r'CTRLINE LENGTH\s*=\s*(\d+\.?\d*)', text, re.IGNORECASE)
+    if centerline_match:
+        dimensions["centerline_length"] = centerline_match.group(1)
+    
+    # Extract radius (look for patterns like (40) which might indicate radius)
+    radius_match = re.search(r'\((\d+)\)', text)
+    if radius_match:
+        dimensions["radius"] = radius_match.group(1)
+    
+    # Extract angle (look for patterns like 90°)
+    angle_match = re.search(r'(\d+)\s*°', text)
+    if angle_match:
+        dimensions["angle"] = angle_match.group(1)
+    
+    return dimensions
+
 # --- Function to calculate development length based on COSTING TOOLS.xlsx ---
-def calculate_development_length(radius, angle_degrees):
+def calculate_development_length(dimensions):
     """
     Calculate development length based on the formula in COSTING TOOLS.xlsx
     Formula: Arc Length = 2 * π * radius * (angle_degrees / 360)
     """
-    return 2 * math.pi * radius * (angle_degrees / 360)
+    try:
+        # Try to use radius and angle if available
+        if dimensions["radius"] != "Not Found" and dimensions["angle"] != "Not Found":
+            radius = float(dimensions["radius"])
+            angle = float(dimensions["angle"])
+            return round(2 * math.pi * radius * (angle / 360), 2)
+        
+        # Fall back to centerline length if available
+        elif dimensions["centerline_length"] != "Not Found":
+            return float(dimensions["centerline_length"])
+        
+        # Default calculation if no specific dimensions found
+        else:
+            # Use typical values for hose bending
+            return round(2 * math.pi * 40 * (90 / 360), 2)  # 40mm radius, 90° angle
+    except:
+        return "Calculation error"
 
 # --- Function to generate Excel sheet with all details ---
-def generate_excel_sheet(analysis_results, development_length=None):
+def generate_excel_sheet(analysis_results, dimensions, development_length):
     # Create a DataFrame with the structure of FETCH FROM DRAWING worksheet
     columns = [
         'child part', 'child quantity', 'CHILD PART', 'CHILD PART DESCRIPTION', 
@@ -86,7 +145,13 @@ def generate_excel_sheet(analysis_results, development_length=None):
     row_data = {
         'SPECIFICATION': f"{analysis_results.get('standard', 'Not Found')} {analysis_results.get('grade', 'Not Found')}",
         'MATERIAL': analysis_results.get('material', 'Not Found'),
-        'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)': development_length if development_length else "Calculation needed",
+        'ID1 AS PER 2D (MM)': dimensions.get('id1', 'Not Found'),
+        'ID2 AS PER 2D (MM)': dimensions.get('id2', 'Not Found'),
+        'OD1 AS PER 2D (MM)': dimensions.get('od1', 'Not Found'),
+        'OD2 AS PER 2D (MM)': dimensions.get('od2', 'Not Found'),
+        'THICKNESS AS PER 2D (MM)': dimensions.get('thickness', 'Not Found'),
+        'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),
+        'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)': development_length,
         'ADDITIONAL REQUIREMENT': 'CUTTING & CHECKING FIXTURE COST TO BE ADDED. Marking cost to be added.',
         'REMARK': 'The drawing specifies MPAPS F 1, but we have considered the specification as MPAPS F 30. THERE IS MISMATCH IN ID 1 & ID 2'
     }
@@ -190,13 +255,17 @@ def upload_and_analyze():
     
     if file and file.filename.lower().endswith('.pdf'):
         pdf_bytes = file.read()
-        analysis_results = analyze_drawing_with_gemini(pdf_bytes) # Use the new Gemini function
+        analysis_results = analyze_drawing_with_gemini(pdf_bytes)
+        
+        if analysis_results.get("error"):
+            return jsonify({"error": analysis_results["error"]}), 400
+        
+        # Calculate development length using extracted dimensions
+        dimensions = analysis_results.get("dimensions", {})
+        development_length = calculate_development_length(dimensions)
         
         # Generate Excel sheet with all details
-        # For demonstration, using a sample development length calculation
-        # In a real scenario, you would extract radius and angle from the drawing
-        development_length = calculate_development_length(63.5, 90)  # Example values
-        excel_file = generate_excel_sheet(analysis_results, development_length)
+        excel_file = generate_excel_sheet(analysis_results, dimensions, development_length)
         
         # Convert Excel file to base64 for sending in response
         excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
