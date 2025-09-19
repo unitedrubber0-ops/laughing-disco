@@ -141,9 +141,8 @@ def extract_specific_info(text):
         'od': "Not Found",
         'thickness': "Not Found",
         'centerline_length': "Not Found",
-        'working_pressure_kpag': "Not Found", # Added this field
-        'burst_pressure_bar': "Not Found" # Kept for consistency
-        # development_length is calculated separately
+        'working_pressure_kpag': "Not Found",
+        'burst_pressure_bar': "Not Found"
     }
     
     # Part Number: Prioritize the main part number from the title block
@@ -167,7 +166,6 @@ def extract_specific_info(text):
         info['specification'] = spec_match.group(1).replace(" ", "")
     
     # Material: Find the Grade and look up in the database
-    # This logic remains largely the same but will now work better with the correct specification
     material_match = re.search(r'GRADE\s+([\w\d]+)', text, re.IGNORECASE)
     if material_match:
         grade = material_match.group(1)
@@ -198,23 +196,17 @@ def extract_specific_info(text):
     if ctr_length_match:
         info['centerline_length'] = ctr_length_match.group(1)
 
-    # Working pressure (looking for "WP" abbreviation)
+    # Working pressure (looking for "WP" abbreviation or full text)
     working_match = re.search(r'(?:WP|Working\s+Pressure)\s+(\d+)\s*kPag', text, re.IGNORECASE)
     if working_match:
         info['working_pressure_kpag'] = working_match.group(1)
 
-    # ID: Look for "HOSE ID" (no change needed here, but kept for completeness)
-    id_match = re.search(r'HOSE ID\s*=\s*([\d\.±]+)', text, re.IGNORECASE)
-    if id_match:
-        # Assuming you might want to add an 'id' field to your info dict
-        info['id'] = id_match.group(1)
+    # Burst pressure (handle this even if not present to avoid NameError)
+    burst_match = re.search(r'Burst\s+Pressure\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:bar|BAR)', text, re.IGNORECASE)
     if burst_match:
         info['burst_pressure_bar'] = burst_match.group(1)
-
-    # Working pressure
-    working_match = re.search(r'Working\s+Pressure\s*[:=]?\s*(\d+(?:\.\d+)?)\s*(?:kPag|KPAG)', text, re.IGNORECASE)
-    if working_match:
-        info['working_pressure_kpag'] = working_match.group(1)
+        
+    return info
 
     # Additional measurements
     od_match = re.search(r'OD\s*[=:]?\s*(\d+\.?\d*)', text, re.IGNORECASE)
@@ -274,60 +266,60 @@ def extract_text_from_pdf(pdf_bytes):
     
     # Step 1: Try direct text extraction
     logger.info("Attempting direct text extraction with PyMuPDF...")
-    pdf_document = fitz.open("pdf", pdf_bytes)
     full_text = ""
-    
-    for page_num, page in enumerate(pdf_document):
-        page_text = page.get_text()
-        full_text += page_text
-        logger.info(f"Page {page_num + 1}: Extracted {len(page_text)} characters")
-    
-    pdf_document.close()
-    
+    try:
+        with fitz.open("pdf", pdf_bytes) as pdf_document:
+            for page_num, page in enumerate(pdf_document):
+                page_text = page.get_text()
+                full_text += page_text
+                logger.info(f"Page {page_num + 1}: Extracted {len(page_text)} characters")
+    except Exception as e:
+        logger.error(f"PyMuPDF failed to open PDF: {e}")
+        full_text = "" # Ensure text is empty if parsing fails
+
     logger.info(f"Direct extraction found {len(full_text)} characters")
     
     # Step 2: If direct extraction yields little text, try Gemini Vision
     if len(full_text.strip()) < 100:
         logger.info("Direct extraction yielded limited text. Attempting Gemini Vision...")
+        temp_pdf_path = None  # Initialize path variable
         try:
-            # Convert PDF to images one page at a time to manage memory
-            # Use convert_from_bytes directly
-            pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf") # Open PDF from bytes
+            # Create a temporary file to work with pdf2image
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
+                temp_pdf.write(pdf_bytes)
+                temp_pdf_path = temp_pdf.name
             
-            # Initialize text collection
-            full_text = ""
+            # Re-initialize text collection for Gemini
+            vision_text = ""
             
-            for page_num in range(len(pdf_document)):
-                # Convert only the current page to an image using bytes
-                images = convert_from_bytes(
-                    pdf_bytes,
-                    first_page=page_num + 1,
-                    last_page=page_num + 1,
-                    dpi=100,  # Lower DPI to reduce memory
-                    fmt='jpeg',
-                    thread_count=1  # Single thread to reduce memory usage
-                )
-                
-                if images:
-                    # Process with Gemini Vision
-                    page_text = process_page_with_gemini(images[0])
-                    if page_text:
-                        full_text += page_text + "\n"
-                    
-                    # Clean up
-                    for img in images:
-                        img.close()
-                    del images
+            # Convert PDF pages to images using the file path
+            page_images = convert_from_path(
+                temp_pdf_path,
+                dpi=150,  # Higher DPI for better OCR
+                fmt='jpeg',
+                thread_count=1
+            )
             
-            pdf_document.close()
-            os.unlink(temp_pdf_path) # Delete the temporary PDF file
+            for image in page_images:
+                page_text = process_page_with_gemini(image)
+                if page_text:
+                    vision_text += page_text + "\n"
+                image.close()  # Clean up image object memory
             
-            logger.info(f"Text extraction complete. Found {len(full_text)} characters")
-            return full_text
-                
+            full_text = vision_text # Replace initial text with vision results
+
         except Exception as e:
+            # Log the specific error during the Gemini process
             logger.error(f"Error during text extraction with Gemini Vision: {str(e)}")
-            return full_text
+            # Fallback to the (limited) text from the initial PyMuPDF attempt
+        finally:
+            # This block ALWAYS runs, ensuring the temporary file is deleted
+            if temp_pdf_path and os.path.exists(temp_pdf_path):
+                os.unlink(temp_pdf_path)
+                logger.info(f"Deleted temporary file: {temp_pdf_path}")
+    
+    logger.info(f"Text extraction complete. Found {len(full_text)} characters")
+    return full_text
     
     return full_text
 
