@@ -138,25 +138,25 @@ def calculate_development_length(dimensions):
     """
     try:
         # Try to use radius and angle if available
-        if (dimensions["radius"] != "Not Found" and 
-            dimensions["angle"] != "Not Found" and
-            dimensions["radius"].replace('.', '', 1).isdigit() and
-            dimensions["angle"].replace('.', '', 1).isdigit()):
+        radius = dimensions.get("radius", "Not Found")
+        angle = dimensions.get("angle", "Not Found")
+        if (radius != "Not Found" and 
+            angle != "Not Found" and
+            radius.replace('.', '', 1).replace('-', '', 1).isdigit() and
+            angle.replace('.', '', 1).replace('-', '', 1).isdigit()):
             
-            radius = float(dimensions["radius"])
-            angle = float(dimensions["angle"])
+            radius = float(radius)
+            angle = float(angle)
             return round(2 * math.pi * radius * (angle / 360), 2)
         
         # Fall back to centerline length if available
-        elif (dimensions["centerline_length"] != "Not Found" and
-              dimensions["centerline_length"].replace('.', '', 1).isdigit()):
-            
-            return round(float(dimensions["centerline_length"]), 2)
+        centerline = dimensions.get("centerline_length", "Not Found")
+        if centerline != "Not Found" and centerline.replace('.', '', 1).replace('-', '', 1).isdigit():
+            return round(float(centerline), 2)
         
         # Default calculation if no specific dimensions found
-        else:
-            # Use typical values for hose bending
-            return round(2 * math.pi * 40 * (90 / 360), 2)  # 40mm radius, 90° angle
+        # Use typical values for hose bending
+        return round(2 * math.pi * 40 * (90 / 360), 2)  # 40mm radius, 90° angle
     except Exception as e:
         print(f"Error calculating development length: {e}")
         return "Calculation error"
@@ -204,9 +204,10 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
     id1 = dimensions.get('id1', 'Not Found')
     if (od1 != 'Not Found' and id1 != 'Not Found' and
         isinstance(od1, str) and isinstance(id1, str) and
-        od1.replace('.', '', 1).isdigit() and id1.replace('.', '', 1).isdigit()):
+        od1.replace('.', '', 1).replace('-', '', 1).isdigit() and 
+        id1.replace('.', '', 1).replace('-', '', 1).isdigit()):
         try:
-            thickness = (float(od1) - float(id1)) / 2
+            thickness = abs(float(od1) - float(id1)) / 2
             row_data['THICKNESS AS PER ID OD DIFFERENCE'] = round(thickness, 3)
         except Exception as e:
             print(f"Error calculating thickness difference: {e}")
