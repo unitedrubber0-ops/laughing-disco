@@ -484,10 +484,11 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
 
 # --- Function to convert PDF to images ---
 def convert_pdf_to_images(pdf_content):
-    """Convert PDF bytes to list of PIL images with error handling."""
+    """Convert PDF bytes to list of PIL images with error handling and optimized memory usage."""
     try:
-        images = convert_from_bytes(pdf_content, dpi=300, fmt='png')
-        logger.info(f"Converted PDF to {len(images)} images")
+        # Lower DPI to reduce memory usage while maintaining readable quality
+        images = convert_from_bytes(pdf_content, dpi=150, fmt='png')
+        logger.info(f"Converted PDF to {len(images)} images at 150 DPI")
         return images
     except Exception as e:
         logger.error(f"PDF to image conversion failed: {str(e)}")
