@@ -3,7 +3,15 @@ import re
 import json
 import pandas as pd
 import fitz  # PyMuPDF
-import google.generativeai as genai
+import google.generativeai     # Extract OD from tubing information
+    od_match = re.search(r'TUBING OD[^\d]*(\d+\.?\d*)', text, re.IGNORECASE)
+    if od_match:
+        dimensions["od1"] = od_match.group(1)
+    
+    # Debug logging
+    print("Extracted dimensions:", json.dumps(dimensions, indent=2))
+    
+    return dimensionsai
 from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
 import base64
@@ -75,40 +83,47 @@ def extract_dimensions_from_text(text):
         "angle": "Not Found"
     }
     
-    # Extract ID1 (look for patterns like "43.5±0.5" or "43.5 ± 0.5")
-    id_match = re.search(r'(\d+\.?\d*)\s*[±]\s*(\d+\.?\d*)', text)
-    if id_match:
-        dimensions["id1"] = id_match.group(1)
+    try:
+        # Extract ID1 (look for patterns like "43.5±0.5" or "43.5 ± 0.5")
+        id_match = re.search(r'(\d+\.?\d*)\s*[±]\s*(\d+\.?\d*)', text)
+        if id_match:
+            dimensions["id1"] = id_match.group(1)
+        
+        # Extract thickness (look for patterns like "4.050" after "WALL THICKNESS")
+        thickness_match = re.search(r'WALL THICKNESS[^\d]*(\d+\.?\d*)', text)
+        if thickness_match:
+            dimensions["thickness"] = thickness_match.group(1)
+        
+        # Extract centerline length with multiple patterns
+        centerline_match = re.search(r'CTRLINE LENGTH\s*=\s*(\d+\.?\d*)', text, re.IGNORECASE)
+        if centerline_match:
+            dimensions["centerline_length"] = centerline_match.group(1)
+        else:
+            # Try alternative patterns
+            centerline_match2 = re.search(r'APPROX CTRLINE LENGTH\s*=\s*(\d+\.?\d*)', text, re.IGNORECASE)
+            if centerline_match2:
+                dimensions["centerline_length"] = centerline_match2.group(1)
+        
+        # Extract radius (look for patterns like (40) which might indicate radius)
+        radius_match = re.search(r'\((\d+)\)', text)
+        if radius_match:
+            dimensions["radius"] = radius_match.group(1)
+        
+        # Extract angle (look for patterns like 90°)
+        angle_match = re.search(r'(\d+)\s*°', text)
+        if angle_match:
+            dimensions["angle"] = angle_match.group(1)
+        
+        # Try to extract OD from tubing information
+        od_match = re.search(r'TUBING OD[^\d]*(\d+\.?\d*)', text, re.IGNORECASE)
+        if od_match:
+            dimensions["od1"] = od_match.group(1)
+        
+        # Debug logging
+        print("Extracted dimensions:", json.dumps(dimensions, indent=2))
     
-    # Extract thickness (look for patterns like "4.050" after "WALL THICKNESS")
-    thickness_match = re.search(r'WALL THICKNESS[^\d]*(\d+\.?\d*)', text)
-    if thickness_match:
-        dimensions["thickness"] = thickness_match.group(1)
-    
-    # Extract centerline length with multiple patterns
-    centerline_match = re.search(r'CTRLINE LENGTH\s*=\s*(\d+\.?\d*)', text, re.IGNORECASE)
-    if centerline_match:
-        dimensions["centerline_length"] = centerline_match.group(1)
-    else:
-        # Try alternative patterns
-        centerline_match2 = re.search(r'APPROX CTRLINE LENGTH\s*=\s*(\d+\.?\d*)', text, re.IGNORECASE)
-        if centerline_match2:
-            dimensions["centerline_length"] = centerline_match2.group(1)
-    
-    # Extract radius (look for patterns like (40) which might indicate radius)
-    radius_match = re.search(r'\((\d+)\)', text)
-    if radius_match:
-        dimensions["radius"] = radius_match.group(1)
-    
-    # Extract angle (look for patterns like 90°)
-    angle_match = re.search(r'(\d+)\s*°', text)
-    if angle_match:
-        dimensions["angle"] = angle_match.group(1)
-    
-    # Try to extract OD from tubing information
-    od_match = re.search(r'TUBING OD[^\d]*(\d+\.?\d*)', text, re.IGNORECASE)
-    if od_match:
-        dimensions["od1"] = od_match.group(1)
+    except Exception as e:
+        print(f"Error extracting dimensions: {e}")
     
     return dimensions
 
@@ -182,12 +197,16 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
     row_data['REMARK'] = ' '.join(remarks) if remarks else 'No specific remarks.'
     
     # Calculate thickness from ID/OD if available
-    if (dimensions.get('od1') != 'Not Found' and dimensions.get('id1') != 'Not Found' and
-        dimensions['od1'].replace('.', '', 1).isdigit() and dimensions['id1'].replace('.', '', 1).isdigit()):
+    od1 = dimensions.get('od1', 'Not Found')
+    id1 = dimensions.get('id1', 'Not Found')
+    if (od1 != 'Not Found' and id1 != 'Not Found' and
+        isinstance(od1, str) and isinstance(id1, str) and
+        od1.replace('.', '', 1).isdigit() and id1.replace('.', '', 1).isdigit()):
         try:
-            thickness = (float(dimensions['od1']) - float(dimensions['id1'])) / 2
+            thickness = (float(od1) - float(id1)) / 2
             row_data['THICKNESS AS PER ID OD DIFFERENCE'] = round(thickness, 3)
-        except:
+        except Exception as e:
+            print(f"Error calculating thickness difference: {e}")
             row_data['THICKNESS AS PER ID OD DIFFERENCE'] = 'Calculation error'
     
     # Create DataFrame with the row data
