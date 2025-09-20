@@ -5,7 +5,23 @@ import logging
 import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
-from flask import Flask, request, jsonify, render_template, send_file
+from flask import Flask, request, jsonify, render_template, send_file, send_from_directory, current_app
+from pdf2image import convert_from_bytes
+from PIL import Image
+import io
+import tempfile
+from werkzeug.exceptions import RequestTimeout, ServiceUnavailable
+from functools import wraps
+import threading
+import time
+import gc
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Configure logging
 logging.basicConfig(
@@ -16,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 def extract_dimensions_from_text(text):
     """
-    Extract dimensions from the PDF text using regex patterns
+    Extract dimensions from the PDF text using regex patterns with detailed logging
     """
     # Normalize text by replacing newlines with spaces
     text = text.replace('\n', ' ')
@@ -32,8 +48,97 @@ def extract_dimensions_from_text(text):
         "angle": "Not Found"
     }
 
-    # Debug print to see what text we're working with
-    print(f"Processing text (first 500 chars): {text[:500]}")
+    # Log the full text for pattern analysis
+    logger.info("\n----------- DIMENSION EXTRACTION TEXT -----------")
+    logger.info(f"Full text being processed: {text}")
+    logger.info("------------------------------------------")
+    
+    # Define all patterns we're looking for with their descriptions
+    patterns = {
+        "part_number": (r'(\d{7}C\d)', "Part number (7 digits + C + digit)"),
+        "id_2d": (r'(?:ID|TUBING ID)\s*[:=]\s*(\d+[.,]?\d*)\s*[±]\s*(\d+[.,]?\d*)', "ID from drawing with tolerance"),
+        "id_3d": (r'(?:ID|TUBING ID)\s*[:=]\s*(\d+[.,]?\d*)', "ID value"),
+        "thickness": (r'WALL THICKNESS\s*[:=]\s*([\d.,]+)', "Wall thickness"),
+        "centerline": (r'(?:APPROX\s*)?CTRLINE LENGTH\s*=\s*(\d+[.,]?\d*)', "Centerline length"),
+        "radius": (r'(?:RADIUS|R)\s*[:=]?\s*\(?\s*(\d+[.,]?\d*)\)?', "Radius value"),
+        "angle": (r'(?:ANGLE|ANG)?\s*(\d+)\s*°(?:\s*[±+]\s*\d+\s*°)?', "Bend angle"),
+        "tubing_od": (r'TUBING\s+OD\s*[:=]\s*([<>]?)\s*(\d+[.,]?\d*)', "Tubing outer diameter"),
+        "description": (r'(?:HOSE|TUBE),\s*([\s\w,\-\.]+?)(?:\s*\n|\s*$)', "Part description"),
+        "specification": (r'(?:MPAPS|SAE)\s*(?:F-)?(\d+(?:\.\d+)?)', "Material specification"),
+        "grade": (r'(?:GRADE|TYPE)\s*([\w\d]+)', "Material grade")
+    }
+    
+    # Log each pattern matching attempt
+    logger.info("\n----------- PATTERN MATCHING ATTEMPTS -----------")
+    
+    # Try each pattern and log results
+    for pattern_name, (pattern, description) in patterns.items():
+        logger.info(f"\nTrying to match {description} with pattern: {pattern}")
+        # First try case-sensitive match
+        matches = list(re.finditer(pattern, text))
+        if not matches:
+            # If no matches, try case-insensitive
+            matches = list(re.finditer(pattern, text, re.IGNORECASE))
+            if matches:
+                logger.info("Found matches using case-insensitive search")
+        
+        found = False
+        for match in matches:
+            found = True
+            logger.info(f"Found match for {description}:")
+            logger.info(f"Full match: {match.group(0)}")
+            logger.info(f"Captured groups: {match.groups()}")
+            
+            # Extract larger context around the match
+            start = max(0, match.start() - 100)
+            end = min(len(text), match.end() + 100)
+            context = text[start:end]
+            logger.info(f"Context around match: \n...{context}...")
+            
+            # Process the match based on pattern type
+            value = None
+            if pattern_name == "id_2d":
+                value = match.group(1).replace(',', '.')
+                dimensions["id1"] = value
+            elif pattern_name == "id_3d":
+                value = match.group(1).replace(',', '.')
+                dimensions["id2"] = value
+            elif pattern_name == "thickness":
+                value = match.group(1).replace(',', '.')
+                dimensions["thickness"] = value
+            elif pattern_name == "centerline":
+                value = match.group(1).replace(',', '.')
+                dimensions["centerline_length"] = value
+            elif pattern_name == "radius":
+                value = match.group(1).replace(',', '.')
+                dimensions["radius"] = value
+            elif pattern_name == "angle":
+                value = match.group(1)
+                dimensions["angle"] = value
+            elif pattern_name == "tubing_od":
+                value = match.group(2).replace(',', '.')
+                dimensions["od1"] = value
+            
+            logger.info(f"Extracted value for {pattern_name}: {value}")
+            
+            # Validate numeric values
+            if value and value != "Not Found":
+                try:
+                    float(value.replace(',', '.'))
+                except ValueError:
+                    logger.warning(f"Invalid numeric value extracted for {pattern_name}: {value}")
+                    # Keep the value as "Not Found"
+                    if pattern_name in dimensions:
+                        dimensions[pattern_name] = "Not Found"
+        
+        if not found:
+            logger.info(f"No matches found for {description}")
+    
+    logger.info("\n----------- FINAL EXTRACTED DIMENSIONS -----------")
+    logger.info(json.dumps(dimensions, indent=2))
+    logger.info("------------------------------------------")
+    
+    return dimensions
     
     # Extract ID1 (look for patterns like "As per 2D : 43.5±0.5")
     id_match = re.search(r'As per 2D\s*:\s*(\d+[.,]?\d*)\s*[±]\s*(\d+[.,]?\d*)', text)
@@ -377,43 +482,87 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
     output.seek(0)
     return output
 
-# --- NEW: Function to analyze the PDF text using Gemini API ---
+# --- Function to convert PDF to images ---
+def convert_pdf_to_images(pdf_content):
+    """Convert PDF bytes to list of PIL images with error handling."""
+    try:
+        images = convert_from_bytes(pdf_content, dpi=300, fmt='png')
+        logger.info(f"Converted PDF to {len(images)} images")
+        return images
+    except Exception as e:
+        logger.error(f"PDF to image conversion failed: {str(e)}")
+        raise
+
+def image_to_base64(image):
+    """Convert PIL Image to base64 string."""
+    buffered = io.BytesIO()
+    image.save(buffered, format="PNG")
+    return base64.b64encode(buffered.getvalue()).decode('utf-8')
+
+# --- Analyze drawing using improved Gemini vision model ---
 def analyze_drawing_with_gemini(pdf_bytes):
+    """
+    Analyze drawing using Google Gemini with improved prompt and image analysis.
+    Now includes extraction of specifications, grades, and material properties.
+    """
     results = {
         "part_number": "Not Found",
+        "description": "Not Found",
         "standard": "Not Found",
         "grade": "Not Found",
         "material": "Not Found",
+        "od": "Not Found",
+        "thickness": "Not Found",
+        "centerline_length": "Not Found",
+        "development_length": "Not Found",
+        "burst_pressure": "Not Found",
+        "working_temperature": "Not Found",
+        "working_pressure": "Not Found",
+        "coordinates": [],
+        "dimensions": {},
         "error": None
     }
     
     try:
-        # --- Step 1: Extract text from PDF ---
+        # Convert PDF to images for better analysis
+        images = convert_pdf_to_images(pdf_bytes)
+        
+        # Prepare content for Gemini
+        content = []
+        for img in images:
+            content.append({
+                'mime_type': 'image/png',
+                'data': image_to_base64(img)
+            })
+        
+        # Extract text for coordinate and dimension parsing
         pdf_document = fitz.open("pdf", pdf_bytes)
         full_text = ""
-        for page in pdf_document:
-            full_text += page.get_text()
+        for page_num, page in enumerate(pdf_document):
+            page_text = page.get_text()
+            full_text += page_text
+            # Log each page's text separately for better debugging
+            logger.info(f"\n----------- RAW EXTRACTED TEXT (PAGE {page_num + 1}) -----------")
+            logger.info(page_text)
+            logger.info("------------------------------------------")
+            
+            # Also log text blocks with their positions for structure analysis
+            blocks = page.get_text("blocks")
+            logger.info(f"\n----------- TEXT BLOCKS STRUCTURE (PAGE {page_num + 1}) -----------")
+            for block in blocks:
+                logger.info(f"Block at position {block[:4]}: {block[4]}")
+            logger.info("------------------------------------------")
         
-        # Debug logging to see extracted text
-        print(f"Extracted text from PDF (first 500 chars): {full_text[:500]}")
-        print("Text length:", len(full_text))
-        print("Sample text around key phrases:")
-        for phrase in ["TUBING OD", "As per 2D", "WALL THICKNESS", "CTRLINE LENGTH"]:
-            idx = full_text.find(phrase)
-            if idx >= 0:
-                print(f"\nContext around '{phrase}':")
-                print(full_text[max(0, idx-50):min(len(full_text), idx+50)])
+        # Log the complete extracted text
+        logger.info("\n----------- COMPLETE EXTRACTED TEXT -----------")
+        logger.info(full_text)
+        logger.info("------------------------------------------")
         
-        if not full_text.strip():
-            results["error"] = "Could not extract any text from the PDF."
-            return results
-        
-        # Extract dimensions and coordinate points from the text
+        # Extract dimensions using existing logic
         dimensions = extract_dimensions_from_text(full_text)
         results["dimensions"] = dimensions
-        print("Extracted dimensions:", json.dumps(dimensions, indent=2))
-
-        # Extract coordinate points using patterns like "P1(x,y,z)" or similar
+        
+        # Extract coordinate points
         points = []
         point_pattern = r'P\d+\s*[\(\[]?\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,?\s*(-?\d+\.?\d*)?\s*[\)\]]?\s*(?:R\s*=?\s*(\d+\.?\d*))?'
         point_matches = re.finditer(point_pattern, full_text)
@@ -426,12 +575,51 @@ def analyze_drawing_with_gemini(pdf_bytes):
                 'r': float(match.group(4)) if match.group(4) else None
             }
             points.append(point)
-            
+        
         if points:
             results["coordinates"] = points
-            print("Extracted coordinate points:", json.dumps(points, indent=2))
+        
+        # Enhanced prompt for Gemini
+        prompt = """
+You are an expert in analyzing Navistar engineering drawings for hose components.
+Carefully extract the following information:
 
-        # --- Step 2: Prepare the prompt for the Gemini API ---
+1. Child Part Number: Look for 7-8 digit numbers ending in 'C' followed by 1-2 digits
+2. Description: The component description in title block or notes
+3. Specification: Look for the PRIMARY material specification:
+   - Focus on hose material specs like MPAPS F-6032 for fuel/oil resistant hoses
+   - Don't confuse with tolerance specs like F-30 or assembly specs like F-1
+   - If multiple specs found, prioritize the one defining hose material type
+4. Grade: Look for Type designation (e.g., Type I) or grade code
+5. Material: Only report if explicitly stated in drawing, don't infer
+6. Dimensions:
+   - OD (outer diameter) in mm
+   - Wall thickness in mm
+   - Centerline length in mm
+7. Operating Conditions:
+   - Working pressure in bar
+   - Burst pressure in bar (if specified)
+   - Working temperature range (if specified)
+8. Notes: Any special requirements or restrictions
+
+Respond with ONLY a JSON object containing these exact keys:
+{
+    "part_number": string,
+    "description": string,
+    "standard": string,
+    "grade": string,
+    "material": string,
+    "od": string,
+    "thickness": string,
+    "centerline_length": string,
+    "burst_pressure": string,
+    "working_temperature": string,
+    "working_pressure": string
+}
+
+For any value not found in drawing, use "Not Found" (not null or empty string).
+Pay special attention to distinguishing primary material specs from reference specs.
+"""
         model = genai.GenerativeModel('gemini-1.5-flash') # Use a fast and capable model
         
         prompt = f"""
@@ -451,20 +639,39 @@ def analyze_drawing_with_gemini(pdf_bytes):
         ---
         """
 
-        # --- Step 3: Call the Gemini API ---
-        response = model.generate_content(prompt)
-        
-        # Clean the response to ensure it's valid JSON
-        # The model might sometimes wrap the JSON in ```json ... ```
-        cleaned_response = re.sub(r'```json\s*|\s*```', '', response.text.strip())
-        
-        # Parse the JSON response from the model
-        extracted_data = json.loads(cleaned_response)
-
-        results["part_number"] = extracted_data.get("part_number", "Not Found")
-        results["standard"] = extracted_data.get("standard", "Not Found")
-        results["grade"] = extracted_data.get("grade", "Not Found")
-
+        # --- Step 3: Call Gemini API with vision model ---
+        try:
+            model = genai.GenerativeModel('gemini-pro-vision')
+            response = model.generate_content([prompt, *content])
+            
+            if response and response.text:
+                # Clean the response to ensure it's valid JSON
+                cleaned_response = re.sub(r'```json\s*|\s*```', '', response.text.strip())
+                
+                try:
+                    # Parse the JSON response
+                    gemini_results = json.loads(cleaned_response)
+                    
+                    # Update results with Gemini's findings
+                    for key in gemini_results:
+                        if key in results:
+                            results[key] = gemini_results[key]
+                    
+                    # Log successful analysis
+                    logger.info(f'Successfully analyzed drawing with part number: {results["part_number"]}')
+                    
+                except json.JSONDecodeError as je:
+                    logger.error(f'Failed to parse Gemini response as JSON: {str(je)}')
+                    results['error'] = 'Failed to parse analysis results'
+                    print("Raw response:", response.text)  # Debug logging
+            else:
+                logger.warning('Received empty response from Gemini')
+                results['error'] = 'No analysis results received'
+                
+        except Exception as e:
+            logger.error(f'Error during Gemini API call: {str(e)}')
+            results['error'] = f'Analysis failed: {str(e)}'
+            
         # --- Step 4: Look up the material in the DataFrame ---
         if results["standard"] != "Not Found" and results["grade"] != "Not Found":
             standard_key = results["standard"]
