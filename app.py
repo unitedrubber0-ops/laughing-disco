@@ -34,163 +34,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def extract_dimensions_from_text(text):
-    """
-    Extract dimensions from the PDF text using regex patterns with detailed logging
-    """
-    # Normalize text by replacing newlines with spaces
-    text = text.replace('\n', ' ')
-    
-    dimensions = {
-        "id1": "Not Found",
-        "id2": "Not Found",
-        "od1": "Not Found",
-        "od2": "Not Found",
-        "thickness": "Not Found",
-        "centerline_length": "Not Found",
-        "radius": "Not Found",
-        "angle": "Not Found"
-    }
 
-    # Log the full text for pattern analysis
-    logger.info("\n----------- DIMENSION EXTRACTION TEXT -----------")
-    logger.info(f"Full text being processed: {text}")
-    logger.info("------------------------------------------")
     
-    # Define all patterns we're looking for with their descriptions
-    patterns = {
-        "part_number": (r'(\d{7}C\d)', "Part number (7 digits + C + digit)"),
-        "id_2d": (r'(?:ID|TUBING ID)\s*[:=]\s*(\d+[.,]?\d*)\s*[±]\s*(\d+[.,]?\d*)', "ID from drawing with tolerance"),
-        "id_3d": (r'(?:ID|TUBING ID)\s*[:=]\s*(\d+[.,]?\d*)', "ID value"),
-        "thickness": (r'WALL THICKNESS\s*[:=]\s*([\d.,]+)', "Wall thickness"),
-        "centerline": (r'(?:APPROX\s*)?CTRLINE LENGTH\s*=\s*(\d+[.,]?\d*)', "Centerline length"),
-        "radius": (r'(?:RADIUS|R)\s*[:=]?\s*\(?\s*(\d+[.,]?\d*)\)?', "Radius value"),
-        "angle": (r'(?:ANGLE|ANG)?\s*(\d+)\s*°(?:\s*[±+]\s*\d+\s*°)?', "Bend angle"),
-        "tubing_od": (r'TUBING\s+OD\s*[:=]\s*([<>]?)\s*(\d+[.,]?\d*)', "Tubing outer diameter"),
-        "description": (r'(?:HOSE|TUBE),\s*([\s\w,\-\.]+?)(?:\s*\n|\s*$)', "Part description"),
-        "specification": (r'(?:MPAPS|SAE)\s*(?:F-)?(\d+(?:\.\d+)?)', "Material specification"),
-        "grade": (r'(?:GRADE|TYPE)\s*([\w\d]+)', "Material grade")
-    }
-    
-    # Log each pattern matching attempt
-    logger.info("\n----------- PATTERN MATCHING ATTEMPTS -----------")
-    
-    # Try each pattern and log results
-    for pattern_name, (pattern, description) in patterns.items():
-        logger.info(f"\nTrying to match {description} with pattern: {pattern}")
-        # First try case-sensitive match
-        matches = list(re.finditer(pattern, text))
-        if not matches:
-            # If no matches, try case-insensitive
-            matches = list(re.finditer(pattern, text, re.IGNORECASE))
-            if matches:
-                logger.info("Found matches using case-insensitive search")
-        
-        found = False
-        for match in matches:
-            found = True
-            logger.info(f"Found match for {description}:")
-            logger.info(f"Full match: {match.group(0)}")
-            logger.info(f"Captured groups: {match.groups()}")
-            
-            # Extract larger context around the match
-            start = max(0, match.start() - 100)
-            end = min(len(text), match.end() + 100)
-            context = text[start:end]
-            logger.info(f"Context around match: \n...{context}...")
-            
-            # Process the match based on pattern type
-            value = None
-            if pattern_name == "id_2d":
-                value = match.group(1).replace(',', '.')
-                dimensions["id1"] = value
-            elif pattern_name == "id_3d":
-                value = match.group(1).replace(',', '.')
-                dimensions["id2"] = value
-            elif pattern_name == "thickness":
-                value = match.group(1).replace(',', '.')
-                dimensions["thickness"] = value
-            elif pattern_name == "centerline":
-                value = match.group(1).replace(',', '.')
-                dimensions["centerline_length"] = value
-            elif pattern_name == "radius":
-                value = match.group(1).replace(',', '.')
-                dimensions["radius"] = value
-            elif pattern_name == "angle":
-                value = match.group(1)
-                dimensions["angle"] = value
-            elif pattern_name == "tubing_od":
-                value = match.group(2).replace(',', '.')
-                dimensions["od1"] = value
-            
-            logger.info(f"Extracted value for {pattern_name}: {value}")
-            
-            # Validate numeric values
-            if value and value != "Not Found":
-                try:
-                    float(value.replace(',', '.'))
-                except ValueError:
-                    logger.warning(f"Invalid numeric value extracted for {pattern_name}: {value}")
-                    # Keep the value as "Not Found"
-                    if pattern_name in dimensions:
-                        dimensions[pattern_name] = "Not Found"
-        
-        if not found:
-            logger.info(f"No matches found for {description}")
-    
-    logger.info("\n----------- FINAL EXTRACTED DIMENSIONS -----------")
-    logger.info(json.dumps(dimensions, indent=2))
-    logger.info("------------------------------------------")
-    
-    return dimensions
-    
-    # Extract ID1 (look for patterns like "As per 2D : 43.5±0.5")
-    id_match = re.search(r'As per 2D\s*:\s*(\d+[.,]?\d*)\s*[±]\s*(\d+[.,]?\d*)', text)
-    if id_match:
-        dimensions["id1"] = id_match.group(1).replace(',', '.')
-        print(f"Found ID1: {dimensions['id1']}")
-    
-    # Extract ID2 (look for patterns like "As per 3D : 44.85")
-    id2_match = re.search(r'As per 3D\s*:\s*(\d+[.,]?\d*)', text)
-    if id2_match:
-        dimensions["id2"] = id2_match.group(1).replace(',', '.')
-        print(f"Found ID2: {dimensions['id2']}")
-    
-    # Extract thickness (look for patterns like "WALL THICKNESS - 4,050")
-    thickness_match = re.search(r'WALL THICKNESS\s*[-\s]*\s*(\d+[.,]?\d*)', text)
-    if thickness_match:
-        dimensions["thickness"] = thickness_match.group(1).replace(',', '.')
-        print(f"Found thickness: {dimensions['thickness']}")
-    
-    # Extract centerline length
-    centerline_match = re.search(r'APPROX CTRLINE LENGTH\s*=\s*(\d+[.,]?\d*)', text, re.IGNORECASE)
-    if centerline_match:
-        dimensions["centerline_length"] = centerline_match.group(1).replace(',', '.')
-        print(f"Found centerline length: {dimensions['centerline_length']}")
-    
-    # Extract radius (look for patterns like (40))
-    radius_matches = re.findall(r'\((\d+)\)', text)
-    if radius_matches:
-        # Use the first radius found
-        dimensions["radius"] = radius_matches[0]
-        print(f"Found radius: {dimensions['radius']}")
-    
-    # Extract angle (look for patterns like 90° +5°)
-    angle_match = re.search(r'(\d+)\s*°\s*[+]\s*\d+\s*°', text)
-    if angle_match:
-        dimensions["angle"] = angle_match.group(1)
-        print(f"Found angle: {dimensions['angle']}")
-    
-    # Extract OD from tubing information
-    od_match = re.search(r'TUBING OD[^\d]*([<>]?)\s*(\d+[.,]?\d*)', text, re.IGNORECASE)
-    if od_match:
-        dimensions["od1"] = od_match.group(2).replace(',', '.')
-        print(f"Found OD: {dimensions['od1']}")
-    
-    # Debug logging
-    print("Extracted dimensions:", json.dumps(dimensions, indent=2))
-    
-    return dimensions
+
 from flask_cors import CORS
 import base64
 from io import BytesIO
@@ -245,65 +91,7 @@ except FileNotFoundError:
     print("Error: material_data.csv not found. Please ensure the file exists.")
     material_df = pd.DataFrame()
 
-# --- Function to extract dimensions from PDF text ---
-def extract_dimensions_from_text(text):
-    """
-    Extract dimensions from the PDF text using regex patterns
-    """
-    dimensions = {
-        "id1": "Not Found",
-        "id2": "Not Found",
-        "od1": "Not Found",
-        "od2": "Not Found",
-        "thickness": "Not Found",
-        "centerline_length": "Not Found",
-        "radius": "Not Found",
-        "angle": "Not Found"
-    }
-    
-    try:
-        # Extract ID1 (look for patterns like "43.5±0.5" or "43.5 ± 0.5")
-        id_match = re.search(r'(\d+\.?\d*)\s*[±]\s*(\d+\.?\d*)', text)
-        if id_match:
-            dimensions["id1"] = id_match.group(1)
-        
-        # Extract thickness (look for patterns like "4.050" after "WALL THICKNESS")
-        thickness_match = re.search(r'WALL THICKNESS[^\d]*(\d+\.?\d*)', text)
-        if thickness_match:
-            dimensions["thickness"] = thickness_match.group(1)
-        
-        # Extract centerline length with multiple patterns
-        centerline_match = re.search(r'CTRLINE LENGTH\s*=\s*(\d+\.?\d*)', text, re.IGNORECASE)
-        if centerline_match:
-            dimensions["centerline_length"] = centerline_match.group(1)
-        else:
-            # Try alternative patterns
-            centerline_match2 = re.search(r'APPROX CTRLINE LENGTH\s*=\s*(\d+\.?\d*)', text, re.IGNORECASE)
-            if centerline_match2:
-                dimensions["centerline_length"] = centerline_match2.group(1)
-        
-        # Extract radius (look for patterns like (40) which might indicate radius)
-        radius_match = re.search(r'\((\d+)\)', text)
-        if radius_match:
-            dimensions["radius"] = radius_match.group(1)
-        
-        # Extract angle (look for patterns like 90°)
-        angle_match = re.search(r'(\d+)\s*°', text)
-        if angle_match:
-            dimensions["angle"] = angle_match.group(1)
-        
-        # Try to extract OD from tubing information
-        od_match = re.search(r'TUBING OD[^\d]*(\d+\.?\d*)', text, re.IGNORECASE)
-        if od_match:
-            dimensions["od1"] = od_match.group(1)
-        
-        # Debug logging
-        print("Extracted dimensions:", json.dumps(dimensions, indent=2))
-    
-    except Exception as e:
-        print(f"Error extracting dimensions: {e}")
-    
-    return dimensions
+
 
 # --- Function to calculate development length using vector geometry ---
 def calculate_development_length(dimensions, points=None):
@@ -558,8 +346,7 @@ def parse_text_with_gemini(full_text):
 def analyze_drawing_with_gemini(pdf_bytes):
     """
     Analyze drawing using Google Gemini with improved prompt and image analysis.
-    Now includes extraction of specifications, grades, and material properties.
-    Uses both regex-based and AI-powered parsing for comparison.
+    Extracts dimensions, specifications, grades, and material properties using AI vision model.
     """
     results = {
         "part_number": "Not Found",
@@ -614,96 +401,27 @@ def analyze_drawing_with_gemini(pdf_bytes):
         logger.info(full_text)
         logger.info("------------------------------------------")
         
-        # Extract dimensions using both AI and regex methods (AI-first approach)
+        # Extract dimensions using AI-only approach
         ai_results = parse_text_with_gemini(full_text)
-        regex_dimensions = extract_dimensions_from_text(full_text)
-        
-        # Start with AI results as primary source of truth
-        results["dimensions"] = {
-            "id1": ai_results.get("id", "Not Found"),
-            "id2": "Not Found",  # AI doesn't differentiate between id1 and id2
-            "od1": ai_results.get("od", "Not Found"),
-            "od2": "Not Found",  # AI doesn't differentiate between od1 and od2
-            "thickness": ai_results.get("thickness", "Not Found"),
-            "centerline_length": ai_results.get("centerline_length", "Not Found"),
-            "radius": ai_results.get("radius", "Not Found"),
-            "angle": ai_results.get("angle", "Not Found")
-        }
-        
-        # Only use regex results as fallback for missing values
-        for key in results["dimensions"]:
-            if results["dimensions"][key] == "Not Found":
-                regex_value = regex_dimensions.get(key, "Not Found")
-                if regex_value != "Not Found":
-                    logger.info(f"Using regex fallback for {key}: {regex_value}")
-                    results["dimensions"][key] = regex_value
         
         if ai_results:
-            # Initialize comparison tracking
-            total_fields = 0
-            regex_found = 0
-            ai_found = 0
-            both_matched = 0
-            
-            comparison_fields = {
-                "id": ("id1", "id"),
-                "od": ("od1", "od"),
-                "thickness": ("thickness", "thickness"),
-                "centerline_length": ("centerline_length", "centerline_length"),
-                "radius": ("radius", "radius"),
-                "angle": ("angle", "angle")
+            # Map AI results to dimension structure
+            results["dimensions"] = {
+                "id1": ai_results.get("id", "Not Found"),
+                "id2": "Not Found",  # Currently AI doesn't differentiate between id1 and id2
+                "od1": ai_results.get("od", "Not Found"),
+                "od2": "Not Found",  # Currently AI doesn't differentiate between od1 and od2
+                "thickness": ai_results.get("thickness", "Not Found"),
+                "centerline_length": ai_results.get("centerline_length", "Not Found"),
+                "radius": ai_results.get("radius", "Not Found"),
+                "angle": ai_results.get("angle", "Not Found")
             }
             
-            logger.info("\n----------- COMPARING REGEX VS AI RESULTS -----------")
-            
-            # Compare results and track statistics with AI as primary source
-            for key_pair, (regex_key, ai_key) in comparison_fields.items():
-                total_fields += 1
-                ai_val = ai_results.get(ai_key, "Not Found")
-                regex_val = regex_dimensions.get(regex_key, "Not Found")
-                
-                if ai_val != "Not Found":
-                    ai_found += 1
-                    # Only count regex matches when AI also found a value
-                    if regex_val != "Not Found":
-                        if regex_val == ai_val:
-                            both_matched += 1
-                        else:
-                            logger.info(f"Discrepancy in {key_pair}: AI={ai_val}, Regex={regex_val} (using AI value)")
-                else:
-                    # Count regex as fallback success
-                    if regex_val != "Not Found":
-                        regex_found += 1
-                        logger.info(f"Using regex fallback for {key_pair}: {regex_val}")
-            
-            # Log comparison statistics
-            logger.info("\n----------- EXTRACTION STATISTICS -----------")
-            logger.info(f"Total fields checked: {total_fields}")
-            logger.info(f"Regex success rate: {(regex_found/total_fields)*100:.1f}%")
-            logger.info(f"AI success rate: {(ai_found/total_fields)*100:.1f}%")
-            logger.info(f"Match rate when both found value: {(both_matched/total_fields)*100:.1f}%")
-            logger.info("------------------------------------------")
-            
-            # Begin comparison of individual fields
-            logger.info("\n----------- COMPARING REGEX VS AI RESULTS -----------")
-            for key in ["id", "thickness", "centerline_length", "radius", "angle", "od"]:
-                regex_val = regex_dimensions.get(f"{key}1" if key in ["id", "od"] else key, "Not Found")
-                ai_val = ai_results.get(key, "Not Found")
-                logger.info(f"{key}: Regex='{regex_val}' vs AI='{ai_val}'")
-                
-                # If regex didn't find it but AI did, use AI's value as backup
-                if regex_val == "Not Found" and ai_val != "Not Found":
-                    logger.info(f"Using AI value for {key} as regex failed to find it")
-                    if key in ["id", "od"]:
-                        regex_dimensions[f"{key}1"] = ai_val
-                    else:
-                        regex_dimensions[key] = ai_val
-            
-            # Update analysis results with any additional AI findings
-            if results["part_number"] == "Not Found" and ai_results.get("part_number", "Not Found") != "Not Found":
-                results["part_number"] = ai_results["part_number"]
-            if results["description"] == "Not Found" and ai_results.get("description", "Not Found") != "Not Found":
-                results["description"] = ai_results["description"]
+            # Update main results with AI findings
+            results["part_number"] = ai_results.get("part_number", "Not Found")
+            results["description"] = ai_results.get("description", "Not Found")
+            results["standard"] = ai_results.get("standard", "Not Found")
+            results["grade"] = ai_results.get("grade", "Not Found")
                 
         logger.info("------------------------------------------")
         
