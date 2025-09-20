@@ -9,8 +9,9 @@ RUN apt-get update && apt-get install -y \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file
+# Copy requirements file and material database
 COPY requirements.txt .
+COPY material_data.csv .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt

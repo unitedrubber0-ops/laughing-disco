@@ -27,10 +27,10 @@ except Exception as e:
 
 # --- Load Material Database on Startup ---
 try:
-    material_df = pd.read_csv("MATERIAL WITH STANDARD.xlsx - Sheet1.csv")
+    material_df = pd.read_csv("material_data.csv")
     logging.info(f"Successfully loaded material database with {len(material_df)} entries.")
 except FileNotFoundError:
-    logging.error("MATERIAL WITH STANDARD.xlsx - Sheet1.csv not found. Material lookup will not work.")
+    logging.error("material_data.csv not found. Material lookup will not work.")
     material_df = None
 
 # --- Material Lookup Function ---
