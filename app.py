@@ -873,18 +873,20 @@ def upload_and_analyze():
         # Convert Excel file to base64 for sending in response
         excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
         
-            # Add Excel data to response
-            analysis_results["excel_data"] = excel_b64
+        # Add Excel data to response
+        analysis_results["excel_data"] = excel_b64
 
-            # Recalculate Development Length from the AI-parsed coordinates
-            coordinates = analysis_results.get("coordinates", [])
-            if coordinates:
-                dev_length = calculate_development_length({}, coordinates)
-                analysis_results['development_length_mm'] = f"{dev_length:.2f}" if isinstance(dev_length, (int, float)) and dev_length > 0 else "Not Found"
-            
-            return jsonify(analysis_results)
-        else:
-            return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400# --- Route for the main webpage (no change) ---
+        # Recalculate Development Length from the AI-parsed coordinates
+        coordinates = analysis_results.get("coordinates", [])
+        if coordinates:
+            dev_length = calculate_development_length({}, coordinates)
+            analysis_results['development_length_mm'] = f"{dev_length:.2f}" if isinstance(dev_length, (int, float)) and dev_length > 0 else "Not Found"
+        
+        return jsonify(analysis_results)
+    else:
+        return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
+
+# --- Route for the main webpage (no change) ---
 @app.route('/')
 def index():
     return render_template('index.html')
