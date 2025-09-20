@@ -614,12 +614,29 @@ def analyze_drawing_with_gemini(pdf_bytes):
         logger.info(full_text)
         logger.info("------------------------------------------")
         
-        # Extract dimensions using both regex and AI methods
-        regex_dimensions = extract_dimensions_from_text(full_text)
+        # Extract dimensions using both AI and regex methods (AI-first approach)
         ai_results = parse_text_with_gemini(full_text)
+        regex_dimensions = extract_dimensions_from_text(full_text)
         
-        # Use regex results as primary, but log comparison with AI results
-        results["dimensions"] = regex_dimensions
+        # Start with AI results as primary source of truth
+        results["dimensions"] = {
+            "id1": ai_results.get("id", "Not Found"),
+            "id2": "Not Found",  # AI doesn't differentiate between id1 and id2
+            "od1": ai_results.get("od", "Not Found"),
+            "od2": "Not Found",  # AI doesn't differentiate between od1 and od2
+            "thickness": ai_results.get("thickness", "Not Found"),
+            "centerline_length": ai_results.get("centerline_length", "Not Found"),
+            "radius": ai_results.get("radius", "Not Found"),
+            "angle": ai_results.get("angle", "Not Found")
+        }
+        
+        # Only use regex results as fallback for missing values
+        for key in results["dimensions"]:
+            if results["dimensions"][key] == "Not Found":
+                regex_value = regex_dimensions.get(key, "Not Found")
+                if regex_value != "Not Found":
+                    logger.info(f"Using regex fallback for {key}: {regex_value}")
+                    results["dimensions"][key] = regex_value
         
         if ai_results:
             # Initialize comparison tracking
@@ -639,18 +656,25 @@ def analyze_drawing_with_gemini(pdf_bytes):
             
             logger.info("\n----------- COMPARING REGEX VS AI RESULTS -----------")
             
-            # Compare results and track statistics
+            # Compare results and track statistics with AI as primary source
             for key_pair, (regex_key, ai_key) in comparison_fields.items():
                 total_fields += 1
-                regex_val = regex_dimensions.get(regex_key, "Not Found")
                 ai_val = ai_results.get(ai_key, "Not Found")
+                regex_val = regex_dimensions.get(regex_key, "Not Found")
                 
-                if regex_val != "Not Found":
-                    regex_found += 1
                 if ai_val != "Not Found":
                     ai_found += 1
-                if regex_val != "Not Found" and regex_val == ai_val:
-                    both_matched += 1
+                    # Only count regex matches when AI also found a value
+                    if regex_val != "Not Found":
+                        if regex_val == ai_val:
+                            both_matched += 1
+                        else:
+                            logger.info(f"Discrepancy in {key_pair}: AI={ai_val}, Regex={regex_val} (using AI value)")
+                else:
+                    # Count regex as fallback success
+                    if regex_val != "Not Found":
+                        regex_found += 1
+                        logger.info(f"Using regex fallback for {key_pair}: {regex_val}")
             
             # Log comparison statistics
             logger.info("\n----------- EXTRACTION STATISTICS -----------")
