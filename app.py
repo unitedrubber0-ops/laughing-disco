@@ -642,7 +642,7 @@ Pay special attention to distinguishing primary material specs from reference sp
 
         # --- Step 3: Call Gemini API with vision model ---
         try:
-            model = genai.GenerativeModel('gemini-pro-vision')
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
             response = model.generate_content([prompt, *content])
             
             if response and response.text:
