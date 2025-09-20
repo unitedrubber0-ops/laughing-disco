@@ -25,42 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Log separation line
 logger.info("------------------------------------------")
-            
-            # Calculate and log success rates
-            total_fields = 0
-            regex_found = 0
-            ai_found = 0
-            both_matched = 0
-            
-            comparison_fields = {
-                "id": ("id1", "id"),
-                "od": ("od1", "od"),
-                "thickness": ("thickness", "thickness"),
-                "centerline_length": ("centerline_length", "centerline_length"),
-                "radius": ("radius", "radius"),
-                "angle": ("angle", "angle")
-            }
-            
-            for regex_key, ai_key in comparison_fields.values():
-                total_fields += 1
-                regex_val = regex_dimensions.get(regex_key, "Not Found")
-                ai_val = ai_results.get(ai_key, "Not Found")
-                
-                if regex_val != "Not Found":
-                    regex_found += 1
-                if ai_val != "Not Found":
-                    ai_found += 1
-                if regex_val != "Not Found" and regex_val == ai_val:
-                    both_matched += 1
-            
-            logger.info("\n----------- EXTRACTION STATISTICS -----------")
-            logger.info(f"Total fields checked: {total_fields}")
-            logger.info(f"Regex success rate: {(regex_found/total_fields)*100:.1f}%")
-            logger.info(f"AI success rate: {(ai_found/total_fields)*100:.1f}%")
-            logger.info(f"Match rate when both found value: {(both_matched/total_fields)*100:.1f}%")
-            logger.info("------------------------------------------")
-            
-        # Extract coordinate points
+
 
 # Configure logging
 logging.basicConfig(
@@ -657,6 +622,45 @@ def analyze_drawing_with_gemini(pdf_bytes):
         results["dimensions"] = regex_dimensions
         
         if ai_results:
+            # Initialize comparison tracking
+            total_fields = 0
+            regex_found = 0
+            ai_found = 0
+            both_matched = 0
+            
+            comparison_fields = {
+                "id": ("id1", "id"),
+                "od": ("od1", "od"),
+                "thickness": ("thickness", "thickness"),
+                "centerline_length": ("centerline_length", "centerline_length"),
+                "radius": ("radius", "radius"),
+                "angle": ("angle", "angle")
+            }
+            
+            logger.info("\n----------- COMPARING REGEX VS AI RESULTS -----------")
+            
+            # Compare results and track statistics
+            for key_pair, (regex_key, ai_key) in comparison_fields.items():
+                total_fields += 1
+                regex_val = regex_dimensions.get(regex_key, "Not Found")
+                ai_val = ai_results.get(ai_key, "Not Found")
+                
+                if regex_val != "Not Found":
+                    regex_found += 1
+                if ai_val != "Not Found":
+                    ai_found += 1
+                if regex_val != "Not Found" and regex_val == ai_val:
+                    both_matched += 1
+            
+            # Log comparison statistics
+            logger.info("\n----------- EXTRACTION STATISTICS -----------")
+            logger.info(f"Total fields checked: {total_fields}")
+            logger.info(f"Regex success rate: {(regex_found/total_fields)*100:.1f}%")
+            logger.info(f"AI success rate: {(ai_found/total_fields)*100:.1f}%")
+            logger.info(f"Match rate when both found value: {(both_matched/total_fields)*100:.1f}%")
+            logger.info("------------------------------------------")
+            
+            # Begin comparison of individual fields
             logger.info("\n----------- COMPARING REGEX VS AI RESULTS -----------")
             for key in ["id", "thickness", "centerline_length", "radius", "angle", "od"]:
                 regex_val = regex_dimensions.get(f"{key}1" if key in ["id", "od"] else key, "Not Found")
