@@ -1,38 +1,59 @@
 import os
 import re
+import math
+import pandas as pd
+import io
+import gc
 import json
 import logging
-import pandas as pd
+from flask import Flask, request, jsonify, render_template, send_file
+from flask_cors import CORS
 import fitz  # PyMuPDF
-import google.generativeai as genai
-from flask import Flask, request, jsonify, render_template, send_file, send_from_directory, current_app
-from pdf2image import convert_from_bytes
+from pdf2image import convert_from_path
 from PIL import Image
-import io
-import tempfile
-from werkzeug.exceptions import RequestTimeout, ServiceUnavailable
-from functools import wraps
-import threading
-import time
-import gc
+import google.generativeai as genai
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# --- Basic Configuration ---
+app = Flask(__name__)
+CORS(app)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-# Log separation line
-logger.info("------------------------------------------")
+# --- API Key Configuration ---
+try:
+    genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+    logging.info("Gemini API key configured successfully.")
+except Exception as e:
+    logging.error(f"Failed to configure Gemini API key: {e}")
 
+# --- Load Material Database on Startup ---
+try:
+    material_df = pd.read_csv("MATERIAL WITH STANDARD.xlsx - Sheet1.csv")
+    logging.info(f"Successfully loaded material database with {len(material_df)} entries.")
+except FileNotFoundError:
+    logging.error("MATERIAL WITH STANDARD.xlsx - Sheet1.csv not found. Material lookup will not work.")
+    material_df = None
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# --- Material Lookup Function ---
+def get_material_from_standard(standard, grade):
+    if material_df is None or standard == "Not Found" or grade == "Not Found":
+        return "Not Found"
+    
+    try:
+        # Find the row that matches both standard and grade (case-insensitive)
+        result = material_df[
+            material_df['STANDARD'].str.contains(standard, case=False, na=False) &
+            material_df['GRADE'].astype(str).str.fullmatch(grade, case=False, na=False)
+        ]
+        if not result.empty:
+            material = result.iloc[0]['MATERIAL']
+            logging.info(f"Material lookup successful: Found '{material}' for Standard='{standard}', Grade='{grade}'")
+            return material
+        else:
+            logging.warning(f"Material lookup failed: No match found for Standard='{standard}', Grade='{grade}'")
+            return "Not Found"
+    except Exception as e:
+        logging.error(f"Error during material lookup: {e}")
+        return "Not Found"
 
 
     
@@ -294,54 +315,50 @@ def image_to_base64(image):
 
 # --- Analyze drawing using improved Gemini vision model ---
 def parse_text_with_gemini(full_text):
+    logging.info("Starting data parsing with Gemini...")
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    
+    prompt = f"""
+    Analyze the following text from an engineering drawing and return the information as a clean JSON object.
+    Do not include any text before or after the JSON object.
+
+    Instructions:
+    - 'child_part' is the primary drawing number, often in a title block, usually ending with 'C' and a digit.
+    - 'standard' is the specification document, like 'MPAPS F-30' or 'SAE J2044'.
+    - 'grade' is the specific grade associated with the standard, like '1B' or '1'.
+    - 'coordinates' must be an array of objects. Each object must have 'point', 'x', 'y', and 'z' keys. Parse the main coordinate table carefully.
+    - If any value is not explicitly found, use the string "Not Found".
+
+    Text to analyze:
+    ---
+    {full_text}
+    ---
+
+    Required JSON format:
+    {{
+        "child_part": "...",
+        "description": "...",
+        "standard": "...",
+        "grade": "...",
+        "id": "...",
+        "thickness": "...",
+        "centerline_length": "...",
+        "coordinates": [
+            {{"point": "P0", "x": 0.0, "y": 0.0, "z": 0.0}},
+            {{"point": "P1", "x": 1.0, "y": 2.0, "z": 3.0}}
+        ]
+    }}
     """
-    Uses Gemini to parse the text and extract structured data.
-    This complements the existing regex-based system.
-    """
-    logging.info("Starting AI-powered text parsing with Gemini...")
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        
-        prompt = f"""
-        Analyze this engineering drawing text and extract the following information in JSON format.
-        Return ONLY the JSON object, no other text.
-
-        Required fields (use "Not Found" if not present):
-        - part_number: 7 digits + 'C' + digit (e.g., 4403886C2)
-        - id: Inner diameter with tolerances
-        - thickness: Wall thickness value
-        - centerline_length: The centerline measurement
-        - radius: Any radius value (often in parentheses)
-        - angle: Any angle measurement (usually with ° symbol)
-        - od: Outer diameter value
-        - description: Part description (usually after "HOSE," or "TUBE,")
-        - specification: Material spec like MPAPS F-30
-        - grade: Material grade or type
-
-        Text to analyze:
-        ---
-        {full_text}
-        ---
-        """
-
         response = model.generate_content(prompt)
-        if not response or not response.text:
-            logging.warning("Received empty response from Gemini")
-            return None
-
-        # Clean response and parse JSON
-        cleaned_response = re.sub(r'```json\s*|\s*```', '', response.text.strip())
-        parsed_data = json.loads(cleaned_response)
-        
+        cleaned_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+        parsed_data = json.loads(cleaned_text)
         logging.info("Successfully parsed text with Gemini AI")
-        logging.info(f"AI Extracted Data: {json.dumps(parsed_data, indent=2)}")
-        
         return parsed_data
-
     except Exception as e:
-        logging.error(f"Error in AI parsing: {str(e)}")
-        return None
+        logging.error(f"Failed to parse text with Gemini: {e}")
+        return {"error": str(e)}
 
 def analyze_drawing_with_gemini(pdf_bytes):
     """
@@ -555,54 +572,57 @@ Pay special attention to distinguishing primary material specs from reference sp
     
     return results
 
-# --- API endpoint for file analysis (now uses the Gemini function) ---
+# --- API endpoint for file analysis ---
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
-    if 'drawing' not in request.files:
-        return jsonify({"error": "No file part in the request"}), 400
-    
-    file = request.files['drawing']
-    
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+    file = request.files['file']
     if file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
+        return jsonify({'error': 'No selected file'}), 400
     
-    if file and file.filename.lower().endswith('.pdf'):
-        pdf_bytes = file.read()
-        analysis_results = analyze_drawing_with_gemini(pdf_bytes)
-        
-        if analysis_results.get("error"):
-            return jsonify({"error": analysis_results["error"]}), 400
-        
-        # Calculate development length using coordinates if available, otherwise use dimensions
-        dimensions = analysis_results.get("dimensions", {})
-        coordinates = analysis_results.get("coordinates", [])
-        
-        development_length = calculate_development_length(
-            dimensions=dimensions,
-            points=coordinates if coordinates else None
-        )
-        
-        # Store the calculated length in the results
-        analysis_results["development_length_mm"] = development_length
-        
-        # Generate Excel sheet with all details
-        excel_file = generate_excel_sheet(analysis_results, dimensions, development_length)
-        
-        # Convert Excel file to base64 for sending in response
-        excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
-        
-        # Add Excel data to response
-        analysis_results["excel_data"] = excel_b64
-
-        # Recalculate Development Length from the AI-parsed coordinates
-        coordinates = analysis_results.get("coordinates", [])
-        if coordinates:
-            dev_length = calculate_development_length({}, coordinates)
-            analysis_results['development_length_mm'] = f"{dev_length:.2f}" if isinstance(dev_length, (int, float)) and dev_length > 0 else "Not Found"
-        
-        return jsonify(analysis_results)
-    else:
+    if not file.filename.lower().endswith('.pdf'):
         return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
+
+    logging.info(f"New analysis request for file: {file.filename}")
+    try:
+        # Read and analyze PDF
+        pdf_bytes = file.read()
+        full_text = extract_text_from_pdf(pdf_bytes)
+        if not full_text:
+            return jsonify({"error": "Failed to extract text from PDF"}), 500
+
+        # Parse text with Gemini
+        final_results = parse_text_with_gemini(full_text)
+        if "error" in final_results:
+            return jsonify(final_results), 500
+
+        # Look up material based on standard and grade
+        standard = final_results.get("standard", "Not Found")
+        grade = final_results.get("grade", "Not Found")
+        final_results["material"] = get_material_from_standard(standard, grade)
+
+        # Calculate development length
+        coordinates = final_results.get("coordinates", [])
+        if coordinates:
+            dev_length = calculate_development_length(coordinates)
+            final_results["development_length_mm"] = f"{dev_length:.2f}" if dev_length > 0 else "Not Found"
+        
+        # Generate Excel report if helper function exists
+        try:
+            if 'generate_excel_sheet' in globals():
+                excel_file = generate_excel_sheet(final_results, final_results, dev_length)
+                excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
+                final_results["excel_data"] = excel_b64
+        except Exception as e:
+            logging.warning(f"Excel generation skipped: {e}")
+
+        logging.info(f"Successfully analyzed drawing: {final_results.get('child_part', 'Unknown')}")
+        return jsonify(final_results)
+
+    except Exception as e:
+        logging.error(f"Error analyzing drawing: {str(e)}")
+        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
 
 # --- Route for the main webpage (no change) ---
 @app.route('/')
