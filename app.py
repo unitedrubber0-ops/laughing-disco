@@ -1,10 +1,18 @@
 import os
 import re
 import json
+import logging
 import pandas as pd
 import fitz  # PyMuPDF
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template, send_file
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 def extract_dimensions_from_text(text):
     """
@@ -188,36 +196,123 @@ def extract_dimensions_from_text(text):
     
     return dimensions
 
-# --- Function to calculate development length based on COSTING TOOLS.xlsx ---
-def calculate_development_length(dimensions):
+# --- Function to calculate development length using vector geometry ---
+def calculate_development_length(dimensions, points=None):
     """
-    Calculate development length based on the formula in COSTING TOOLS.xlsx
-    Formula: Arc Length = 2 * π * radius * (angle_degrees / 360)
+    Calculate development length using vector geometry for accurate bend calculations.
+    Can handle both extracted dimensions and 3D coordinate points.
+    
+    Args:
+        dimensions: Dictionary containing extracted dimensions
+        points: Optional list of {x,y,z,r} dictionaries for precise calculation
+    
+    Returns:
+        float: Calculated development length in mm
+        str: Error message if calculation fails
     """
     try:
-        # Try to use radius and angle if available
+        # If we have 3D points with radii, use precise calculation
+        if points and len(points) >= 2:
+            coordinates = []
+            radii = []
+            
+            # Convert points to coordinate tuples and extract radii
+            for point in points:
+                try:
+                    x = float(point.get('x', 0))
+                    y = float(point.get('y', 0))
+                    z = float(point.get('z', 0))
+                    r = float(point.get('r', 0)) if point.get('r') is not None else 0
+                    coordinates.append((x, y, z))
+                    radii.append(r)
+                except (ValueError, TypeError):
+                    continue
+            
+            if len(coordinates) >= 2:
+                return calculate_path_length(coordinates, radii)
+        
+        # Fall back to dimension-based calculation if no valid points
         radius = dimensions.get("radius", "Not Found")
         angle = dimensions.get("angle", "Not Found")
-        if (radius != "Not Found" and 
-            angle != "Not Found" and
-            radius.replace('.', '', 1).replace('-', '', 1).isdigit() and
-            angle.replace('.', '', 1).replace('-', '', 1).isdigit()):
+        
+        # Try using radius and angle
+        if (radius != "Not Found" and angle != "Not Found" and
+            str(radius).replace('.', '', 1).replace('-', '', 1).isdigit() and
+            str(angle).replace('.', '', 1).replace('-', '', 1).isdigit()):
             
             radius = float(radius)
             angle = float(angle)
             return round(2 * math.pi * radius * (angle / 360), 2)
         
-        # Fall back to centerline length if available
+        # Fall back to centerline length
         centerline = dimensions.get("centerline_length", "Not Found")
-        if centerline != "Not Found" and centerline.replace('.', '', 1).replace('-', '', 1).isdigit():
+        if centerline != "Not Found" and str(centerline).replace('.', '', 1).replace('-', '', 1).isdigit():
             return round(float(centerline), 2)
         
-        # Default calculation if no specific dimensions found
-        # Use typical values for hose bending
-        return round(2 * math.pi * 40 * (90 / 360), 2)  # 40mm radius, 90° angle
+        # Use default values if all else fails
+        return round(2 * math.pi * 40 * (90 / 360), 2)  # 40mm radius, 90° angle default
+        
     except Exception as e:
         print(f"Error calculating development length: {e}")
         return "Calculation error"
+
+def calculate_path_length(points, radii):
+    """
+    Calculate the total path length considering both straight segments and bends.
+    
+    Args:
+        points: List of (x,y,z) tuples representing path points
+        radii: List of bend radii (0 or None means no bend at that point)
+    
+    Returns:
+        float: Total path length in mm
+    """
+    n = len(points)
+    if n < 2:
+        return 0
+    
+    # For just two points, return straight distance
+    if n == 2:
+        return math.dist(points[0], points[1])
+    
+    total_length = 0
+    
+    for i in range(n-1):
+        # Calculate straight segment length
+        straight_length = math.dist(points[i], points[i+1])
+        total_length += straight_length
+        
+        # If this is a bend point (not first or last point)
+        if i > 0 and i < n-1 and radii[i] and radii[i] > 0:
+            # Calculate vectors for incoming and outgoing segments
+            v1 = tuple(b-a for a, b in zip(points[i-1], points[i]))
+            v2 = tuple(b-a for a, b in zip(points[i], points[i+1]))
+            
+            # Calculate magnitudes
+            mag1 = math.sqrt(sum(x*x for x in v1))
+            mag2 = math.sqrt(sum(x*x for x in v2))
+            
+            if mag1 == 0 or mag2 == 0:
+                continue
+                
+            # Calculate dot product and angle
+            dot_product = sum(a*b for a,b in zip(v1, v2))
+            cos_theta = max(min(dot_product / (mag1 * mag2), 1.0), -1.0)
+            theta = math.acos(cos_theta)
+            
+            if theta == 0:
+                continue
+                
+            # Calculate bend adjustments
+            R = radii[i]
+            tangent_length = R * math.tan(theta / 2)
+            arc_length = R * theta
+            
+            # Subtract the overlap of tangent lines and add the arc length
+            total_length -= 2 * tangent_length
+            total_length += arc_length
+    
+    return round(total_length, 2)
 
 # --- Function to generate Excel sheet with all details ---
 def generate_excel_sheet(analysis_results, dimensions, development_length):
@@ -313,10 +408,28 @@ def analyze_drawing_with_gemini(pdf_bytes):
             results["error"] = "Could not extract any text from the PDF."
             return results
         
-        # Extract dimensions from the text
+        # Extract dimensions and coordinate points from the text
         dimensions = extract_dimensions_from_text(full_text)
         results["dimensions"] = dimensions
         print("Extracted dimensions:", json.dumps(dimensions, indent=2))
+
+        # Extract coordinate points using patterns like "P1(x,y,z)" or similar
+        points = []
+        point_pattern = r'P\d+\s*[\(\[]?\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*,?\s*(-?\d+\.?\d*)?\s*[\)\]]?\s*(?:R\s*=?\s*(\d+\.?\d*))?'
+        point_matches = re.finditer(point_pattern, full_text)
+        
+        for match in point_matches:
+            point = {
+                'x': float(match.group(1)),
+                'y': float(match.group(2)),
+                'z': float(match.group(3)) if match.group(3) else 0,
+                'r': float(match.group(4)) if match.group(4) else None
+            }
+            points.append(point)
+            
+        if points:
+            results["coordinates"] = points
+            print("Extracted coordinate points:", json.dumps(points, indent=2))
 
         # --- Step 2: Prepare the prompt for the Gemini API ---
         model = genai.GenerativeModel('gemini-1.5-flash') # Use a fast and capable model
@@ -390,9 +503,17 @@ def upload_and_analyze():
         if analysis_results.get("error"):
             return jsonify({"error": analysis_results["error"]}), 400
         
-        # Calculate development length using extracted dimensions
+        # Calculate development length using coordinates if available, otherwise use dimensions
         dimensions = analysis_results.get("dimensions", {})
-        development_length = calculate_development_length(dimensions)
+        coordinates = analysis_results.get("coordinates", [])
+        
+        development_length = calculate_development_length(
+            dimensions=dimensions,
+            points=coordinates if coordinates else None
+        )
+        
+        # Store the calculated length in the results
+        analysis_results["development_length_mm"] = development_length
         
         # Generate Excel sheet with all details
         excel_file = generate_excel_sheet(analysis_results, dimensions, development_length)
