@@ -6,11 +6,69 @@ import fitz  # PyMuPDF
 import google.generativeai as genai
 from flask import Flask, request, jsonify, render_template, send_file
 
-def extract_od_from_text(text):
-    dimensions = {}
-    od_match = re.search(r'TUBING OD[^\d]*(\d+\.?\d*)', text, re.IGNORECASE)
+def extract_dimensions_from_text(text):
+    """
+    Extract dimensions from the PDF text using regex patterns
+    """
+    # Normalize text by replacing newlines with spaces
+    text = text.replace('\n', ' ')
+    
+    dimensions = {
+        "id1": "Not Found",
+        "id2": "Not Found",
+        "od1": "Not Found",
+        "od2": "Not Found",
+        "thickness": "Not Found",
+        "centerline_length": "Not Found",
+        "radius": "Not Found",
+        "angle": "Not Found"
+    }
+
+    # Debug print to see what text we're working with
+    print(f"Processing text (first 500 chars): {text[:500]}")
+    
+    # Extract ID1 (look for patterns like "As per 2D : 43.5±0.5")
+    id_match = re.search(r'As per 2D\s*:\s*(\d+[.,]?\d*)\s*[±]\s*(\d+[.,]?\d*)', text)
+    if id_match:
+        dimensions["id1"] = id_match.group(1).replace(',', '.')
+        print(f"Found ID1: {dimensions['id1']}")
+    
+    # Extract ID2 (look for patterns like "As per 3D : 44.85")
+    id2_match = re.search(r'As per 3D\s*:\s*(\d+[.,]?\d*)', text)
+    if id2_match:
+        dimensions["id2"] = id2_match.group(1).replace(',', '.')
+        print(f"Found ID2: {dimensions['id2']}")
+    
+    # Extract thickness (look for patterns like "WALL THICKNESS - 4,050")
+    thickness_match = re.search(r'WALL THICKNESS\s*[-\s]*\s*(\d+[.,]?\d*)', text)
+    if thickness_match:
+        dimensions["thickness"] = thickness_match.group(1).replace(',', '.')
+        print(f"Found thickness: {dimensions['thickness']}")
+    
+    # Extract centerline length
+    centerline_match = re.search(r'APPROX CTRLINE LENGTH\s*=\s*(\d+[.,]?\d*)', text, re.IGNORECASE)
+    if centerline_match:
+        dimensions["centerline_length"] = centerline_match.group(1).replace(',', '.')
+        print(f"Found centerline length: {dimensions['centerline_length']}")
+    
+    # Extract radius (look for patterns like (40))
+    radius_matches = re.findall(r'\((\d+)\)', text)
+    if radius_matches:
+        # Use the first radius found
+        dimensions["radius"] = radius_matches[0]
+        print(f"Found radius: {dimensions['radius']}")
+    
+    # Extract angle (look for patterns like 90° +5°)
+    angle_match = re.search(r'(\d+)\s*°\s*[+]\s*\d+\s*°', text)
+    if angle_match:
+        dimensions["angle"] = angle_match.group(1)
+        print(f"Found angle: {dimensions['angle']}")
+    
+    # Extract OD from tubing information
+    od_match = re.search(r'TUBING OD[^\d]*([<>]?)\s*(\d+[.,]?\d*)', text, re.IGNORECASE)
     if od_match:
-        dimensions["od1"] = od_match.group(1)
+        dimensions["od1"] = od_match.group(2).replace(',', '.')
+        print(f"Found OD: {dimensions['od1']}")
     
     # Debug logging
     print("Extracted dimensions:", json.dumps(dimensions, indent=2))
@@ -241,9 +299,24 @@ def analyze_drawing_with_gemini(pdf_bytes):
         for page in pdf_document:
             full_text += page.get_text()
         
+        # Debug logging to see extracted text
+        print(f"Extracted text from PDF (first 500 chars): {full_text[:500]}")
+        print("Text length:", len(full_text))
+        print("Sample text around key phrases:")
+        for phrase in ["TUBING OD", "As per 2D", "WALL THICKNESS", "CTRLINE LENGTH"]:
+            idx = full_text.find(phrase)
+            if idx >= 0:
+                print(f"\nContext around '{phrase}':")
+                print(full_text[max(0, idx-50):min(len(full_text), idx+50)])
+        
         if not full_text.strip():
             results["error"] = "Could not extract any text from the PDF."
             return results
+        
+        # Extract dimensions from the text
+        dimensions = extract_dimensions_from_text(full_text)
+        results["dimensions"] = dimensions
+        print("Extracted dimensions:", json.dumps(dimensions, indent=2))
 
         # --- Step 2: Prepare the prompt for the Gemini API ---
         model = genai.GenerativeModel('gemini-1.5-flash') # Use a fast and capable model
