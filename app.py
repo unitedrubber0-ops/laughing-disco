@@ -3,7 +3,11 @@ import re
 import json
 import pandas as pd
 import fitz  # PyMuPDF
-import google.generativeai     # Extract OD from tubing information
+import google.generativeai as genai
+from flask import Flask, request, jsonify, render_template, send_file
+
+def extract_od_from_text(text):
+    dimensions = {}
     od_match = re.search(r'TUBING OD[^\d]*(\d+\.?\d*)', text, re.IGNORECASE)
     if od_match:
         dimensions["od1"] = od_match.group(1)
@@ -11,8 +15,7 @@ import google.generativeai     # Extract OD from tubing information
     # Debug logging
     print("Extracted dimensions:", json.dumps(dimensions, indent=2))
     
-    return dimensionsai
-from flask import Flask, request, jsonify, render_template, send_file
+    return dimensions
 from flask_cors import CORS
 import base64
 from io import BytesIO
