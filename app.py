@@ -23,6 +23,45 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Log separation line
+logger.info("------------------------------------------")
+            
+            # Calculate and log success rates
+            total_fields = 0
+            regex_found = 0
+            ai_found = 0
+            both_matched = 0
+            
+            comparison_fields = {
+                "id": ("id1", "id"),
+                "od": ("od1", "od"),
+                "thickness": ("thickness", "thickness"),
+                "centerline_length": ("centerline_length", "centerline_length"),
+                "radius": ("radius", "radius"),
+                "angle": ("angle", "angle")
+            }
+            
+            for regex_key, ai_key in comparison_fields.values():
+                total_fields += 1
+                regex_val = regex_dimensions.get(regex_key, "Not Found")
+                ai_val = ai_results.get(ai_key, "Not Found")
+                
+                if regex_val != "Not Found":
+                    regex_found += 1
+                if ai_val != "Not Found":
+                    ai_found += 1
+                if regex_val != "Not Found" and regex_val == ai_val:
+                    both_matched += 1
+            
+            logger.info("\n----------- EXTRACTION STATISTICS -----------")
+            logger.info(f"Total fields checked: {total_fields}")
+            logger.info(f"Regex success rate: {(regex_found/total_fields)*100:.1f}%")
+            logger.info(f"AI success rate: {(ai_found/total_fields)*100:.1f}%")
+            logger.info(f"Match rate when both found value: {(both_matched/total_fields)*100:.1f}%")
+            logger.info("------------------------------------------")
+            
+        # Extract coordinate points
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -501,10 +540,61 @@ def image_to_base64(image):
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 # --- Analyze drawing using improved Gemini vision model ---
+def parse_text_with_gemini(full_text):
+    """
+    Uses Gemini to parse the text and extract structured data.
+    This complements the existing regex-based system.
+    """
+    logging.info("Starting AI-powered text parsing with Gemini...")
+    
+    try:
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        
+        prompt = f"""
+        Analyze this engineering drawing text and extract the following information in JSON format.
+        Return ONLY the JSON object, no other text.
+
+        Required fields (use "Not Found" if not present):
+        - part_number: 7 digits + 'C' + digit (e.g., 4403886C2)
+        - id: Inner diameter with tolerances
+        - thickness: Wall thickness value
+        - centerline_length: The centerline measurement
+        - radius: Any radius value (often in parentheses)
+        - angle: Any angle measurement (usually with ° symbol)
+        - od: Outer diameter value
+        - description: Part description (usually after "HOSE," or "TUBE,")
+        - specification: Material spec like MPAPS F-30
+        - grade: Material grade or type
+
+        Text to analyze:
+        ---
+        {full_text}
+        ---
+        """
+
+        response = model.generate_content(prompt)
+        if not response or not response.text:
+            logging.warning("Received empty response from Gemini")
+            return None
+
+        # Clean response and parse JSON
+        cleaned_response = re.sub(r'```json\s*|\s*```', '', response.text.strip())
+        parsed_data = json.loads(cleaned_response)
+        
+        logging.info("Successfully parsed text with Gemini AI")
+        logging.info(f"AI Extracted Data: {json.dumps(parsed_data, indent=2)}")
+        
+        return parsed_data
+
+    except Exception as e:
+        logging.error(f"Error in AI parsing: {str(e)}")
+        return None
+
 def analyze_drawing_with_gemini(pdf_bytes):
     """
     Analyze drawing using Google Gemini with improved prompt and image analysis.
     Now includes extraction of specifications, grades, and material properties.
+    Uses both regex-based and AI-powered parsing for comparison.
     """
     results = {
         "part_number": "Not Found",
@@ -559,9 +649,35 @@ def analyze_drawing_with_gemini(pdf_bytes):
         logger.info(full_text)
         logger.info("------------------------------------------")
         
-        # Extract dimensions using existing logic
-        dimensions = extract_dimensions_from_text(full_text)
-        results["dimensions"] = dimensions
+        # Extract dimensions using both regex and AI methods
+        regex_dimensions = extract_dimensions_from_text(full_text)
+        ai_results = parse_text_with_gemini(full_text)
+        
+        # Use regex results as primary, but log comparison with AI results
+        results["dimensions"] = regex_dimensions
+        
+        if ai_results:
+            logger.info("\n----------- COMPARING REGEX VS AI RESULTS -----------")
+            for key in ["id", "thickness", "centerline_length", "radius", "angle", "od"]:
+                regex_val = regex_dimensions.get(f"{key}1" if key in ["id", "od"] else key, "Not Found")
+                ai_val = ai_results.get(key, "Not Found")
+                logger.info(f"{key}: Regex='{regex_val}' vs AI='{ai_val}'")
+                
+                # If regex didn't find it but AI did, use AI's value as backup
+                if regex_val == "Not Found" and ai_val != "Not Found":
+                    logger.info(f"Using AI value for {key} as regex failed to find it")
+                    if key in ["id", "od"]:
+                        regex_dimensions[f"{key}1"] = ai_val
+                    else:
+                        regex_dimensions[key] = ai_val
+            
+            # Update analysis results with any additional AI findings
+            if results["part_number"] == "Not Found" and ai_results.get("part_number", "Not Found") != "Not Found":
+                results["part_number"] = ai_results["part_number"]
+            if results["description"] == "Not Found" and ai_results.get("description", "Not Found") != "Not Found":
+                results["description"] = ai_results["description"]
+                
+        logger.info("------------------------------------------")
         
         # Extract coordinate points
         points = []
