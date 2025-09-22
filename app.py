@@ -23,11 +23,6 @@ CORS(app)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def normalize_for_comparison(text):
-    """Converts text to a standardized format for reliable comparison."""
-    # Converts to lowercase and removes all non-alphanumeric characters
-    return re.sub(r'[^a-z0-9]', '', str(text).lower())
-
 # --- API Key Configuration ---
 try:
     genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -54,6 +49,12 @@ try:
 except FileNotFoundError:
     logging.error("MATERIAL WITH STANDARD.xlsx not found. Material lookup will not work.")
     material_df = None
+
+# --- String Normalization Helper ---
+def normalize_for_comparison(text):
+    """Converts text to a standardized format for reliable comparison."""
+    # Converts to lowercase and removes all non-alphanumeric characters
+    return re.sub(r'[^a-z0-9]', '', str(text).lower())
 
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
