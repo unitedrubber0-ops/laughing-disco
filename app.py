@@ -1,22 +1,27 @@
 import os
 import re
 import math
+import base64
 import pandas as pd
 import io
 import gc
 import json
 import logging
+import tempfile
 from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
 import fitz  # PyMuPDF
-from pdf2image import convert_from_path
+from pdf2image import convert_from_path, convert_from_bytes
 from PIL import Image
 import google.generativeai as genai
 
 # --- Basic Configuration ---
 app = Flask(__name__)
 CORS(app)
+
+# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # --- API Key Configuration ---
 try:
@@ -630,5 +635,79 @@ def index():
     return render_template('index.html')
 
 # --- Run the application (no change) ---
+def analyze_image_with_gemini_vision(pdf_bytes):
+    """Process PDF using Gemini Vision API for OCR"""
+    logger.info("Starting Gemini Vision OCR analysis...")
+    full_text = ""
+    temp_pdf_path = None
+
+    try:
+        # Save PDF to temporary file
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
+            temp_pdf.write(pdf_bytes)
+            temp_pdf_path = temp_pdf.name
+
+        # Convert PDF to images
+        page_images = convert_from_path(temp_pdf_path, dpi=150)
+        logger.info(f"Converted PDF to {len(page_images)} images at 150 DPI")
+
+        # Process each page with Gemini Vision
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        for i, page in enumerate(page_images):
+            logger.info(f"Processing page {i+1} with Gemini Vision...")
+            
+            # Convert PIL Image to bytes
+            img_byte_arr = io.BytesIO()
+            page.save(img_byte_arr, format='PNG')
+            img_byte_arr = img_byte_arr.getvalue()
+            
+            # Convert to base64
+            img_base64 = base64.b64encode(img_byte_arr).decode('utf-8')
+            
+            # Create Gemini-compatible image object
+            image_parts = [
+                {
+                    'mime_type': 'image/png',
+                    'data': img_base64
+                }
+            ]
+            
+            # Process with Gemini
+            response = model.generate_content(["Extract all text from this engineering drawing.", *image_parts])
+            if response and response.text:
+                full_text += response.text + "\n"
+
+        logger.info(f"OCR complete. Total characters extracted: {len(full_text)}")
+        return full_text
+
+    except Exception as e:
+        logger.error(f"Error in Gemini Vision processing: {e}")
+        return ""
+
+    finally:
+        # Clean up temporary file
+        if temp_pdf_path and os.path.exists(temp_pdf_path):
+            try:
+                os.remove(temp_pdf_path)
+            except Exception as e:
+                logger.warning(f"Failed to remove temporary file: {e}")
+
+def extract_text_from_pdf(pdf_bytes):
+    """Extract text from PDF using PyMuPDF with fallback to OCR"""
+    logger.info("Attempting direct text extraction with PyMuPDF...")
+    full_text = ""
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            for page in doc:
+                full_text += page.get_text()
+        logger.info(f"Direct extraction found {len(full_text)} characters.")
+        if len(full_text.strip()) < 100:
+            # If very little text was extracted, try OCR
+            full_text = analyze_image_with_gemini_vision(pdf_bytes)
+    except Exception as e:
+        logger.error(f"Could not read PDF with PyMuPDF, attempting OCR. Error: {e}")
+        full_text = analyze_image_with_gemini_vision(pdf_bytes)
+    return full_text
+
 if __name__ == '__main__':
     app.run(debug=True)

@@ -14,8 +14,24 @@ document.addEventListener('DOMContentLoaded', () => {
     uploadForm.addEventListener('submit', async (event) => {
         event.preventDefault();
 
-        if (fileInput.files.length === 0) {
-            alert('Please select a PDF file to analyze.');
+        // Validate file selection
+        if (!fileInput.files || fileInput.files.length === 0) {
+            displayError('Please select a PDF file to analyze.');
+            return;
+        }
+
+        const file = fileInput.files[0];
+        
+        // Validate file type
+        if (file.type !== 'application/pdf') {
+            displayError('Please select a valid PDF file.');
+            return;
+        }
+
+        // Validate file size (max 10MB)
+        const maxSize = 10 * 1024 * 1024; // 10MB in bytes
+        if (file.size > maxSize) {
+            displayError('File size exceeds 10MB limit.');
             return;
         }
 
@@ -25,7 +41,7 @@ document.addEventListener('DOMContentLoaded', () => {
         errorMessage.classList.add('hidden');
 
         const formData = new FormData();
-        formData.append('drawing', fileInput.files[0]);
+        formData.append('file', file); // Changed from 'drawing' to 'file' to match backend
 
         try {
             const response = await fetch('/api/analyze', {
@@ -33,16 +49,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: formData,
             });
 
+            let errorMessage;
             if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('application/json')) {
+                    const errorData = await response.json();
+                    errorMessage = errorData.error || `Server error: ${response.status}`;
+                } else {
+                    errorMessage = `HTTP error! Status: ${response.status}`;
+                }
+                throw new Error(errorMessage);
             }
 
             const results = await response.json();
             displayResults(results);
 
         } catch (error) {
-            displayError(error.message);
+            console.error('Upload error:', error);
+            displayError(error.message || 'An unexpected error occurred during file analysis.');
         } finally {
             // Hide loading spinner
             loadingSpinner.classList.add('hidden');
