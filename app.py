@@ -120,54 +120,45 @@ except FileNotFoundError:
 
 
 # --- Function to calculate development length using vector geometry ---
-def calculate_development_length(dimensions, points=None):
+def calculate_development_length(points):
     """
     Calculate development length using vector geometry for accurate bend calculations.
-    Can handle both extracted dimensions and 3D coordinate points.
     
     Args:
-        dimensions: Dictionary containing extracted dimensions
-        points: Optional list of {x,y,z,r} dictionaries for precise calculation
+        points: List of coordinate points from the drawing
     
     Returns:
         float: Calculated development length in mm
-        str: Error message if calculation fails
+        float: 0 if calculation fails
     """
     try:
-        # If we have 3D points with radii, use precise calculation
-        if points and len(points) >= 2:
-            coordinates = []
-            radii = []
+        if not points or len(points) < 2:
+            return 0
             
-            # Convert points to coordinate tuples and extract radii
-            for point in points:
-                try:
-                    x = float(point.get('x', 0))
-                    y = float(point.get('y', 0))
-                    z = float(point.get('z', 0))
-                    r = float(point.get('r', 0)) if point.get('r') is not None else 0
-                    coordinates.append((x, y, z))
-                    radii.append(r)
-                except (ValueError, TypeError):
-                    continue
+        coordinates = []
+        radii = []
+        
+        # Convert points to coordinate tuples and extract radii
+        for point in points:
+            try:
+                x = float(point.get('x', 0))
+                y = float(point.get('y', 0))
+                z = float(point.get('z', 0))
+                r = float(point.get('r', 0)) if point.get('r') is not None else 0
+                coordinates.append((x, y, z))
+                radii.append(r)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Invalid coordinate data: {e}")
+                continue
+        
+        if len(coordinates) >= 2:
+            return calculate_path_length(coordinates, radii)
             
-            if len(coordinates) >= 2:
-                return calculate_path_length(coordinates, radii)
-        
-        # Fall back to dimension-based calculation if no valid points
-        radius = dimensions.get("radius", "Not Found")
-        angle = dimensions.get("angle", "Not Found")
-        
-        # Try using radius and angle
-        if (radius != "Not Found" and angle != "Not Found" and
-            str(radius).replace('.', '', 1).replace('-', '', 1).isdigit() and
-            str(angle).replace('.', '', 1).replace('-', '', 1).isdigit()):
+        return 0
             
-            radius = float(radius)
-            angle = float(angle)
-            return round(2 * math.pi * radius * (angle / 360), 2)
-        
-        # Fall back to centerline length
+    except Exception as e:
+        logging.error(f"Error calculating development length: {e}")
+        return 0
         centerline = dimensions.get("centerline_length", "Not Found")
         if centerline != "Not Found" and str(centerline).replace('.', '', 1).replace('-', '', 1).isdigit():
             return round(float(centerline), 2)
@@ -608,10 +599,17 @@ def upload_and_analyze():
         final_results["material"] = get_material_from_standard(standard, grade)
 
         # Calculate development length
-        coordinates = final_results.get("coordinates", [])
-        if coordinates:
-            dev_length = calculate_development_length(coordinates)
-            final_results["development_length_mm"] = f"{dev_length:.2f}" if dev_length > 0 else "Not Found"
+        try:
+            coordinates = final_results.get("coordinates", [])
+            if coordinates:
+                dev_length = calculate_development_length(coordinates)
+                final_results["development_length_mm"] = f"{dev_length:.2f}" if dev_length > 0 else "Not Found"
+            else:
+                final_results["development_length_mm"] = "Not Found"
+                logging.info("No coordinates found for development length calculation")
+        except Exception as e:
+            logging.error(f"Error calculating development length: {e}")
+            final_results["development_length_mm"] = "Not Found"
         
         # Generate Excel report if helper function exists
         try:
