@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y \
 
 # Copy requirements file and material database
 COPY requirements.txt .
-COPY ["MATERIAL WITH STANDARD.xlsx - Sheet1.csv", "./"]
+COPY ["MATERIAL WITH STANDARD.xlsx", "./"]
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt

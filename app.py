@@ -32,13 +32,14 @@ except Exception as e:
 
 # --- Load and Clean Material Database on Startup ---
 try:
-    material_df = pd.read_csv("MATERIAL WITH STANDARD.xlsx - Sheet1.csv")
+    # Read from Excel file directly, specifying Sheet1
+    material_df = pd.read_excel("MATERIAL WITH STANDARD.xlsx", sheet_name="Sheet1")
     # Clean the data by stripping whitespace from the key columns
     material_df['STANDARD'] = material_df['STANDARD'].str.strip()
     material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
     logging.info(f"Successfully loaded and cleaned material database with {len(material_df)} entries.")
 except FileNotFoundError:
-    logging.error("MATERIAL WITH STANDARD.xlsx - Sheet1.csv not found. Material lookup will not work.")
+    logging.error("MATERIAL WITH STANDARD.xlsx not found. Material lookup will not work.")
     material_df = None
 
 # --- Material Lookup Function ---
