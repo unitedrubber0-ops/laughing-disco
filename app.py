@@ -326,19 +326,29 @@ def image_to_base64(image):
 
 # --- Analyze drawing using improved Gemini vision model ---
 def parse_text_with_gemini(full_text):
+    """
+    Uses Gemini to parse the entire text block and extract structured data.
+    This version has a much more specific prompt for higher accuracy.
+    """
     logging.info("Starting data parsing with Gemini...")
     model = genai.GenerativeModel('gemini-1.5-flash-latest')
     
+    # --- UPDATED PROMPT ---
     prompt = f"""
     Analyze the following text from an engineering drawing and return the information as a clean JSON object.
     Do not include any text before or after the JSON object.
 
-    Instructions:
-    - 'child_part' is the primary drawing number, often in a title block, usually ending with 'C' and a digit.
-    - 'standard' is the specification document, like 'MPAPS F-30' or 'SAE J2044'.
-    - 'grade' is the specific grade associated with the standard, like '1B' or '1'.
-    - 'coordinates' must be an array of objects. Each object must have 'point', 'x', 'y', and 'z' keys. Parse the main coordinate table carefully.
-    - If any value is not explicitly found, use the string "Not Found".
+    Instructions for extraction:
+    - "child_part": Find the primary drawing number, which is a 7-digit number followed by 'C' and another digit (e.g., 4582819C2).
+    - "description": Find the main title of the part, usually starting with "HOSE,...".
+    - "standard": Find the specification document, which looks like "MPAPS F-XXXX" or "SAE JXXXX".
+    - "grade": Find the grade associated with the standard, which looks like "GRADE XX" or "TYPE X".
+    - "id": Find the value explicitly labeled "TUBING ID", "HOSE ID", or "Inside Diameter".
+    - "thickness": Find the value explicitly labeled "WALL THICKNESS".
+    - "centerline_length": Find the value explicitly labeled "APPROX CTRLINE LENGTH".
+    - "coordinates": Carefully parse the main coordinate table into an array of objects. Each object must have "point", "x", "y", and "z" keys.
+
+    If any value is not explicitly found on the drawing, use the string "Not Found".
 
     Text to analyze:
     ---
@@ -365,11 +375,16 @@ def parse_text_with_gemini(full_text):
         response = model.generate_content(prompt)
         cleaned_text = response.text.strip().replace("```json", "").replace("```", "").strip()
         parsed_data = json.loads(cleaned_text)
-        logging.info("Successfully parsed text with Gemini AI")
+        logging.info("Successfully parsed Gemini response into JSON.")
         return parsed_data
     except Exception as e:
         logging.error(f"Failed to parse text with Gemini: {e}")
-        return {"error": str(e)}
+        # Return a default error structure that matches the expected output
+        return {
+            "child_part": "Error", "description": "Error", "standard": "Error",
+            "grade": "Error", "id": "Error", "thickness": "Error",
+            "centerline_length": "Error", "coordinates": [], "error": str(e)
+        }
 
 def analyze_drawing_with_gemini(pdf_bytes):
     """
