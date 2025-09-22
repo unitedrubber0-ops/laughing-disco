@@ -30,14 +30,22 @@ try:
 except Exception as e:
     logging.error(f"Failed to configure Gemini API key: {e}")
 
-# --- Load and Clean Material Database on Startup ---
+# --- Load and Clean Material Database on Startup with Enhanced Debugging ---
 try:
     # Read from Excel file directly, specifying Sheet1
     material_df = pd.read_excel("MATERIAL WITH STANDARD.xlsx", sheet_name="Sheet1")
+    
     # Clean the data by stripping whitespace from the key columns
     material_df['STANDARD'] = material_df['STANDARD'].str.strip()
     material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
     logging.info(f"Successfully loaded and cleaned material database with {len(material_df)} entries.")
+    
+    # Enhanced debugging: Show the first few rows of the database
+    logging.info(f"Material database head (first 5 rows):\n{material_df.head().to_string()}")
+    
+    # Additional debug info: Show unique standards and grades
+    logging.info(f"Unique STANDARD values:\n{material_df['STANDARD'].unique().tolist()}")
+    logging.info(f"Unique GRADE values:\n{material_df['GRADE'].unique().tolist()}")
 except FileNotFoundError:
     logging.error("MATERIAL WITH STANDARD.xlsx not found. Material lookup will not work.")
     material_df = None
