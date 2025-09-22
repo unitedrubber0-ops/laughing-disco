@@ -30,45 +30,43 @@ try:
 except Exception as e:
     logging.error(f"Failed to configure Gemini API key: {e}")
 
-# --- Load Material Database on Startup ---
+# --- Load and Clean Material Database on Startup ---
 try:
-    material_df = pd.read_csv("material_data.csv")
-    logging.info(f"Successfully loaded material database with {len(material_df)} entries.")
+    material_df = pd.read_csv("MATERIAL WITH STANDARD.xlsx - Sheet1.csv")
+    # Clean the data by stripping whitespace from the key columns
+    material_df['STANDARD'] = material_df['STANDARD'].str.strip()
+    material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
+    logging.info(f"Successfully loaded and cleaned material database with {len(material_df)} entries.")
 except FileNotFoundError:
-    logging.error("material_data.csv not found. Material lookup will not work.")
+    logging.error("MATERIAL WITH STANDARD.xlsx - Sheet1.csv not found. Material lookup will not work.")
     material_df = None
 
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
     """
-    Looks up the material from the database, normalizing the grade to handle
-    discrepancies between Roman numerals and digits (e.g., 'I' vs '1').
+    Looks up the material from the database using a more forgiving matching logic.
     """
     if material_df is None or standard == "Not Found" or grade == "Not Found":
         return "Not Found"
     
     try:
-        # Normalize the grade by replacing Roman numerals with digits
-        roman_to_digit = {
-            'I': '1', 'II': '2', 'III': '3', 'IV': '4', 'V': '5',
-            'VI': '6', 'VII': '7', 'VIII': '8', 'IX': '9', 'X': '10'
-        }
-        normalized_grade = grade.upper()
-        for roman, digit in roman_to_digit.items():
-            normalized_grade = normalized_grade.replace(roman, digit)
-        
-        # Find the row that matches both standard and the normalized grade
+        # Normalize the extracted data by cleaning it up
+        normalized_grade = grade.upper().replace('I', '1').strip()
+        normalized_standard = standard.strip()
+
+        # Find the row that contains the standard and the normalized grade
         result = material_df[
-            material_df['STANDARD'].str.contains(standard, case=False, na=False) &
-            material_df['GRADE'].astype(str).str.fullmatch(normalized_grade, case=False, na=False)
+            material_df['STANDARD'].str.contains(normalized_standard, case=False, na=False) &
+            # Use 'contains' for a more flexible match instead of 'fullmatch'
+            material_df['GRADE'].str.contains(normalized_grade, case=False, na=False)
         ]
         
         if not result.empty:
             material = result.iloc[0]['MATERIAL']
-            logging.info(f"Material lookup successful: Found '{material}' for Standard='{standard}', Grade='{grade}' (Normalized to '{normalized_grade}')")
+            logging.info(f"Material lookup successful: Found '{material}' for Standard='{standard}', Grade='{grade}'")
             return material
         else:
-            logging.warning(f"Material lookup failed: No match found for Standard='{standard}', Grade='{grade}' (Normalized to '{normalized_grade}')")
+            logging.warning(f"Material lookup failed: No match found for Standard='{standard}', Grade='{grade}'")
             return "Not Found"
             
     except Exception as e:
@@ -339,7 +337,7 @@ def parse_text_with_gemini(full_text):
     Do not include any text before or after the JSON object.
 
     Instructions for extraction:
-    - "child_part": Find the primary drawing number, which is a 7-digit number followed by 'C' and another digit (e.g., 4582819C2).
+    - "child_part": Find the value explicitly labeled "PART NO". This is the primary drawing number, which often looks like a 7-digit number followed by 'C' and another digit (e.g., 4721473C1).
     - "description": Find the main title of the part, usually starting with "HOSE,...".
     - "standard": Find the specification document, which looks like "MPAPS F-XXXX" or "SAE JXXXX".
     - "grade": Find the grade associated with the standard, which looks like "GRADE XX" or "TYPE X".
