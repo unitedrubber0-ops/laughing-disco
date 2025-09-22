@@ -23,6 +23,11 @@ CORS(app)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+def normalize_for_comparison(text):
+    """Converts text to a standardized format for reliable comparison."""
+    # Converts to lowercase and removes all non-alphanumeric characters
+    return re.sub(r'[^a-z0-9]', '', str(text).lower())
+
 # --- API Key Configuration ---
 try:
     genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
@@ -53,23 +58,20 @@ except FileNotFoundError:
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
     """
-    Looks up the material from the database using precise matching after cleaning.
+    Looks up the material from the database using a robust canonical comparison.
     """
     if material_df is None or standard == "Not Found" or grade == "Not Found":
         return "Not Found"
     
     try:
-        # --- CORRECTED NORMALIZATION ---
-        # We only need to strip whitespace. The .replace('I', '1') was incorrect and is removed.
-        normalized_grade = grade.strip()
-        normalized_standard = standard.strip()
-        # -------------------------------
+        # Convert the extracted standard and grade to the canonical format
+        norm_standard_from_pdf = normalize_for_comparison(standard)
+        norm_grade_from_pdf = normalize_for_comparison(grade)
 
-        # Find the row that matches both standard and grade exactly (case-insensitive).
-        # Reverting to 'fullmatch' for the grade provides the most accurate link.
+        # Find the row where the canonical versions of the data match
         result = material_df[
-            material_df['STANDARD'].str.contains(normalized_standard, case=False, na=False) &
-            material_df['GRADE'].str.fullmatch(normalized_grade, case=False, na=False)
+            (material_df['STANDARD'].apply(normalize_for_comparison) == norm_standard_from_pdf) &
+            (material_df['GRADE'].apply(normalize_for_comparison) == norm_grade_from_pdf)
         ]
         
         if not result.empty:
