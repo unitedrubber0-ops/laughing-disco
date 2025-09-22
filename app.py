@@ -53,21 +53,23 @@ except FileNotFoundError:
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
     """
-    Looks up the material from the database using a more forgiving matching logic.
+    Looks up the material from the database using precise matching after cleaning.
     """
     if material_df is None or standard == "Not Found" or grade == "Not Found":
         return "Not Found"
     
     try:
-        # Normalize the extracted data by cleaning it up
-        normalized_grade = grade.upper().replace('I', '1').strip()
+        # --- CORRECTED NORMALIZATION ---
+        # We only need to strip whitespace. The .replace('I', '1') was incorrect and is removed.
+        normalized_grade = grade.strip()
         normalized_standard = standard.strip()
+        # -------------------------------
 
-        # Find the row that contains the standard and the normalized grade
+        # Find the row that matches both standard and grade exactly (case-insensitive).
+        # Reverting to 'fullmatch' for the grade provides the most accurate link.
         result = material_df[
             material_df['STANDARD'].str.contains(normalized_standard, case=False, na=False) &
-            # Use 'contains' for a more flexible match instead of 'fullmatch'
-            material_df['GRADE'].str.contains(normalized_grade, case=False, na=False)
+            material_df['GRADE'].str.fullmatch(normalized_grade, case=False, na=False)
         ]
         
         if not result.empty:
