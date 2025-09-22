@@ -40,22 +40,37 @@ except FileNotFoundError:
 
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
+    """
+    Looks up the material from the database, normalizing the grade to handle
+    discrepancies between Roman numerals and digits (e.g., 'I' vs '1').
+    """
     if material_df is None or standard == "Not Found" or grade == "Not Found":
         return "Not Found"
     
     try:
-        # Find the row that matches both standard and grade (case-insensitive)
+        # Normalize the grade by replacing Roman numerals with digits
+        roman_to_digit = {
+            'I': '1', 'II': '2', 'III': '3', 'IV': '4', 'V': '5',
+            'VI': '6', 'VII': '7', 'VIII': '8', 'IX': '9', 'X': '10'
+        }
+        normalized_grade = grade.upper()
+        for roman, digit in roman_to_digit.items():
+            normalized_grade = normalized_grade.replace(roman, digit)
+        
+        # Find the row that matches both standard and the normalized grade
         result = material_df[
             material_df['STANDARD'].str.contains(standard, case=False, na=False) &
-            material_df['GRADE'].astype(str).str.fullmatch(grade, case=False, na=False)
+            material_df['GRADE'].astype(str).str.fullmatch(normalized_grade, case=False, na=False)
         ]
+        
         if not result.empty:
             material = result.iloc[0]['MATERIAL']
-            logging.info(f"Material lookup successful: Found '{material}' for Standard='{standard}', Grade='{grade}'")
+            logging.info(f"Material lookup successful: Found '{material}' for Standard='{standard}', Grade='{grade}' (Normalized to '{normalized_grade}')")
             return material
         else:
-            logging.warning(f"Material lookup failed: No match found for Standard='{standard}', Grade='{grade}'")
+            logging.warning(f"Material lookup failed: No match found for Standard='{standard}', Grade='{grade}' (Normalized to '{normalized_grade}')")
             return "Not Found"
+            
     except Exception as e:
         logging.error(f"Error during material lookup: {e}")
         return "Not Found"
