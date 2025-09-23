@@ -420,23 +420,44 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
     remarks = []
     if analysis_results.get('standard', '').startswith('MPAPS F 1'):
         remarks.append('The drawing specifies MPAPS F 1, but we have considered the specification as MPAPS F 30.')
-    if dimensions.get('id1') != dimensions.get('id2') and dimensions.get('id1') != 'Not Found' and dimensions.get('id2') != 'Not Found':
-        remarks.append('THERE IS MISMATCH IN ID 1 & ID 2')
+    
+    # Safely check dimensions with nested .get() calls
+    try:
+        id1 = dimensions.get('id1', 'Not Found')
+        id2 = dimensions.get('id2', 'Not Found')
+        if id1 != 'Not Found' and id2 != 'Not Found' and id1 != id2:
+            remarks.append('THERE IS MISMATCH IN ID 1 & ID 2')
+    except Exception as e:
+        logging.warning(f"Error checking ID mismatch: {e}")
+        
     row_data['REMARK'] = ' '.join(remarks) if remarks else 'No specific remarks.'
     
-    # Calculate thickness from ID/OD if available
-    od1 = dimensions.get('od1', 'Not Found')
-    id1 = dimensions.get('id1', 'Not Found')
-    if (od1 != 'Not Found' and id1 != 'Not Found' and
-        isinstance(od1, str) and isinstance(id1, str) and
-        od1.replace('.', '', 1).replace('-', '', 1).isdigit() and 
-        id1.replace('.', '', 1).replace('-', '', 1).isdigit()):
-        try:
-            thickness = abs(float(od1) - float(id1)) / 2
-            row_data['THICKNESS AS PER ID OD DIFFERENCE'] = round(thickness, 3)
-        except Exception as e:
-            print(f"Error calculating thickness difference: {e}")
-            row_data['THICKNESS AS PER ID OD DIFFERENCE'] = 'Calculation error'
+    # Calculate thickness from ID/OD if available - with enhanced error handling
+    try:
+        od1 = dimensions.get('od1', 'Not Found')
+        id1 = dimensions.get('id1', 'Not Found')
+        
+        if od1 != 'Not Found' and id1 != 'Not Found':
+            try:
+                # Clean and validate numeric values
+                clean_od1 = str(od1).strip().replace(',', '.')
+                clean_id1 = str(id1).strip().replace(',', '.')
+                
+                if (clean_od1.replace('.', '', 1).replace('-', '', 1).isdigit() and 
+                    clean_id1.replace('.', '', 1).replace('-', '', 1).isdigit()):
+                    
+                    thickness = abs(float(clean_od1) - float(clean_id1)) / 2
+                    row_data['THICKNESS AS PER ID OD DIFFERENCE'] = round(thickness, 3)
+                else:
+                    row_data['THICKNESS AS PER ID OD DIFFERENCE'] = 'Invalid format'
+            except Exception as e:
+                logging.error(f"Error calculating thickness difference: {e}")
+                row_data['THICKNESS AS PER ID OD DIFFERENCE'] = 'Calculation error'
+        else:
+            row_data['THICKNESS AS PER ID OD DIFFERENCE'] = 'Not Found'
+    except Exception as e:
+        logging.error(f"Error processing dimensions for thickness calculation: {e}")
+        row_data['THICKNESS AS PER ID OD DIFFERENCE'] = 'Processing error'
     
     # Create DataFrame with the row data
     df = pd.DataFrame([row_data], columns=columns)
@@ -872,35 +893,59 @@ def validate_extracted_data(data):
     """
     issues = []
     
-    # Check critical fields
-    if data.get('standard') == 'Not Found':
-        issues.append("Standard specification not found in drawing")
-    if data.get('grade') == 'Not Found':
-        issues.append("Grade/Type not found in drawing")
-    if data.get('material') == 'Not Found':
-        issues.append("Material could not be identified from standard and grade")
-    
-    # Validate dimensions
-    dimensions = data.get('dimensions', {})
     try:
+        # Check critical fields with safe gets
+        if data.get('standard') == 'Not Found':
+            issues.append("Standard specification not found in drawing")
+        if data.get('grade') == 'Not Found':
+            issues.append("Grade/Type not found in drawing")
+        if data.get('material') == 'Not Found':
+            issues.append("Material could not be identified from standard and grade")
+        
+        # Validate dimensions with safe access
+        dimensions = data.get('dimensions', {})
+        if not isinstance(dimensions, dict):
+            dimensions = {}
+            issues.append("Invalid dimensions format")
+            return issues
+        
+        # Safely get dimension values
+        id1 = dimensions.get('id1', 'Not Found')
+        od1 = dimensions.get('od1', 'Not Found')
+        thickness = dimensions.get('thickness', 'Not Found')
+        
+        # Helper function to safely convert dimension strings to float
+        def safe_dim_to_float(value):
+            try:
+                if value == 'Not Found':
+                    return None
+                return float(str(value).replace('mm', '').strip())
+            except (ValueError, TypeError):
+                return None
+        
         # Check ID/OD relationship
-        if dimensions.get('id1') != 'Not Found' and dimensions.get('od1') != 'Not Found':
-            id_val = float(str(dimensions['id1']).replace('mm', '').strip())
-            od_val = float(str(dimensions['od1']).replace('mm', '').strip())
-            if od_val <= id_val:
-                issues.append(f"Invalid dimensions: OD ({od_val}mm) should be greater than ID ({id_val}mm)")
+        id1_val = safe_dim_to_float(id1)
+        od1_val = safe_dim_to_float(od1)
+        
+        if id1_val is not None and od1_val is not None:
+            if od1_val <= id1_val:
+                issues.append(f"Invalid dimensions: OD ({od1_val}mm) should be greater than ID ({id1_val}mm)")
         
         # Check wall thickness consistency
-        if dimensions.get('thickness') != 'Not Found':
-            thickness = float(str(dimensions['thickness']).replace('mm', '').strip())
-            if thickness <= 0:
-                issues.append(f"Invalid wall thickness: {thickness}mm")
+        thickness_val = safe_dim_to_float(thickness)
+        if thickness_val is not None:
+            if thickness_val <= 0:
+                issues.append(f"Invalid wall thickness: {thickness_val}mm")
             
             # Cross-validate thickness with ID/OD if available
-            if dimensions.get('id1') != 'Not Found' and dimensions.get('od1') != 'Not Found':
-                calculated_thickness = (od_val - id_val) / 2
-                if abs(calculated_thickness - thickness) > 0.1:  # Allow 0.1mm tolerance
-                    issues.append(f"Thickness inconsistency: Specified {thickness}mm vs calculated {calculated_thickness}mm")
+            if id1_val is not None and od1_val is not None:
+                calculated_thickness = (od1_val - id1_val) / 2
+                if abs(calculated_thickness - thickness_val) > 0.1:  # Allow 0.1mm tolerance
+                    issues.append(f"Thickness inconsistency: Specified {thickness_val}mm vs calculated {calculated_thickness}mm")
+                    
+    except Exception as e:
+        logging.error(f"Error during data validation: {str(e)}")
+        issues.append(f"Validation error: {str(e)}")
     except ValueError as e:
         issues.append(f"Error validating dimensions: {str(e)}")
     
@@ -941,20 +986,37 @@ def upload_and_analyze():
             return jsonify({"error": "Failed to extract text from PDF"}), 500
 
         # Parse text with Gemini
-        final_results = parse_text_with_gemini(full_text)
-        if "error" in final_results:
-            return jsonify(final_results), 500
+        try:
+            final_results = parse_text_with_gemini(full_text)
+            if not isinstance(final_results, dict):
+                return jsonify({"error": "Invalid response format from text parser"}), 500
+            if "error" in final_results:
+                return jsonify(final_results), 500
+        except Exception as e:
+            logging.error(f"Error parsing text with Gemini: {e}")
+            return jsonify({"error": f"Text parsing failed: {str(e)}"}), 500
+
+        # Initialize dimensions with safe defaults
+        final_results["dimensions"] = safe_dimension_processing(final_results)
 
         # Look up material based on standard and grade
-        standard = final_results.get("standard", "Not Found")
-        grade = final_results.get("grade", "Not Found")
-        final_results["material"] = get_material_from_standard(standard, grade)
+        try:
+            standard = final_results.get("standard", "Not Found")
+            grade = final_results.get("grade", "Not Found")
+            final_results["material"] = get_material_from_standard(standard, grade)
+        except Exception as e:
+            logging.error(f"Error in material lookup: {e}")
+            final_results["material"] = "Not Found"
 
         # Validate the extracted data
-        validation_issues = validate_extracted_data(final_results)
-        if validation_issues:
-            final_results["validation_warnings"] = validation_issues
-            logging.warning(f"Validation issues found: {validation_issues}")
+        try:
+            validation_issues = validate_extracted_data(final_results)
+            if validation_issues:
+                final_results["validation_warnings"] = validation_issues
+                logging.warning(f"Validation issues found: {validation_issues}")
+        except Exception as e:
+            logging.error(f"Error in data validation: {e}")
+            final_results["validation_warnings"] = [f"Validation error: {str(e)}"]
 
         # Calculate development length
         try:
