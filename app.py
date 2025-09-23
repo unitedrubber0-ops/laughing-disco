@@ -348,19 +348,37 @@ def extract_dimensions_from_text(text):
     try:
         # Clean the text and normalize spacing
         text = clean_text_encoding(text)
+        # Replace common OCR errors for diameter symbol
+        text = text.replace('0/', 'Ø').replace('O/', 'Ø').replace('⌀', 'Ø').replace('O|', 'Ø').replace('0|', 'Ø')
+        # Clean up spacing around diameter symbol
+        text = re.sub(r'(?:INSIDE|INNER)\s*(?:DIAMETER|DIA\.?|DIAM\.?)?\s*(?:Ø|O|0)\s*', 'INSIDE Ø ', text, flags=re.IGNORECASE)
+        text = re.sub(r'\b(?:I\.?D\.?|ID)\s*(?:Ø|O|0)\s*', 'ID Ø ', text, flags=re.IGNORECASE)
+        # Normalize decimal separators and spacing
+        text = re.sub(r'(\d)\s*[.,]\s*(\d)', r'\1.\2', text)
+        # Remove any whitespace between numbers and units/symbols
+        text = re.sub(r'(\d+(?:\.\d+)?)\s*(mm|MM|Ø|ID|O\.?D\.?)', r'\1 \2', text)
+        # Clean up any double spaces
         text = re.sub(r'\s+', ' ', text)
+        
+        logger.debug(f"Cleaned text for dimension extraction: {text}")
         
         # Define regex patterns with variations
         patterns = {
             'id': [
+                # Primary ID patterns with Ø symbol - these should match first
+                r'INSIDE\s*Ø\s*(\d+(?:\.\d+)?)',  # Matches "INSIDE Ø 50.8"
+                r'ID\s*Ø\s*(\d+(?:\.\d+)?)',      # Matches "ID Ø 50.8"
+                # Inside diameter variations
+                r'(?:INSIDE|INNER)\s*(?:DIAMETER|DIA\.?|DIAM\.?)?\s*(?:Ø|⌀)?\s*(\d+(?:\.\d+)?)',
                 # Standard ID formats
-                r'(?:TUBING|HOSE)?\s*ID\s*(?:AS\s+PER\s+2D|\(MM\))?\s*[=:]?\s*(\d+[.,]?\d*)',
-                r'(?:INSIDE|INNER)\s*(?:DIAMETER|DIA\.?)\s*[=:]?\s*(\d+[.,]?\d*)',
-                r'I\.?D\.?\s*(?:AS\s+PER\s+2D|\(MM\))?\s*[=:]?\s*(\d+[.,]?\d*)',
-                # Special cases
-                r'INSIDE\s+DIA(?:METER)?(?:AS\s+PER\s+2D|\(MM\))?\s*[=:]?\s*(\d+[.,]?\d*)',
-                r'TUBE(?:\/HOSE)?\s+ID(?:AS\s+PER\s+2D|\(MM\))?\s*[=:]?\s*(\d+[.,]?\d*)',
-                r'(?:TUBING|HOSE)\s+BORE(?:AS\s+PER\s+2D|\(MM\))?\s*[=:]?\s*(\d+[.,]?\d*)'
+                r'(?:TUBING|HOSE)?\s*(?:I\.?D\.?|ID)\s*(?:AS\s+PER\s+2D|\(MM\))?\s*(?:=|:|IS|:=)?\s*(\d+(?:\.\d+)?)',
+                r'(?:INSIDE|INNER)\s*(?:DIAMETER|DIA\.?|DIAM\.?)\s*(?:=|:|IS|:=)?\s*(\d+(?:\.\d+)?)',
+                # Secondary variations
+                r'BORE\s*(?:Ø|⌀)?\s*(?:=|:|IS|:=)?\s*(\d+(?:\.\d+)?)',
+                r'(?:INT\.?|INTERNAL)\s*(?:DIA\.?|DIAM\.?)\s*(?:Ø|⌀)?\s*(?:=|:|IS|:=)?\s*(\d+(?:\.\d+)?)',
+                # Fallback patterns
+                r'(?:^|\s|:)(?:Ø|⌀)\s*(\d+(?:\.\d+)?)(?:\s*MM)?(?:\s|$)',  # Just the diameter symbol
+                r'(?:^|\s|:)(\d+(?:\.\d+)?)\s*(?:MM\s+)?(?:ID|I\.D\.?)(?:\s|$)'  # Number followed by ID
             ],
             'od': [
                 r'(?:TUBING|HOSE)?\s*OD\s*(?:AS\s+PER\s+2D|\(MM\))?\s*[=:]?\s*(\d+[.,]?\d*)',
@@ -389,33 +407,51 @@ def extract_dimensions_from_text(text):
         
         # Extract dimensions using patterns
         for dim_type, pattern_list in patterns.items():
+            logger.debug(f"Checking {dim_type} patterns...")
             for pattern in pattern_list:
+                logger.debug(f"Trying pattern: {pattern}")
                 matches = re.finditer(pattern, text, re.IGNORECASE)
                 values = []
                 
                 for match in matches:
                     try:
                         value = match.group(1).replace(',', '.')
+                        matched_text = match.group(0)  # Get the entire matched text
+                        logger.debug(f"Found potential match: '{matched_text}' -> value: '{value}'")
+                        
                         if value.replace('.', '', 1).replace('-', '', 1).isdigit():
-                            values.append(float(value))
-                    except (ValueError, AttributeError):
-                        continue
+                            # Convert to float to validate, but keep original decimal places
+                            float_val = float(value)
+                            # Preserve decimal places from original value
+                            decimal_places = len(value.split('.')[-1]) if '.' in value else 0
+                            values.append((float_val, decimal_places))
+                            logger.debug(f"Successfully extracted value {float_val} with {decimal_places} decimal places")
+                        else:
+                            logger.debug(f"Skipped invalid numeric value: {value}")
+                    except (ValueError, AttributeError) as e:
+                        logger.debug(f"Error processing match: {e}")
                 
                 if values:
+                    def format_value(val_tuple):
+                        value, decimal_places = val_tuple
+                        if decimal_places > 0:
+                            return f"{value:.{decimal_places}f}"
+                        return f"{value:.1f}" if value % 1 != 0 else f"{int(value)}"
+                    
                     if dim_type == 'id':
-                        dimensions['id1'] = str(values[0])
-                        dimensions['id2'] = str(values[-1])  # Use last value if multiple found
+                        dimensions['id1'] = format_value(values[0])
+                        dimensions['id2'] = format_value(values[-1])  # Use last value if multiple found
                     elif dim_type == 'od':
-                        dimensions['od1'] = str(values[0])
-                        dimensions['od2'] = str(values[-1])
+                        dimensions['od1'] = format_value(values[0])
+                        dimensions['od2'] = format_value(values[-1])
                     elif dim_type == 'thickness':
-                        dimensions['thickness'] = str(values[0])
+                        dimensions['thickness'] = format_value(values[0])
                     elif dim_type == 'centerline':
-                        dimensions['centerline_length'] = str(values[0])
+                        dimensions['centerline_length'] = format_value(values[0])
                     elif dim_type == 'radius':
-                        dimensions['radius'] = str(values[0])
+                        dimensions['radius'] = format_value(values[0])
                     elif dim_type == 'angle':
-                        dimensions['angle'] = str(values[0])
+                        dimensions['angle'] = format_value(values[0])
                     break  # Stop after first successful match for each dimension type
         
         # Cross-validate dimensions
@@ -432,12 +468,16 @@ def extract_dimensions_from_text(text):
                 pass
         
         # Log the extraction results
-        logging.info("Extracted dimensions:")
+        logger.info("Extracted dimensions:")
         for dim, value in dimensions.items():
-            logging.info(f"{dim}: {value}")
+            if value == "Not Found":
+                logger.info(f"{dim}: {value} - No matching pattern found")
+            else:
+                logger.info(f"{dim}: {value}")
         
     except Exception as e:
-        logging.error(f"Error extracting dimensions: {e}")
+        logger.error(f"Error extracting dimensions: {e}")
+        logger.debug(f"Exception details:", exc_info=True)
     
     return dimensions
 
@@ -1418,15 +1458,15 @@ def analyze_drawing_with_gemini(pdf_bytes):
         # Use Gemini for advanced analysis
         gemini_results = parse_text_with_gemini(combined_text)
         
-        if ai_results:
+        if gemini_results:
             # Use safe dimension processing
-            results["dimensions"] = safe_dimension_processing(ai_results)
+            results["dimensions"] = safe_dimension_processing(gemini_results)
             
             # Update main results with AI findings
-            results["part_number"] = ai_results.get("part_number", "Not Found")
-            results["description"] = ai_results.get("description", "Not Found")
-            results["standard"] = ai_results.get("standard", "Not Found")
-            results["grade"] = ai_results.get("grade", "Not Found")
+            results["part_number"] = gemini_results.get("part_number", "Not Found")
+            results["description"] = gemini_results.get("description", "Not Found")
+            results["standard"] = gemini_results.get("standard", "Not Found")
+            results["grade"] = gemini_results.get("grade", "Not Found")
                 
         logger.info("------------------------------------------")
         
@@ -1510,7 +1550,7 @@ Pay special attention to distinguishing primary material specs from reference sp
         # --- Step 3: Call Gemini API with vision model ---
         try:
             model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            response = model.generate_content([prompt, *content])
+            response = model.generate_content([prompt, full_text])
             
             if response and response.text:
                 # Clean the response to ensure it's valid JSON
