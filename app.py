@@ -9,7 +9,13 @@ import json
 import logging
 import tempfile
 import numpy as np
-import cv2
+try:
+    import cv2
+    HAS_OPENCV = True
+except Exception as e:
+    cv2 = None
+    HAS_OPENCV = False
+    logging.warning(f"OpenCV (cv2) not available: {e}")
 import pytesseract
 from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS

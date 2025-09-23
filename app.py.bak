@@ -1,0 +1,8 @@
+from flask import Flask, request, jsonify, render_template, send_file
+from flask_cors import CORS
+import cv2  # We'll remove this dependency
+from pytesseract import image_to_string
+import fitz  # PyMuPDF
+from pdf2image import convert_from_path, convert_from_bytes
+from PIL import Image
+# Rest of your current file content...
