@@ -38,7 +38,7 @@ try:
     # Clean the data by stripping whitespace from the key columns
     material_df['STANDARD'] = material_df['STANDARD'].str.strip()
     material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
-    logging.info(f"Successfully loaded and cleaned material database with {len(material_df)} entries.")
+    logging.info(f"V2 CODE RUNNING: Successfully loaded and cleaned material database with {len(material_df)} entries.")
     
     # Enhanced debugging: Show the first few rows of the database
     logging.info(f"Material database head (first 5 rows):\n{material_df.head().to_string()}")
