@@ -515,28 +515,43 @@ def extract_text_from_image(image):
         if not text or has_encoding_issues(text):
             logging.info("Initial text extraction produced poor results, trying preprocessing...")
             
-            # Convert to numpy array and grayscale
-            img_array = np.array(image)
-            if len(img_array.shape) == 3:  # Color image
-                gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-            else:  # Already grayscale
-                gray = img_array
-                
-            # Apply various preprocessing techniques
-            preprocessed_images = [
-                gray,  # Original grayscale
-                cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],  # Otsu's thresholding
-                cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)  # Adaptive thresholding
-            ]
+            try:
+                # Try OpenCV preprocessing if available
+                img_array = np.array(image)
+                if len(img_array.shape) == 3:  # Color image
+                    gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+                else:  # Already grayscale
+                    gray = img_array
+                    
+                # Apply various preprocessing techniques
+                preprocessed_images = [
+                    gray,  # Original grayscale
+                    cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],  # Otsu's thresholding
+                    cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)  # Adaptive thresholding
+                ]
+            except Exception as cv_error:
+                logging.warning(f"OpenCV preprocessing failed, falling back to PIL: {cv_error}")
+                # Fallback to PIL preprocessing
+                gray_image = image.convert('L')  # Convert to grayscale using PIL
+                # Apply basic threshold using PIL
+                threshold = 128
+                preprocessed_images = [
+                    gray_image,  # Original grayscale
+                    gray_image.point(lambda x: 0 if x < threshold else 255, '1'),  # Basic thresholding
+                ]
             
             # Try OCR with each preprocessed image
             for idx, processed_img in enumerate(preprocessed_images):
-                processed_text = pytesseract.image_to_string(processed_img)
-                processed_text = clean_text_encoding(processed_text)
-                
-                if processed_text and not has_encoding_issues(processed_text):
-                    logging.info(f"Successfully extracted text using preprocessing method {idx}")
-                    return processed_text.strip()
+                try:
+                    processed_text = pytesseract.image_to_string(processed_img)
+                    processed_text = clean_text_encoding(processed_text)
+                    
+                    if processed_text and not has_encoding_issues(processed_text):
+                        logging.info(f"Successfully extracted text using preprocessing method {idx}")
+                        return processed_text.strip()
+                except Exception as ocr_error:
+                    logging.warning(f"OCR failed for preprocessing method {idx}: {ocr_error}")
+                    continue
                     
             # If all preprocessing attempts fail, return best effort result
             logging.warning("All preprocessing attempts produced poor quality text")
