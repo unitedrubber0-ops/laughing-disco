@@ -355,6 +355,37 @@ def calculate_path_length(points, radii):
     
     return round(total_length, 2)
 
+# --- Safe Dimension Processing ---
+def safe_dimension_processing(ai_results):
+    """Safely process dimensions with default values to prevent KeyError"""
+    dimensions = {
+        "id1": "Not Found",
+        "id2": "Not Found", 
+        "od1": "Not Found",
+        "od2": "Not Found",
+        "thickness": "Not Found",
+        "centerline_length": "Not Found",
+        "radius": "Not Found",
+        "angle": "Not Found"
+    }
+    
+    # Safely map AI results to dimensions
+    if ai_results:
+        dimension_map = {
+            "id": "id1",
+            "od": "od1", 
+            "thickness": "thickness",
+            "centerline_length": "centerline_length",
+            "radius": "radius",
+            "angle": "angle"
+        }
+        
+        for ai_key, dim_key in dimension_map.items():
+            if ai_key in ai_results and ai_results[ai_key] != "Not Found":
+                dimensions[dim_key] = ai_results[ai_key]
+    
+    return dimensions
+
 # --- Function to generate Excel sheet with all details ---
 def generate_excel_sheet(analysis_results, dimensions, development_length):
     # Create a DataFrame with the structure of FETCH FROM DRAWING worksheet
@@ -370,16 +401,16 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
         'OUTSOURCE', 'REMARK'
     ]
     
-    # Create a row with the extracted data
+    # Create a row with the extracted data - USE SAFE .get() METHOD
     row_data = {
         'SPECIFICATION': f"{analysis_results.get('standard', 'Not Found')} {analysis_results.get('grade', 'Not Found')}",
         'MATERIAL': analysis_results.get('material', 'Not Found'),
-        'ID1 AS PER 2D (MM)': dimensions.get('id1', 'Not Found'),
-        'ID2 AS PER 2D (MM)': dimensions.get('id2', 'Not Found'),
-        'OD1 AS PER 2D (MM)': dimensions.get('od1', 'Not Found'),
-        'OD2 AS PER 2D (MM)': dimensions.get('od2', 'Not Found'),
-        'THICKNESS AS PER 2D (MM)': dimensions.get('thickness', 'Not Found'),
-        'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),
+        'ID1 AS PER 2D (MM)': dimensions.get('id1', 'Not Found'),  # SAFE ACCESS
+        'ID2 AS PER 2D (MM)': dimensions.get('id2', 'Not Found'),  # SAFE ACCESS
+        'OD1 AS PER 2D (MM)': dimensions.get('od1', 'Not Found'),  # SAFE ACCESS
+        'OD2 AS PER 2D (MM)': dimensions.get('od2', 'Not Found'),  # SAFE ACCESS
+        'THICKNESS AS PER 2D (MM)': dimensions.get('thickness', 'Not Found'),  # SAFE ACCESS
+        'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),  # SAFE ACCESS
         'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)': development_length,
         'ADDITIONAL REQUIREMENT': 'CUTTING & CHECKING FIXTURE COST TO BE ADDED. Marking cost to be added.',
         'REMARK': ''
@@ -692,17 +723,8 @@ def analyze_drawing_with_gemini(pdf_bytes):
         ai_results = parse_text_with_gemini(full_text)
         
         if ai_results:
-            # Map AI results to dimension structure
-            results["dimensions"] = {
-                "id1": ai_results.get("id", "Not Found"),
-                "id2": "Not Found",  # Currently AI doesn't differentiate between id1 and id2
-                "od1": ai_results.get("od", "Not Found"),
-                "od2": "Not Found",  # Currently AI doesn't differentiate between od1 and od2
-                "thickness": ai_results.get("thickness", "Not Found"),
-                "centerline_length": ai_results.get("centerline_length", "Not Found"),
-                "radius": ai_results.get("radius", "Not Found"),
-                "angle": ai_results.get("angle", "Not Found")
-            }
+            # Use safe dimension processing
+            results["dimensions"] = safe_dimension_processing(ai_results)
             
             # Update main results with AI findings
             results["part_number"] = ai_results.get("part_number", "Not Found")
