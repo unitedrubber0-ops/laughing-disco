@@ -8,6 +8,9 @@ import gc
 import json
 import logging
 import tempfile
+import numpy as np
+import cv2
+import pytesseract
 from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
 import fitz  # PyMuPDF
@@ -52,64 +55,136 @@ except FileNotFoundError:
 
 # --- String Normalization Helper ---
 def normalize_for_comparison(text):
-    """Converts text to a standardized format for reliable comparison."""
-    # Converts to lowercase and removes all non-alphanumeric characters
-    return re.sub(r'[^a-z0-9]', '', str(text).lower())
+    """
+    Converts text to a standardized format for reliable comparison.
+    Handles various text formats and common variations.
+    """
+    if not text:
+        return ""
+        
+    # Convert to string and uppercase
+    text = str(text).upper()
+    
+    # Remove grade prefix variations
+    grade_prefixes = ['GRADE ', 'GRADE-', 'GRADE_', 'TYPE ', 'TYPE-', 'TYPE_']
+    for prefix in grade_prefixes:
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    
+    # Normalize hyphenation in standards
+    text = re.sub(r'MPAPS\s+F\s*[-_]?\s*(\d+)', r'MPAPS F-\1', text)
+    
+    # Remove all whitespace
+    text = ''.join(text.split())
+    
+    # Convert Roman numerals to numbers (if needed)
+    roman_to_num = {'I': '1', 'II': '2', 'III': '3', 'IV': '4', 'V': '5'}
+    for roman, num in roman_to_num.items():
+        text = text.replace(roman, num)
+    
+    # Strip special characters but preserve numbers
+    text = re.sub(r'[^A-Z0-9]', '', text)
+    
+    return text
 
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
     """
-    Looks up the material from the database using a flexible matching approach.
-    Tries exact match first, then falls back to more flexible matching strategies.
+    Enhanced material lookup with flexible matching and better error handling.
+    Attempts multiple matching strategies with detailed logging.
     """
     if material_df is None or standard == "Not Found" or grade == "Not Found":
         return "Not Found"
     
     try:
-        # First attempt: Exact canonical match
-        norm_standard_from_pdf = normalize_for_comparison(standard)
-        norm_grade_from_pdf = normalize_for_comparison(grade)
-
-        result = material_df[
-            (material_df['STANDARD'].apply(normalize_for_comparison) == norm_standard_from_pdf) &
-            (material_df['GRADE'].apply(normalize_for_comparison) == norm_grade_from_pdf)
-        ]
+        # Clean and normalize inputs using our enhanced normalization
+        clean_standard = clean_text_encoding(str(standard))
+        clean_grade = clean_text_encoding(str(grade))
+        norm_standard = normalize_for_comparison(clean_standard)
+        norm_grade = normalize_for_comparison(clean_grade)
         
-        if not result.empty:
-            material = result.iloc[0]['MATERIAL']
-            logging.info(f"Material lookup successful (exact match): Found '{material}' for Standard='{standard}', Grade='{grade}'")
-            return material
+        logging.info(f"Material lookup: Original Standard='{standard}', Grade='{grade}'\n"
+                    f"Cleaned to: Standard='{clean_standard}', Grade='{clean_grade}'\n"
+                    f"Normalized to: Standard='{norm_standard}', Grade='{norm_grade}'")
+        
+        # Try exact match first with normalized values
+        for idx, row in material_df.iterrows():
+            db_standard = str(row['STANDARD'])
+            db_grade = str(row['GRADE'])
+            norm_db_standard = normalize_for_comparison(db_standard)
+            norm_db_grade = normalize_for_comparison(db_grade)
             
-        # Second attempt: More flexible matching for standards like "MPAPS F-6032" vs "MPAPS F6032"
-        clean_standard = re.sub(r'[^A-Z0-9]', '', standard.upper())
-        matches = []
+            # Exact match on normalized values
+            if norm_standard == norm_db_standard and norm_grade == norm_db_grade:
+                material = row['MATERIAL']
+                logging.info(f"Exact match found: '{material}' with Standard='{db_standard}', Grade='{db_grade}'")
+                return material
+        
+        logging.info("No exact match found, trying flexible matching...")
+        
+        # Try flexible matching with score-based approach
+        best_match = None
+        best_score = 0
         
         for idx, row in material_df.iterrows():
-            db_standard = re.sub(r'[^A-Z0-9]', '', str(row['STANDARD']).upper())
-            db_grade = str(row['GRADE']).upper().strip()
+            db_standard = str(row['STANDARD'])
+            db_grade = str(row['GRADE'])
+            norm_db_standard = normalize_for_comparison(db_standard)
+            norm_db_grade = normalize_for_comparison(db_grade)
             
-            # Check if the cleaned standard is contained in the database entry
-            if clean_standard in db_standard and normalize_for_comparison(grade) == normalize_for_comparison(str(row['GRADE'])):
-                matches.append({
-                    'material': row['MATERIAL'],
-                    'standard': row['STANDARD'],
-                    'grade': row['GRADE'],
-                    'match_quality': len(clean_standard) / len(db_standard)  # Higher ratio = better match
-                })
+            # Calculate match scores
+            standard_score = 0
+            grade_score = 0
+            
+            # Standard matching criteria
+            if norm_standard == norm_db_standard:
+                standard_score = 1.0
+            elif norm_standard in norm_db_standard:
+                standard_score = 0.8
+            elif norm_db_standard in norm_standard:
+                standard_score = 0.7
+            elif any(s in norm_db_standard for s in norm_standard.split()):
+                standard_score = 0.6
+                
+            # Special case for F-30 variants
+            if 'F30' in norm_standard and 'F30' in norm_db_standard:
+                standard_score = max(standard_score, 0.9)
+                
+            # Grade matching criteria
+            if norm_grade == norm_db_grade:
+                grade_score = 1.0
+            elif norm_grade.replace('1', 'I') == norm_db_grade:
+                grade_score = 0.9
+            elif norm_grade.replace('I', '1') == norm_db_grade:
+                grade_score = 0.9
+            elif norm_grade in norm_db_grade or norm_db_grade in norm_grade:
+                grade_score = 0.7
+            
+            # Combined score (weighted towards standard matching)
+            total_score = (standard_score * 0.6) + (grade_score * 0.4)
+            
+            if total_score > best_score:
+                best_score = total_score
+                best_match = row['MATERIAL']
+                
+            logging.debug(f"Match scores for '{db_standard}' ({db_grade}): "
+                         f"Standard={standard_score:.2f}, Grade={grade_score:.2f}, "
+                         f"Total={total_score:.2f}")
         
-        if matches:
-            # Sort by match quality and take the best match
-            best_match = sorted(matches, key=lambda x: x['match_quality'], reverse=True)[0]
-            logging.info(f"Material lookup successful (flexible match): Found '{best_match['material']}' "
-                        f"for Standard='{standard}' (matched with '{best_match['standard']}'), Grade='{grade}'")
-            return best_match['material']
-        
-        logging.warning(f"Material lookup failed: No match found for Standard='{standard}', Grade='{grade}' "
-                       f"(tried both exact and flexible matching)")
+        # Return best match if score is high enough
+        if best_score >= 0.7:  # Threshold for acceptable match
+            logging.info(f"Best match found: '{best_match}' with confidence score {best_score:.2f}")
+            return best_match
+            
+        # Log failure details
+        unique_standards = material_df['STANDARD'].unique()
+        logging.warning(f"Material lookup failed: No match found for Standard='{standard}', Grade='{grade}'\n"
+                       f"Best match score was {best_score:.2f} (below threshold of 0.7)\n"
+                       f"Available standards in database: {unique_standards}")
         return "Not Found"
             
     except Exception as e:
-        logging.error(f"Error during material lookup: {e}")
+        logging.error(f"Error during material lookup: {str(e)}", exc_info=True)
         return "Not Found"
 
 
@@ -343,6 +418,80 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
     output.seek(0)
     return output
 
+# --- Text Cleanup Functions ---
+def clean_text_encoding(text):
+    """Fix common encoding issues and OCR errors"""
+    if not text:
+        return text
+        
+    # Common OCR error replacements
+    replacements = {
+        # Russian OCR errors
+        'ВТРАР': 'STRAIGHT',
+        'АК': 'AK',
+        'ОЛГЮЛЕ': 'ANGLE',
+        'ГРАД': 'GRADE',
+        'ТУПЕ': 'TYPE',
+        
+        # Grade format variations
+        '1В': '1B',
+        'IВ': '1B',
+        'IБ': '1B',
+        '1Б': '1B',
+        'GRADE IB': '1B',
+        'GRADE I': '1B',
+        'I B': '1B',
+        'GRADE 1B': '1B',
+        'GRADE1B': '1B',
+        
+        # Standard format variations
+        'MPAPS F30': 'MPAPS F-30/F-1',
+        'MPAPS F 30': 'MPAPS F-30/F-1',
+        'MPAPS F-30': 'MPAPS F-30/F-1',
+        'F-30': 'MPAPS F-30/F-1',
+        
+        # Common phrase errors
+        'ВТРАР LOCATION MARK': 'STRAIGHT LOCATION MARK',
+        'АК ОЛГЮЛЕ DATUM': 'ANGLE DATUM',
+        'IN-SIDE': 'INSIDE',
+        'SEE NOTE': 'SEE NOTE'
+    }
+    
+    # Apply replacements
+    for wrong, correct in replacements.items():
+        text = text.replace(wrong, correct)
+    
+    # Remove zero-width spaces and other invisible characters
+    text = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', text)
+    
+    # Normalize whitespace
+    text = ' '.join(text.split())
+    
+    return text
+
+def has_encoding_issues(text):
+    """Check if text has potential encoding or OCR problems"""
+    if not text:
+        return True
+        
+    # Calculate percentage of non-ASCII characters
+    non_ascii_count = sum(1 for char in text if ord(char) > 127)
+    non_ascii_ratio = non_ascii_count / len(text) if text else 1.0
+    
+    # Check for specific issues
+    has_issues = (
+        non_ascii_ratio > 0.3 or          # More than 30% non-ASCII characters
+        len(text.strip()) < 100 or        # Very short text
+        'ВТРАР' in text or                # Known Russian OCR error
+        'ОЛГЮЛЕ' in text or              # Known Russian OCR error
+        not any(char.isdigit() for char in text)  # No numbers found
+    )
+    
+    if has_issues:
+        logging.warning(f"Text quality issues detected: {non_ascii_ratio:.2%} non-ASCII characters")
+        
+    return has_issues
+
 # --- Function to convert PDF to images ---
 def convert_pdf_to_images(pdf_content):
     """Convert PDF bytes to list of PIL images with error handling and optimized memory usage."""
@@ -354,6 +503,49 @@ def convert_pdf_to_images(pdf_content):
     except Exception as e:
         logger.error(f"PDF to image conversion failed: {str(e)}")
         raise
+
+def extract_text_from_image(image):
+    """Extract text from an image using OCR with enhanced error handling and preprocessing."""
+    try:
+        # First attempt with original image
+        text = pytesseract.image_to_string(image)
+        text = clean_text_encoding(text)
+        
+        # If text quality is poor, try preprocessing
+        if not text or has_encoding_issues(text):
+            logging.info("Initial text extraction produced poor results, trying preprocessing...")
+            
+            # Convert to numpy array and grayscale
+            img_array = np.array(image)
+            if len(img_array.shape) == 3:  # Color image
+                gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            else:  # Already grayscale
+                gray = img_array
+                
+            # Apply various preprocessing techniques
+            preprocessed_images = [
+                gray,  # Original grayscale
+                cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],  # Otsu's thresholding
+                cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)  # Adaptive thresholding
+            ]
+            
+            # Try OCR with each preprocessed image
+            for idx, processed_img in enumerate(preprocessed_images):
+                processed_text = pytesseract.image_to_string(processed_img)
+                processed_text = clean_text_encoding(processed_text)
+                
+                if processed_text and not has_encoding_issues(processed_text):
+                    logging.info(f"Successfully extracted text using preprocessing method {idx}")
+                    return processed_text.strip()
+                    
+            # If all preprocessing attempts fail, return best effort result
+            logging.warning("All preprocessing attempts produced poor quality text")
+            return text.strip() if text else ""
+            
+        return text.strip()
+    except Exception as e:
+        logging.error(f"Error in OCR text extraction: {str(e)}")
+        return ""
 
 def image_to_base64(image):
     """Convert PIL Image to base64 string."""
