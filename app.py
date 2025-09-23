@@ -1358,18 +1358,36 @@ def analyze_drawing_with_gemini(pdf_bytes):
         
         # Extract part number (multiple patterns)
         part_patterns = [
-            r'CHILD\s*PART\s*:?\s*(\d{7}[A-Z]\d)',
-            r'PART\s*(?:NO\.?|NUMBER)\s*:?\s*(\d{7}[A-Z]\d)',
-            r'(?:^|\s)(\d{7}[A-Z]\d)(?:\s|$)',  # Standalone
-            r'DWG\.?\s*(?:NO\.?|NUMBER)?\s*:?\s*(\d{7}[A-Z]\d)'
+            # 7-digit+C+1-digit format (e.g., 4353109C3)
+            r'CHILD\s*PART\s*:?\s*(\d{7}C\d)',
+            r'PART\s*(?:NO\.?|NUMBER)\s*:?\s*(\d{7}C\d)',
+            r'(?:^|\s)(\d{7}C\d)(?:\s|$)',
+            r'DWG\.?\s*(?:NO\.?|NUMBER)?\s*:?\s*(\d{7}C\d)',
+            # 9-digit format (e.g., 439461604)
+            r'CHILD\s*PART\s*:?\s*(\d{9})',
+            r'PART\s*(?:NO\.?|NUMBER)\s*:?\s*(\d{9})',
+            r'(?:^|\s)(\d{9})(?:\s|$)',
+            r'DWG\.?\s*(?:NO\.?|NUMBER)?\s*:?\s*(\d{9})'
         ]
         
+        # Search for part numbers and validate format
+        found_numbers = []
         for pattern in part_patterns:
-            match = re.search(pattern, combined_text, re.IGNORECASE)
-            if match:
-                results["part_number"] = match.group(1)
-                logger.info(f"Found part number: {results['part_number']}")
-                break
+            matches = re.finditer(pattern, combined_text, re.IGNORECASE)
+            for match in matches:
+                part_num = match.group(1)
+                # Validate the format
+                if re.match(r'\d{7}C\d', part_num) or re.match(r'\d{9}', part_num):
+                    found_numbers.append(part_num)
+                    logger.info(f"Found potential part number: {part_num}")
+        
+        # If we found any valid part numbers, use the first one
+        if found_numbers:
+            results["part_number"] = found_numbers[0]
+            if len(found_numbers) > 1:
+                logger.warning(f"Multiple part numbers found: {found_numbers}")
+        else:
+            logger.warning("No valid part number found in document")
                 
         # Extract description (multiple patterns)
         desc_patterns = [
