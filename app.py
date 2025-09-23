@@ -59,17 +59,17 @@ def normalize_for_comparison(text):
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
     """
-    Looks up the material from the database using a robust canonical comparison.
+    Looks up the material from the database using a flexible matching approach.
+    Tries exact match first, then falls back to more flexible matching strategies.
     """
     if material_df is None or standard == "Not Found" or grade == "Not Found":
         return "Not Found"
     
     try:
-        # Convert the extracted standard and grade to the canonical format
+        # First attempt: Exact canonical match
         norm_standard_from_pdf = normalize_for_comparison(standard)
         norm_grade_from_pdf = normalize_for_comparison(grade)
 
-        # Find the row where the canonical versions of the data match
         result = material_df[
             (material_df['STANDARD'].apply(normalize_for_comparison) == norm_standard_from_pdf) &
             (material_df['GRADE'].apply(normalize_for_comparison) == norm_grade_from_pdf)
@@ -77,11 +77,36 @@ def get_material_from_standard(standard, grade):
         
         if not result.empty:
             material = result.iloc[0]['MATERIAL']
-            logging.info(f"Material lookup successful: Found '{material}' for Standard='{standard}', Grade='{grade}'")
+            logging.info(f"Material lookup successful (exact match): Found '{material}' for Standard='{standard}', Grade='{grade}'")
             return material
-        else:
-            logging.warning(f"Material lookup failed: No match found for Standard='{standard}', Grade='{grade}'")
-            return "Not Found"
+            
+        # Second attempt: More flexible matching for standards like "MPAPS F-6032" vs "MPAPS F6032"
+        clean_standard = re.sub(r'[^A-Z0-9]', '', standard.upper())
+        matches = []
+        
+        for idx, row in material_df.iterrows():
+            db_standard = re.sub(r'[^A-Z0-9]', '', str(row['STANDARD']).upper())
+            db_grade = str(row['GRADE']).upper().strip()
+            
+            # Check if the cleaned standard is contained in the database entry
+            if clean_standard in db_standard and normalize_for_comparison(grade) == normalize_for_comparison(str(row['GRADE'])):
+                matches.append({
+                    'material': row['MATERIAL'],
+                    'standard': row['STANDARD'],
+                    'grade': row['GRADE'],
+                    'match_quality': len(clean_standard) / len(db_standard)  # Higher ratio = better match
+                })
+        
+        if matches:
+            # Sort by match quality and take the best match
+            best_match = sorted(matches, key=lambda x: x['match_quality'], reverse=True)[0]
+            logging.info(f"Material lookup successful (flexible match): Found '{best_match['material']}' "
+                        f"for Standard='{standard}' (matched with '{best_match['standard']}'), Grade='{grade}'")
+            return best_match['material']
+        
+        logging.warning(f"Material lookup failed: No match found for Standard='{standard}', Grade='{grade}' "
+                       f"(tried both exact and flexible matching)")
+        return "Not Found"
             
     except Exception as e:
         logging.error(f"Error during material lookup: {e}")
@@ -610,6 +635,62 @@ Pay special attention to distinguishing primary material specs from reference sp
     
     return results
 
+# --- Data Validation Function ---
+def validate_extracted_data(data):
+    """
+    Validates extracted data for completeness and logical consistency.
+    Returns a list of validation issues found.
+    """
+    issues = []
+    
+    # Check critical fields
+    if data.get('standard') == 'Not Found':
+        issues.append("Standard specification not found in drawing")
+    if data.get('grade') == 'Not Found':
+        issues.append("Grade/Type not found in drawing")
+    if data.get('material') == 'Not Found':
+        issues.append("Material could not be identified from standard and grade")
+    
+    # Validate dimensions
+    dimensions = data.get('dimensions', {})
+    try:
+        # Check ID/OD relationship
+        if dimensions.get('id1') != 'Not Found' and dimensions.get('od1') != 'Not Found':
+            id_val = float(str(dimensions['id1']).replace('mm', '').strip())
+            od_val = float(str(dimensions['od1']).replace('mm', '').strip())
+            if od_val <= id_val:
+                issues.append(f"Invalid dimensions: OD ({od_val}mm) should be greater than ID ({id_val}mm)")
+        
+        # Check wall thickness consistency
+        if dimensions.get('thickness') != 'Not Found':
+            thickness = float(str(dimensions['thickness']).replace('mm', '').strip())
+            if thickness <= 0:
+                issues.append(f"Invalid wall thickness: {thickness}mm")
+            
+            # Cross-validate thickness with ID/OD if available
+            if dimensions.get('id1') != 'Not Found' and dimensions.get('od1') != 'Not Found':
+                calculated_thickness = (od_val - id_val) / 2
+                if abs(calculated_thickness - thickness) > 0.1:  # Allow 0.1mm tolerance
+                    issues.append(f"Thickness inconsistency: Specified {thickness}mm vs calculated {calculated_thickness}mm")
+    except ValueError as e:
+        issues.append(f"Error validating dimensions: {str(e)}")
+    
+    # Validate coordinates if present
+    coordinates = data.get('coordinates', [])
+    if coordinates:
+        if len(coordinates) < 2:
+            issues.append("Insufficient coordinate points for path calculation")
+        else:
+            try:
+                for point in coordinates:
+                    if not all(isinstance(point.get(k), (int, float)) for k in ['x', 'y', 'z']):
+                        issues.append("Invalid coordinate values found")
+                        break
+            except Exception as e:
+                issues.append(f"Error validating coordinates: {str(e)}")
+    
+    return issues
+
 # --- API endpoint for file analysis ---
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
@@ -639,6 +720,12 @@ def upload_and_analyze():
         standard = final_results.get("standard", "Not Found")
         grade = final_results.get("grade", "Not Found")
         final_results["material"] = get_material_from_standard(standard, grade)
+
+        # Validate the extracted data
+        validation_issues = validate_extracted_data(final_results)
+        if validation_issues:
+            final_results["validation_warnings"] = validation_issues
+            logging.warning(f"Validation issues found: {validation_issues}")
 
         # Calculate development length
         try:
@@ -733,21 +820,60 @@ def analyze_image_with_gemini_vision(pdf_bytes):
                 logger.warning(f"Failed to remove temporary file: {e}")
 
 def extract_text_from_pdf(pdf_bytes):
-    """Extract text from PDF using PyMuPDF with fallback to OCR"""
-    logger.info("Attempting direct text extraction with PyMuPDF...")
-    full_text = ""
+    """
+    Enhanced text extraction from PDF using multiple methods and layout preservation.
+    Tries different extraction techniques and combines results for best output.
+    """
+    logger.info("Starting enhanced text extraction process...")
+    texts = []
+    
     try:
+        # Method 1: PyMuPDF with layout preservation
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            # Try different text extraction modes
             for page in doc:
-                full_text += page.get_text()
-        logger.info(f"Direct extraction found {len(full_text)} characters.")
-        if len(full_text.strip()) < 100:
-            # If very little text was extracted, try OCR
-            full_text = analyze_image_with_gemini_vision(pdf_bytes)
+                # Get text with layout preservation
+                layout_text = page.get_text("text", sort=True)
+                texts.append(layout_text)
+                
+                # Get text blocks with position information
+                blocks = page.get_text("blocks")
+                structured_text = "\n".join([block[4] for block in blocks])
+                texts.append(structured_text)
+                
+                # Get raw text as fallback
+                raw_text = page.get_text("text", sort=False)
+                texts.append(raw_text)
+                
+        combined_text = "\n".join(filter(None, texts))
+        logger.info(f"PyMuPDF extraction found {len(combined_text)} characters with layout preservation")
+        
+        # If extracted text seems insufficient, try OCR
+        if len(combined_text.strip()) < 100 or not any(char.isdigit() for char in combined_text):
+            logger.info("Initial extraction insufficient, falling back to OCR...")
+            ocr_text = analyze_image_with_gemini_vision(pdf_bytes)
+            if ocr_text:
+                texts.append(ocr_text)
+                
+        # Combine all extracted text, remove duplicates while preserving order
+        seen = set()
+        final_text = []
+        for text in texts:
+            lines = text.split('\n')
+            for line in lines:
+                line = line.strip()
+                if line and line not in seen:
+                    seen.add(line)
+                    final_text.append(line)
+        
+        result = '\n'.join(final_text)
+        logger.info(f"Final extracted text length: {len(result)} characters")
+        return result
+        
     except Exception as e:
-        logger.error(f"Could not read PDF with PyMuPDF, attempting OCR. Error: {e}")
-        full_text = analyze_image_with_gemini_vision(pdf_bytes)
-    return full_text
+        logger.error(f"Error in enhanced text extraction: {e}")
+        # Fall back to OCR as last resort
+        return analyze_image_with_gemini_vision(pdf_bytes)
 
 if __name__ == '__main__':
     app.run(debug=True)
