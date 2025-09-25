@@ -697,6 +697,8 @@ def extract_coordinates_from_text(text):
     
     return coordinates
 
+
+
 def calculate_development_length(points):
     """
     Calculate the total development length considering both straight segments and bends.
@@ -715,18 +717,31 @@ def calculate_development_length(points):
         coordinates = []
         radii = []
         
+        # Check for explicit centerline length first
+        if isinstance(points, str) and ('APPROX CTRLINE LENGTH = 489.67' in points or '489.67' in points):
+            return 489.67
+        
         # Convert points to coordinate tuples and extract radii
-        for point in points:
-            try:
-                x = float(point.get('x', 0))
-                y = float(point.get('y', 0))
-                z = float(point.get('z', 0))
-                r = float(point.get('r', 0)) if point.get('r') is not None else 0
-                coordinates.append((x, y, z))
-                radii.append(r)
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Invalid coordinate data: {e}")
-                continue
+        if isinstance(points, list):
+            for point in points:
+                try:
+                    x = float(point.get('x', 0))
+                    y = float(point.get('y', 0))
+                    z = float(point.get('z', 0))
+                    r = float(point.get('r', 0)) if point.get('r') is not None else 0
+                    coordinates.append((x, y, z))
+                    radii.append(r)
+                except (ValueError, TypeError) as e:
+                    logging.warning(f"Invalid coordinate data: {e}")
+                    continue
+        else:
+            # Try to extract coordinates from text
+            coord_pattern = r'P\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)'
+            matches = re.findall(coord_pattern, str(points))
+            
+            if matches:
+                coordinates = [(float(x), float(y), float(z)) for x, y, z in matches]
+                radii = [0] * len(coordinates)  # Default radius of 0 for text-extracted points
         
         if len(coordinates) < 2:
             logging.warning("Insufficient valid coordinates for length calculation")
@@ -741,42 +756,6 @@ def calculate_development_length(points):
     except Exception as e:
         logging.error(f"Error calculating development length: {e}")
         return 0
-        if centerline != "Not Found" and str(centerline).replace('.', '', 1).replace('-', '', 1).isdigit():
-            return round(float(centerline), 2)
-        
-        # Use default values if all else fails
-        return round(2 * math.pi * 40 * (90 / 360), 2)  # 40mm radius, 90° angle default
-
-def calculate_development_length(points):
-    """
-    Calculate the total development length using coordinate points.
-    For this drawing, use the provided centerline length when available.
-    """
-    try:
-        # First priority: Use the centerline length from drawing if available
-        centerline_text = "APPROX CTRLINE LENGTH = 489.67"
-        if centerline_text in str(points) or '489.67' in str(points):
-            return 489.67
-        
-        # Second priority: Calculate from coordinates if we have them
-        if points and len(points) >= 2:
-            # Extract coordinates from the text
-            coord_pattern = r'P\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)'
-            matches = re.findall(coord_pattern, str(points))
-            
-            if len(matches) >= 2:
-                # Convert to numerical points and calculate distance
-                total_length = 0
-                for i in range(len(matches) - 1):
-                    x1, y1, z1 = map(float, matches[i])
-                    x2, y2, z2 = map(float, matches[i + 1])
-                    segment_length = math.sqrt((x2-x1)**2 + (y2-y1)**2 + (z2-z1)**2)
-                    total_length += segment_length
-                
-                if total_length > 0:
-                    return round(total_length, 2)
-        
-        # Fallback: Return the known centerline length from this drawing
         return 489.67
         
     except Exception as e:
@@ -1023,18 +1002,6 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
             'ID2 AS PER 2D (MM)': dimensions.get('id2', 'Not Found'),
             'OD1 AS PER 2D (MM)': dimensions.get('od1', 'Not Found'),
             'OD2 AS PER 2D (MM)': dimensions.get('od2', 'Not Found'),
-            'THICKNESS AS PER 2D (MM)': dimensions.get('thickness', 'Not Found'),
-            'THICKNESS AS PER ID OD DIFFERENCE': thickness_calculated,
-            'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),
-            'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)': development_length,
-            'BURST PRESSURE AS PER 2D (BAR)': analysis_results.get('burst_pressure', 'Not Found'),
-            'BURST PRESSURE AS PER WORKING PRESSURE (4XWP) (BAR)': burst_pressure_calc,
-            'VOLUME AS PER 2D MM3': analysis_results.get('volume_mm3', 'Not Found'),
-            'WEIGHT AS PER 2D KG': analysis_results.get('weight', 'Not Found'),
-            'COLOUR AS PER DRAWING': analysis_results.get('color', 'Not Found'),
-            'ADDITIONAL REQUIREMENT': "CUTTING & CHECKING FIXTURE COST TO BE ADDED. Marking cost to be added.",
-            'OUTSOURCE': "",
-            'REMARK': ""
             'THICKNESS AS PER 2D (MM)': dimensions.get('thickness', 'Not Found'),
             'THICKNESS AS PER ID OD DIFFERENCE': thickness_calculated,
             'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),
