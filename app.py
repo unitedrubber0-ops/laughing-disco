@@ -37,11 +37,17 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # --- API Key Configuration ---
+api_key = os.environ.get("GEMINI_API_KEY")
+if not api_key:
+    logging.error("GEMINI_API_KEY environment variable not set")
+    raise ValueError("GEMINI_API_KEY environment variable must be set to use Gemini AI features")
+
 try:
-    genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-    logging.info("Gemini API key configured successfully.")
+    genai.configure(api_key=api_key)
+    logging.info("Gemini API key configured successfully")
 except Exception as e:
-    logging.error(f"Failed to configure Gemini API key: {e}")
+    logging.error(f"Failed to configure Gemini API key: {str(e)}")
+    raise RuntimeError(f"Failed to initialize Gemini AI: {str(e)}")
 
 # --- Load and Clean Material Database on Startup with Enhanced Debugging ---
 try:
@@ -666,18 +672,17 @@ def extract_coordinates_from_text(text):
 
 def calculate_development_length(points):
     """
-    Calculate development length using vector geometry for accurate bend calculations.
-    Handles both straight segments and curved bends.
+    Calculate the total development length considering both straight segments and bends.
     
     Args:
-        points: List of coordinate points from the drawing
-    
+        points: List of point dictionaries containing x, y, z coordinates and optional radius
+        
     Returns:
-        float: Calculated development length in mm
-        float: 0 if calculation fails
+        float: Total development length in mm
     """
     try:
         if not points or len(points) < 2:
+            logging.warning("Insufficient points for length calculation")
             return 0
             
         coordinates = []
@@ -709,7 +714,6 @@ def calculate_development_length(points):
     except Exception as e:
         logging.error(f"Error calculating development length: {e}")
         return 0
-        centerline = dimensions.get("centerline_length", "Not Found")
         if centerline != "Not Found" and str(centerline).replace('.', '', 1).replace('-', '', 1).isdigit():
             return round(float(centerline), 2)
         
@@ -746,18 +750,7 @@ def calculate_development_length(coordinates=None, radii=None, dimensions=None):
         logging.error(f"Error calculating development length: {e}")
         return 0
 
-def calculate_path_length(points, radii):
-    """
-    Calculate the total path length considering both straight segments and bends.
-    Uses vector geometry and arc lengths for accurate measurements.
-    
-    Args:
-        points: List of (x,y,z) tuples representing path points
-        radii: List of bend radii (0 or None means no bend at that point)
-    
-    Returns:
-        float: Total path length in mm
-    """
+# Removed duplicate function - using enhanced version below
     try:
         n = len(points)
         if n < 2:
@@ -1507,17 +1500,21 @@ def analyze_drawing_with_gemini(pdf_bytes):
         
         # Extract part number (multiple patterns)
         part_patterns = [
-            # 7-digit+C+1-digit format (e.g., 4353109C3)
-            r'CHILD\s*PART\s*:?\s*(\d{7}C\d)',
-            r'PART\s*(?:NO\.?|NUMBER)\s*:?\s*(\d{7}C\d)',
-            r'(?:^|\s)(\d{7}C\d)(?:\s|$)',
-            r'DWG\.?\s*(?:NO\.?|NUMBER)?\s*:?\s*(\d{7}C\d)',
-            # 9-digit format (e.g., 439461604)
-            r'CHILD\s*PART\s*:?\s*(\d{9})',
-            r'PART\s*(?:NO\.?|NUMBER)\s*:?\s*(\d{9})',
-            r'(?:^|\s)(\d{9})(?:\s|$)',
-            r'DWG\.?\s*(?:NO\.?|NUMBER)?\s*:?\s*(\d{9})'
+            # 7-digit+C+1-digit format with better context (e.g., 4582819C2)
+            r'(?i)(?:PART|DWG|DRAWING)[-\s]*(?:NO\.?|NUM\.?|NUMBER)?[-\s.:]*?(\d{7}C\d)\b',
+            r'(?i)CHILD\s*PART[-\s.:]*?(\d{7}C\d)\b',
+            r'(?i)REV[\s.-]*[A-Z][-\s.]*?(\d{7}C\d)\b',  # Common format with revision
+            r'(?i)\b(\d{7}C\d)[-_]?(?:S\d+)?[-_]?R[-_]?[A-Z][-_]?F\d+\b',  # Matches 4582819C2_S001-_R-A_F00
+            r'(?:^|\s)(\d{7}C\d)(?=\s|$)',  # Standalone 7-digit+C+1
+            
+            # 9-digit format with better context (e.g., 439461604)
+            r'(?i)(?:PART|DWG|DRAWING)[-\s]*(?:NO\.?|NUM\.?|NUMBER)?[-\s.:]*?(\d{9})\b',
+            r'(?i)CHILD\s*PART[-\s.:]*?(\d{9})\b',
+            r'(?i)REV[\s.-]*[A-Z][-\s.]*?(\d{9})\b',
+            r'(?:^|\s)(\d{9})(?=\s|$)'  # Standalone 9-digit
         ]
+        
+        logger.info("Starting part number extraction...")
         
         # Search for part numbers and validate format
         found_numbers = []
@@ -1525,7 +1522,17 @@ def analyze_drawing_with_gemini(pdf_bytes):
             matches = re.finditer(pattern, combined_text, re.IGNORECASE)
             for match in matches:
                 part_num = match.group(1)
+                # Log the match details
+                logger.debug(f"Found potential part number: {part_num}")
+                logger.debug(f"  Context: {match.group(0)}")
+                logger.debug(f"  Pattern: {pattern}")
+                
                 # Validate the format
+                if re.match(r'\d{7}C\d', part_num) or re.match(r'\d{9}', part_num):
+                    logger.info(f"Valid part number found: {part_num}")
+                    found_numbers.append(part_num)
+                else:
+                    logger.warning(f"Invalid part number format: {part_num}")
                 if re.match(r'\d{7}C\d', part_num) or re.match(r'\d{9}', part_num):
                     found_numbers.append(part_num)
                     logger.info(f"Found potential part number: {part_num}")
@@ -1938,8 +1945,15 @@ def extract_text_from_pdf(pdf_bytes):
     """
     Enhanced text extraction from PDF using multiple methods and layout preservation.
     Tries different extraction techniques and combines results for best output.
+    
+    Args:
+        pdf_bytes: Raw PDF file content in bytes
+        
+    Returns:
+        str: Combined text from all extraction methods
     """
     logger.info("Starting enhanced text extraction process...")
+    logger.debug(f"Input PDF size: {len(pdf_bytes)} bytes")
     texts = []
     
     try:
