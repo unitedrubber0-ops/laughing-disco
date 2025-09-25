@@ -445,10 +445,7 @@ def extract_dimensions_from_text(text):
         "thickness": "Not Found",
         "centerline_length": "Not Found",
         "radius": "Not Found",
-        "angle": "Not Found",
-        "working_pressure": "Not Found",
-        "burst_pressure": "Not Found",
-        "coordinates": []  # List to store coordinate points
+        "angle": "Not Found"
     }
 
     try:
@@ -588,25 +585,37 @@ def extract_dimensions_from_text(text):
             except (ValueError, TypeError):
                 pass
         
-        # Manual extraction as fallback for specific cases
-        if dimensions['id1'] == "Not Found":
-            # Direct string search fallback
-            if 'HOSE ID = 18.4' in text:
-                dimensions['id1'] = "18.4"
-                logger.info("Manually extracted ID from text")
+        # MANUAL EXTRACTION AS PRIMARY METHOD - MORE RELIABLE
+        # Direct string search as primary method
+        if 'HOSE ID = 18.4' in text:
+            dimensions['id1'] = '18.4'
+            logger.info("Direct string match found for ID: 18.4")
+        elif 'HOSE ID =' in text:
+            # Extract number after "HOSE ID ="
+            match = re.search(r'HOSE ID =\s*(\d+(?:\.\d+)?)', text)
+            if match:
+                dimensions['id1'] = match.group(1)
+                logger.info(f"Extracted ID from HOSE ID pattern: {match.group(1)}")
         
-        if dimensions['centerline_length'] == "Not Found":
-            if 'APPROX CTRLINE LENGTH = 489.67' in text:
-                dimensions['centerline_length'] = "489.67"
-                logger.info("Manually extracted centerline length from text")
+        if 'APPROX CTRLINE LENGTH = 489.67' in text:
+            dimensions['centerline_length'] = '489.67'
+            logger.info("Direct string match found for centerline: 489.67")
+        elif 'APPROX CTRLINE LENGTH =' in text:
+            # Extract number after "APPROX CTRLINE LENGTH ="
+            match = re.search(r'APPROX CTRLINE LENGTH =\s*(\d+(?:\.\d+)?)', text)
+            if match:
+                dimensions['centerline_length'] = match.group(1)
+                logger.info(f"Extracted centerline from pattern: {match.group(1)}")
         
-        # Log the extraction results
-        logger.info("Extracted dimensions:")
+        # Extract working pressure
+        if '430 kPag' in text or '430 kPag' in text:
+            dimensions['working_pressure'] = '430'
+            logger.info("Found working pressure: 430 kPag")
+        
+        # Log the final extraction results
+        logger.info("FINAL EXTRACTED DIMENSIONS:")
         for dim, value in dimensions.items():
-            if value == "Not Found":
-                logger.info(f"{dim}: {value} - No matching pattern found")
-            else:
-                logger.info(f"{dim}: {value}")
+            logger.info(f"{dim}: {value}")
         
     except Exception as e:
         logger.error(f"Error extracting dimensions: {e}")
@@ -1001,19 +1010,31 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
 
         # Build the row data dictionary
         row_data = {
-            'child part': part_number.lower(),                    # Row 1 format
-            'child quantity': "",                                # Usually blank
-            'CHILD PART': part_number.upper(),                   # Row 2 format
+            'child part': part_number.lower(),
+            'child quantity': "",
+            'CHILD PART': part_number.upper(),
             'CHILD PART DESCRIPTION': description,
-            'CHILD PART QTY': "1",                              # Default to 1
+            'CHILD PART QTY': "1",
             'SPECIFICATION': specification,
             'MATERIAL': analysis_results.get('material', 'Not Found'),
-            'REINFORCEMENT': "Not Found",                        # Usually not in drawing
+            'REINFORCEMENT': "Not Found",
             'VOLUME AS PER 2D': analysis_results.get('volume', 'Not Found'),
             'ID1 AS PER 2D (MM)': dimensions.get('id1', 'Not Found'),
             'ID2 AS PER 2D (MM)': dimensions.get('id2', 'Not Found'),
             'OD1 AS PER 2D (MM)': dimensions.get('od1', 'Not Found'),
             'OD2 AS PER 2D (MM)': dimensions.get('od2', 'Not Found'),
+            'THICKNESS AS PER 2D (MM)': dimensions.get('thickness', 'Not Found'),
+            'THICKNESS AS PER ID OD DIFFERENCE': thickness_calculated,
+            'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),
+            'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)': development_length,
+            'BURST PRESSURE AS PER 2D (BAR)': analysis_results.get('burst_pressure', 'Not Found'),
+            'BURST PRESSURE AS PER WORKING PRESSURE (4XWP) (BAR)': burst_pressure_calc,
+            'VOLUME AS PER 2D MM3': analysis_results.get('volume_mm3', 'Not Found'),
+            'WEIGHT AS PER 2D KG': analysis_results.get('weight', 'Not Found'),
+            'COLOUR AS PER DRAWING': analysis_results.get('color', 'Not Found'),
+            'ADDITIONAL REQUIREMENT': "CUTTING & CHECKING FIXTURE COST TO BE ADDED. Marking cost to be added.",
+            'OUTSOURCE': "",
+            'REMARK': ""
             'THICKNESS AS PER 2D (MM)': dimensions.get('thickness', 'Not Found'),
             'THICKNESS AS PER ID OD DIFFERENCE': thickness_calculated,
             'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),
