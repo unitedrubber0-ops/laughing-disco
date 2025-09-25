@@ -2063,11 +2063,9 @@ def upload_and_analyze():
                 logging.error(f"Analysis error: {error_msg}")
                 return jsonify({"error": error_msg}), 500
         
+        # Process the results further
         part_number = final_results.get('part_number', 'Unknown')
         logging.info(f"Successfully analyzed drawing for part {part_number}")
-    except Exception as e:
-        logging.error(f"Error parsing text with Gemini: {e}")
-        return jsonify({"error": f"Text parsing failed: {str(e)}"}), 500
 
         # Initialize dimensions with safe defaults
         final_results["dimensions"] = safe_dimension_processing(final_results)
@@ -2110,14 +2108,18 @@ def upload_and_analyze():
         # Generate Excel report if helper function exists
         try:
             if 'generate_excel_sheet' in globals():
-                excel_file = generate_excel_sheet(final_results, final_results, dev_length)
+                excel_file = generate_excel_sheet(final_results, final_results.get("dimensions", {}), dev_length)
                 excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
                 final_results["excel_data"] = excel_b64
         except Exception as e:
             logging.warning(f"Excel generation skipped: {e}")
 
-        logging.info(f"Successfully analyzed drawing: {final_results.get('child_part', 'Unknown')}")
+        logging.info(f"Successfully analyzed drawing: {final_results.get('part_number', 'Unknown')}")
         return jsonify(final_results)
+
+    except Exception as e:
+        logging.error(f"Error analyzing drawing: {str(e)}")
+        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
 
     except Exception as e:
         logging.error(f"Error analyzing drawing: {str(e)}")
