@@ -2091,6 +2091,9 @@ def upload_and_analyze():
             logging.error(f"Error in data validation: {e}")
             final_results["validation_warnings"] = [f"Validation error: {str(e)}"]
 
+        # Initialize development length
+        dev_length = 0
+        
         # Calculate development length
         try:
             coordinates = final_results.get("coordinates", [])
