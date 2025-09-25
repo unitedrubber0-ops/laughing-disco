@@ -24,8 +24,8 @@ import pytesseract
 from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
 import fitz  # PyMuPDF
+import pdf2image
 from pdf2image import convert_from_path, convert_from_bytes
-from PIL import Image
 import google.generativeai as genai
 
 # --- Basic Configuration ---
@@ -50,24 +50,48 @@ except Exception as e:
     raise RuntimeError(f"Failed to initialize Gemini AI: {str(e)}")
 
 # --- Load and Clean Material Database on Startup with Enhanced Debugging ---
-try:
-    # Read from Excel file directly, specifying Sheet1
-    material_df = pd.read_excel("MATERIAL WITH STANDARD.xlsx", sheet_name="Sheet1")
+def load_material_database():
+    """Load and clean the material database from either Excel or CSV file."""
+    try:
+        # First try loading from Excel file
+        material_df = pd.read_excel("MATERIAL WITH STANDARD.xlsx", sheet_name="Sheet1")
+        source = "Excel"
+    except FileNotFoundError:
+        try:
+            # Fall back to CSV if Excel file is not found
+            material_df = pd.read_csv('material_data.csv')
+            source = "CSV"
+        except FileNotFoundError:
+            logging.error("Neither MATERIAL WITH STANDARD.xlsx nor material_data.csv found. Material lookup will not work.")
+            return None
     
-    # Clean the data by stripping whitespace from the key columns
-    material_df['STANDARD'] = material_df['STANDARD'].str.strip()
-    material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
-    logging.info(f"V2 CODE RUNNING: Successfully loaded and cleaned material database with {len(material_df)} entries.")
-    
-    # Enhanced debugging: Show the first few rows of the database
-    logging.info(f"Material database head (first 5 rows):\n{material_df.head().to_string()}")
-    
-    # Additional debug info: Show unique standards and grades
-    logging.info(f"Unique STANDARD values:\n{material_df['STANDARD'].unique().tolist()}")
-    logging.info(f"Unique GRADE values:\n{material_df['GRADE'].unique().tolist()}")
-except FileNotFoundError:
-    logging.error("MATERIAL WITH STANDARD.xlsx not found. Material lookup will not work.")
-    material_df = None
+    try:
+        # Clean and standardize the data
+        material_df.columns = material_df.columns.str.strip()
+        material_df['STANDARD'] = material_df['STANDARD'].str.strip()
+        material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
+        
+        logging.info(f"Successfully loaded and cleaned material database from {source} with {len(material_df)} entries.")
+        logging.info(f"Material database head (first 5 rows):\n{material_df.head().to_string()}")
+        logging.info(f"Unique STANDARD values:\n{material_df['STANDARD'].unique().tolist()}")
+        logging.info(f"Unique GRADE values:\n{material_df['GRADE'].unique().tolist()}")
+        
+        return material_df
+    except FileNotFoundError as e:
+        logging.error(f"Material database file not found: {str(e)}")
+        return None
+    except pd.errors.EmptyDataError:
+        logging.error("Material database file is empty")
+        return None
+    except pd.errors.ParserError as e:
+        logging.error(f"Error parsing material database: {str(e)}")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error processing material database: {str(e)}")
+        return None
+
+# Load the material database
+material_df = load_material_database()
 
 # --- String Normalization Helper ---
 def normalize_for_comparison(text):
@@ -396,48 +420,12 @@ import math
 # To set an environment variable:
 # On Windows: set GEMINI_API_KEY=YOUR_API_KEY
 # On macOS/Linux: export GEMINI_API_KEY=YOUR_API_KEY
-try:
-    api_key = os.environ.get("GEMINI_API_KEY")
-    genai.configure(api_key=api_key)
-except Exception as e:
-    print(f"API Key not found in environment variables. Please set GEMINI_API_KEY. Error: {e}")
-    # For quick testing, you can uncomment the line below and paste your key
-    # genai.configure(api_key="YOUR_API_KEY_HERE")
+# Gemini API key is already configured at the top of the file
 
 
-# Initialize the Flask application
-app = Flask(__name__, static_url_path='/static')
+# These settings are already configured at the top of the file
 
-# Enable CORS with more permissive settings
-CORS(app, resources={
-    r"/api/*": {
-        "origins": [
-            "https://laughing-disco-docker.onrender.com",
-            "http://localhost:5000",
-            "http://127.0.0.1:5000"
-        ],
-        "methods": ["GET", "POST", "OPTIONS"],
-        "allow_headers": ["Content-Type"]
-    }
-})
-
-# Configure static files with correct MIME types
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
-app.config['MIME_TYPES'] = {
-    '.js': 'application/javascript',
-    '.css': 'text/css'
-}
-
-# --- Load the material database from the CSV file ---
-try:
-    material_df = pd.read_csv('material_data.csv')
-    material_df.columns = material_df.columns.str.strip()
-    material_df['STANDARD'] = material_df['STANDARD'].str.strip()
-    material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
-    print("Material database loaded successfully.")
-except FileNotFoundError:
-    print("Error: material_data.csv not found. Please ensure the file exists.")
-    material_df = pd.DataFrame()
+# Material database is already loaded at the top of the file from MATERIAL WITH STANDARD.xlsx
 
 
 
@@ -1249,7 +1237,7 @@ def convert_pdf_to_images(pdf_content):
 def extract_text_from_image(image):
     """
     Extract text from an image using OCR with advanced preprocessing and adaptive techniques.
-    Includes multiple preprocessing methods and quality validation.
+    Includes both OpenCV and PIL-based preprocessing methods with quality validation.
     """
     try:
         # Attempt 1: Original image direct OCR
@@ -1267,67 +1255,166 @@ def extract_text_from_image(image):
         best_text = base_text
         best_score = quality_score
         
-        # Advanced preprocessing pipeline
+        # Try OpenCV preprocessing if available
+        if HAS_OPENCV:
+            logging.info("Using OpenCV for advanced preprocessing...")
+            try:
+                if not HAS_OPENCV:
+                    raise ImportError("OpenCV is not available")
+                    
+                # Convert to numpy array for OpenCV processing
+                img_array = np.array(image)
+                
+                # Color image processing
+                if len(img_array.shape) == 3:
+                    # Try different color channels
+                    channels = cv2.split(img_array)
+                    gray_versions = [
+                        cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY),  # Standard grayscale
+                        channels[0],  # Red channel
+                        channels[1],  # Green channel
+                        channels[2]   # Blue channel
+                    ]
+                else:
+                    gray_versions = [img_array]  # Already grayscale
+            
+                # Enhanced preprocessing pipeline
+                preprocessed_images = []
+                
+                for gray in gray_versions:
+                    # 1. Basic preprocessing
+                    preprocessed_images.extend([
+                        gray,  # Original
+                        cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],  # Otsu's method
+                        cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)  # Adaptive
+                    ])
+                    
+                    # 2. Noise reduction
+                    denoised = cv2.fastNlMeansDenoising(gray)
+                    preprocessed_images.extend([
+                        denoised,
+                        cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+                    ])
+                    
+                    # 3. Edge enhancement
+                    edges = cv2.Canny(gray, 100, 200)
+                    kernel = np.ones((2,2), np.uint8)
+                    dilated = cv2.dilate(edges, kernel, iterations=1)
+                    preprocessed_images.append(255 - dilated)  # Inverted edge enhancement
+                    
+                    # 4. Contrast enhancement
+                    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+                    enhanced = clahe.apply(gray)
+                    preprocessed_images.append(enhanced)
+                
+                # Try OCR on each preprocessed image
+                for processed in preprocessed_images:
+                    # Convert back to PIL Image for OCR
+                    pil_image = Image.fromarray(processed)
+                    new_text = pytesseract.image_to_string(pil_image, config='--psm 1')
+                    new_text = clean_text_encoding(new_text)
+                    new_score = assess_text_quality(new_text)
+                    
+                    if new_score > best_score:
+                        best_text = new_text
+                        best_score = new_score
+                
+                logging.info(f"Best score after OpenCV preprocessing: {best_score}")
+                
+            except Exception as e:
+                logging.warning(f"OpenCV preprocessing failed: {e}")
+                # Continue to PIL fallback
+                
+                for processed in preprocessed_images:
+                    # Convert back to PIL Image for OCR
+                    pil_image = Image.fromarray(processed)
+                    new_text = pytesseract.image_to_string(pil_image, config='--psm 1')
+                    new_text = clean_text_encoding(new_text)
+                    new_score = assess_text_quality(new_text)
+                    
+                    if new_score > best_score:
+                        best_text = new_text
+                        best_score = new_score
+                        
+                logging.info(f"Best score after OpenCV preprocessing: {best_score}")
+                
+            except Exception as cv_error:
+                logging.warning(f"OpenCV preprocessing failed: {cv_error}")
+                # Continue to PIL fallback
+        else:
+            logging.info("OpenCV not available, using PIL-based preprocessing")
+        
+        # PIL-based preprocessing fallback
         try:
-            # Convert to numpy array for OpenCV processing
-            img_array = np.array(image)
+            # Convert to grayscale
+            gray_image = image.convert('L')
             
-            # Color image processing
-            if len(img_array.shape) == 3:
-                # Try different color channels
-                channels = cv2.split(img_array)
-                gray_versions = [
-                    cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY),  # Standard grayscale
-                    channels[0],  # Red channel
-                    channels[1],  # Green channel
-                    channels[2]   # Blue channel
-                ]
-            else:
-                gray_versions = [img_array]  # Already grayscale
+            # Try different PIL enhancement methods
+            enhanced_images = [
+                gray_image,  # Original grayscale
+                gray_image.filter(ImageFilter.SHARPEN),  # Sharpen
+                gray_image.filter(ImageFilter.EDGE_ENHANCE),  # Edge enhancement
+                gray_image.filter(ImageFilter.DETAIL),  # Enhance details
+                gray_image.filter(ImageFilter.SMOOTH)  # Smoothing
+            ]
+        except Exception as e:
+            logging.error(f"PIL enhancement failed: {e}")
+            return ""  # Return empty string on complete failure
             
-            # Enhanced preprocessing pipeline
-            preprocessed_images = []
+            # Try different threshold values with PIL
+            for enhanced in enhanced_images:
+                for threshold in [100, 127, 150]:  # Different threshold values
+                    binary = enhanced.point(lambda x: 0 if x < threshold else 255, '1')
+                    new_text = pytesseract.image_to_string(binary, config='--psm 1')
+                    new_text = clean_text_encoding(new_text)
+                    new_score = assess_text_quality(new_text)
+                    
+                    if new_score > best_score:
+                        best_text = new_text
+                        best_score = new_score
             
-            for gray in gray_versions:
-                # 1. Basic preprocessing
-                preprocessed_images.extend([
-                    gray,  # Original
-                    cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],  # Otsu's method
-                    cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)  # Adaptive
-                ])
-                
-                # 2. Noise reduction
-                denoised = cv2.fastNlMeansDenoising(gray)
-                preprocessed_images.extend([
-                    denoised,
-                    cv2.threshold(denoised, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
-                ])
-                
-                # 3. Edge enhancement
-                edges = cv2.Canny(gray, 100, 200)
-                kernel = np.ones((2,2), np.uint8)
-                dilated = cv2.dilate(edges, kernel, iterations=1)
-                preprocessed_images.append(255 - dilated)  # Inverted edge enhancement
-                
-                # 4. Contrast enhancement
+            logging.info(f"Best score after PIL preprocessing: {best_score}")
+            
+            # Add contrast-enhanced versions
+            try:
                 clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
                 enhanced = clahe.apply(gray)
                 preprocessed_images.extend([
                     enhanced,
                     cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
                 ])
-                
-        except Exception as cv_error:
-            logging.warning(f"OpenCV preprocessing failed, falling back to PIL: {cv_error}")
-            # Fallback to PIL preprocessing
-            gray_image = image.convert('L')
-            preprocessed_images = [
-                gray_image,
-                gray_image.point(lambda x: 0 if x < 128 else 255, '1'),
-                gray_image.filter(ImageFilter.EDGE_ENHANCE),
-                gray_image.filter(ImageFilter.SHARPEN),
-                gray_image.filter(ImageFilter.DETAIL)
-            ]
+            except Exception as e:
+                logging.warning(f"OpenCV preprocessing failed, falling back to PIL: {e}")
+                # Fallback to PIL preprocessing
+                try:
+                    gray_image = image.convert('L')
+                    
+                    # Try different PIL-based preprocessing methods
+                    processed_images = [
+                        gray_image,  # Original grayscale
+                        gray_image.point(lambda x: 0 if x < 128 else 255, '1'),
+                        gray_image.filter(ImageFilter.EDGE_ENHANCE),
+                        gray_image.filter(ImageFilter.SHARPEN),
+                        gray_image.filter(ImageFilter.DETAIL)
+                    ]
+                    
+                    for img in processed_images:
+                        for threshold in [100, 127, 150]:
+                            binary = img.point(lambda x: 0 if x < threshold else 255, '1')
+                            text = pytesseract.image_to_string(binary, config='--psm 1')
+                            cleaned_text = clean_text_encoding(text)
+                            score = assess_text_quality(cleaned_text)
+                            
+                            if score > best_score:
+                                best_text = cleaned_text
+                                best_score = score
+                                
+                    logging.info(f"Best score after PIL preprocessing: {best_score}")
+                    
+                except Exception as pil_error:
+                    logging.error(f"PIL preprocessing failed: {pil_error}")
+                    
+            return best_text.strip()
         
         # Try OCR with different PSM modes and preprocessing
         psm_modes = [1, 3, 4, 6]  # Different page segmentation modes
@@ -1368,12 +1455,145 @@ def image_to_base64(image):
     image.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-# --- Analyze drawing using improved Gemini vision model ---
-def parse_text_with_gemini(full_text):
+# --- Enhanced drawing analysis using Gemini multimodal capabilities ---
+def analyze_drawing(pdf_bytes):
     """
-    Uses Gemini to parse the entire text block and extract structured data.
-    This version has a much more specific prompt for higher accuracy.
+    Analyze engineering drawing using Gemini's multimodal capabilities.
+    Performs OCR, text extraction, and structured data parsing in a single pipeline.
+    
+    Args:
+        pdf_bytes: Raw PDF file content in bytes
+    
+    Returns:
+        dict: Structured data containing drawing information including:
+            - part_number
+            - description
+            - standard
+            - grade
+            - dimensions (id, od, thickness, etc.)
+            - coordinates for development length
+            - other metadata
+            
+    Raises:
+        ValueError: If pdf_bytes is None or empty
+        pdf2image.exceptions.PDFPageCountError: If PDF has no pages or is invalid
+        json.JSONDecodeError: If AI response cannot be parsed as JSON
+        genai.types.generation_types.BlockedPromptException: If content violates AI policy
     """
+    if not pdf_bytes:
+        raise ValueError("PDF content cannot be empty")
+    results = {
+        "part_number": "Not Found",
+        "description": "Not Found",
+        "standard": "Not Found",
+        "grade": "Not Found",
+        "material": "Not Found",
+        "dimensions": {
+            "id1": "Not Found",
+            "id2": "Not Found",
+            "od1": "Not Found",
+            "od2": "Not Found",
+            "thickness": "Not Found",
+            "centerline_length": "Not Found"
+        },
+        "coordinates": [],
+        "error": None
+    }
+    
+    try:
+        # 1. Convert PDF to images
+        logger.info("Converting PDF to images...")
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
+            temp_pdf.write(pdf_bytes)
+            temp_pdf_path = temp_pdf.name
+            
+        try:
+            page_images = convert_from_path(temp_pdf_path, dpi=150)
+            logger.info(f"Converted PDF to {len(page_images)} images")
+        finally:
+            os.remove(temp_pdf_path)
+        
+        # 2. Process each page with Gemini Vision
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        all_data = []
+        
+        for i, page in enumerate(page_images):
+            logger.info(f"Processing page {i+1} with Gemini Vision...")
+            
+            # Prepare image for Gemini
+            img_byte_arr = io.BytesIO()
+            page.save(img_byte_arr, format='PNG')
+            img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
+            
+            prompt = """Analyze this engineering drawing and extract all relevant information.
+            Return a JSON object with the following structure:
+            {
+                "part_number": "The drawing number or part number",
+                "description": "Description or title of the part",
+                "standard": "Material standard specification",
+                "grade": "Material grade",
+                "dimensions": {
+                    "id1": "First inside diameter value",
+                    "id2": "Second inside diameter value (if exists)",
+                    "od1": "First outside diameter value",
+                    "od2": "Second outside diameter value (if exists)",
+                    "thickness": "Wall thickness",
+                    "centerline_length": "Centerline length"
+                },
+                "coordinates": [
+                    {"point": "P0", "x": 0.0, "y": 0.0, "z": 0.0},
+                    {"point": "P1", "x": 1.0, "y": 2.0, "z": 3.0}
+                ]
+            }
+            Include all measurement values in millimeters (mm).
+            If a value is not found, use "Not Found".
+            Focus on text near dimension lines and in the title block."""
+            
+            # Process with Gemini
+            image_part = [{"mime_type": "image/png", "data": img_base64}]
+            response = model.generate_content([prompt, *image_part])
+            
+            if response and response.text:
+                try:
+                    cleaned_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+                    page_data = json.loads(cleaned_text)
+                    all_data.append(page_data)
+                    logger.info(f"Successfully parsed data from page {i+1}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse JSON from page {i+1}: {e}")
+                    continue
+        
+        # 3. Combine data from all pages
+        if all_data:
+            # Use the most complete data set as base
+            results = max(all_data, key=lambda x: sum(1 for v in x.values() if v != "Not Found"))
+            
+            # Merge coordinates from all pages
+            all_coordinates = []
+            for data in all_data:
+                if "coordinates" in data and isinstance(data["coordinates"], list):
+                    all_coordinates.extend(data["coordinates"])
+            results["coordinates"] = all_coordinates
+        
+        logger.info("Drawing analysis completed successfully")
+        return results
+        
+    except (pdf2image.exceptions.PDFPageCountError, pdf2image.exceptions.PDFSyntaxError) as e:
+        logger.error(f"PDF conversion error: {str(e)}")
+        results["error"] = f"Failed to process PDF: {str(e)}"
+        return results
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parsing error: {str(e)}")
+        results["error"] = "Failed to parse AI response"
+        return results
+    except genai.types.generation_types.BlockedPromptException as e:
+        logger.error(f"Gemini API content policy violation: {str(e)}")
+        results["error"] = "Content policy violation"
+        return results
+    except Exception as e:
+        logger.error(f"Unexpected error in drawing analysis: {str(e)}")
+        results["error"] = f"Analysis failed: {str(e)}"
+        return results
     logging.info("Starting data parsing with Gemini...")
     model = genai.GenerativeModel('gemini-1.5-flash-latest')
     
@@ -1572,7 +1792,7 @@ def analyze_drawing_with_gemini(pdf_bytes):
         logger.info(f"Extracted coordinates: {len(results['coordinates'])} points")
         
         # Use Gemini for advanced analysis
-        gemini_results = parse_text_with_gemini(combined_text)
+        gemini_results = analyze_drawing(pdf_bytes)
         
         if gemini_results:
             # Use safe dimension processing
@@ -1799,33 +2019,55 @@ def validate_extracted_data(data):
 # --- API endpoint for file analysis ---
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
+    # 1. Basic request validation
     if 'file' not in request.files:
-        return jsonify({'error': 'No file part'}), 400
+        logging.warning("No file part in request")
+        return jsonify({'error': 'No file part in request'}), 400
+        
     file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': 'No selected file'}), 400
+    if not file or not file.filename:
+        logging.warning("No file selected")
+        return jsonify({'error': 'No file selected'}), 400
     
+    # 2. File type validation
     if not file.filename.lower().endswith('.pdf'):
-        return jsonify({"error": "Invalid file type. Please upload a PDF."}), 400
+        logging.warning(f"Invalid file type: {file.filename}")
+        return jsonify({"error": "Invalid file type. Please upload a PDF file."}), 400
 
-    logging.info(f"New analysis request for file: {file.filename}")
+    logging.info(f"Processing analysis request for file: {file.filename}")
+    
     try:
-        # Read and analyze PDF
+        # 3. Read file contents
         pdf_bytes = file.read()
-        full_text = extract_text_from_pdf(pdf_bytes)
-        if not full_text:
-            return jsonify({"error": "Failed to extract text from PDF"}), 500
-
-        # Parse text with Gemini
-        try:
-            final_results = parse_text_with_gemini(full_text)
-            if not isinstance(final_results, dict):
-                return jsonify({"error": "Invalid response format from text parser"}), 500
-            if "error" in final_results:
-                return jsonify(final_results), 500
-        except Exception as e:
-            logging.error(f"Error parsing text with Gemini: {e}")
-            return jsonify({"error": f"Text parsing failed: {str(e)}"}), 500
+        if not pdf_bytes:
+            logging.warning("Uploaded file is empty")
+            return jsonify({"error": "Uploaded file is empty"}), 400
+            
+        # 4. Analyze drawing
+        final_results = analyze_drawing(pdf_bytes)
+        
+        # 5. Response validation
+        if not isinstance(final_results, dict):
+            logging.error(f"Invalid analyzer response type: {type(final_results)}")
+            return jsonify({"error": "Internal error: Invalid response format"}), 500
+            
+        if final_results.get("error"):
+            error_msg = final_results["error"]
+            if "PDF conversion error" in error_msg:
+                logging.warning(f"PDF conversion failed: {error_msg}")
+                return jsonify({"error": "Invalid or corrupted PDF file"}), 400
+            elif "Content policy violation" in error_msg:
+                logging.warning(f"Content policy violation: {error_msg}")
+                return jsonify({"error": "Content policy violation"}), 403
+            else:
+                logging.error(f"Analysis error: {error_msg}")
+                return jsonify({"error": error_msg}), 500
+        
+        part_number = final_results.get('part_number', 'Unknown')
+        logging.info(f"Successfully analyzed drawing for part {part_number}")
+    except Exception as e:
+        logging.error(f"Error parsing text with Gemini: {e}")
+        return jsonify({"error": f"Text parsing failed: {str(e)}"}), 500
 
         # Initialize dimensions with safe defaults
         final_results["dimensions"] = safe_dimension_processing(final_results)
