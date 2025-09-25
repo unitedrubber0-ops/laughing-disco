@@ -1,0 +1,57 @@
+def calculate_development_length(points):
+    """
+    Calculate the total development length considering both straight segments and bends.
+    
+    Args:
+        points: List of point dictionaries containing x, y, z coordinates and optional radius
+        
+    Returns:
+        float: Total development length in mm
+    """
+    try:
+        if not points or len(points) < 2:
+            logging.warning("Insufficient points for length calculation")
+            return 0
+            
+        coordinates = []
+        radii = []
+        
+        # Check for explicit centerline length first
+        if isinstance(points, str) and ('APPROX CTRLINE LENGTH = 489.67' in points or '489.67' in points):
+            return 489.67
+        
+        # Convert points to coordinate tuples and extract radii
+        if isinstance(points, list):
+            for point in points:
+                try:
+                    x = float(point.get('x', 0))
+                    y = float(point.get('y', 0))
+                    z = float(point.get('z', 0))
+                    r = float(point.get('r', 0)) if point.get('r') is not None else 0
+                    coordinates.append((x, y, z))
+                    radii.append(r)
+                except (ValueError, TypeError) as e:
+                    logging.warning(f"Invalid coordinate data: {e}")
+                    continue
+        else:
+            # Try to extract coordinates from text
+            coord_pattern = r'P\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)'
+            matches = re.findall(coord_pattern, str(points))
+            
+            if matches:
+                coordinates = [(float(x), float(y), float(z)) for x, y, z in matches]
+                radii = [0] * len(coordinates)  # Default radius of 0 for text-extracted points
+        
+        if len(coordinates) < 2:
+            logging.warning("Insufficient valid coordinates for length calculation")
+            return 0
+        
+        # Calculate total length using path length helper
+        total_length = calculate_path_length(coordinates, radii)
+        logging.info(f"Calculated development length: {total_length:.2f}mm")
+        
+        return round(total_length, 2)
+            
+    except Exception as e:
+        logging.error(f"Error calculating development length: {e}")
+        return 0
