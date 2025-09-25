@@ -67,13 +67,50 @@ except FileNotFoundError:
 def normalize_for_comparison(text):
     """
     Converts text to a standardized format for reliable comparison.
-    Handles various text formats, OCR errors, and common variations.
+    Preserves F-series standard formatting.
     """
     if not text:
         return ""
     
     # Convert to string and uppercase
     text = str(text).upper()
+    
+    # Preserve F-series standards (like F-1, F-30, etc.)
+    text = re.sub(r'MPAPS\s*F\s*[-_]?\s*(\d+)', r'MPAPS F-\1', text)
+    
+    # Common OCR error corrections
+    ocr_fixes = {
+        'ВТРАР': 'STRAIGHT',
+        'АК': 'AK',
+        'ОЛГЮЛЕ': 'ANGLE',
+        'ГРАД': 'GRADE',
+        'ТУПЕ': 'TYPE',
+        'О': 'O',
+        'В': 'B',
+    }
+    for wrong, correct in ocr_fixes.items():
+        text = text.replace(wrong, correct)
+    
+    # Remove grade/type prefix variations but preserve F-series
+    if not re.search(r'F-\d+', text):
+        prefixes = ['GRADE ', 'GRADE-', 'GRADE_', 'TYPE ', 'TYPE-', 'TYPE_', 'CLASS ', 'CLASS-', 'CLASS_']
+        for prefix in prefixes:
+            if text.startswith(prefix):
+                text = text[len(prefix):]
+    
+    # Remove all whitespace except around F-series
+    text = re.sub(r'\s+', ' ', text).strip()
+    
+    # Convert Roman numerals to numbers
+    roman_to_num = {
+        'I': '1', 'II': '2', 'III': '3', 'IV': '4', 'V': '5',
+        'Ⅰ': '1', 'Ⅱ': '2', 'Ⅲ': '3', 'Ⅳ': '4', 'Ⅴ': '5',
+        'І': '1', 'ІІ': '2', 'ІІІ': '3', 'ІV': '4', 'V': '5'
+    }
+    for roman, num in roman_to_num.items():
+        text = text.replace(roman, num)
+    
+    return text
     
     # Common OCR error corrections
     ocr_fixes = {
@@ -128,8 +165,7 @@ def normalize_for_comparison(text):
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
     """
-    Enhanced material lookup with sophisticated matching and comprehensive error handling.
-    Uses multi-stage matching strategy including fuzzy matching and pattern recognition.
+    Enhanced material lookup with improved F-series standard matching
     """
     if material_df is None:
         logging.error("Material database not loaded")
@@ -137,6 +173,79 @@ def get_material_from_standard(standard, grade):
     
     if standard == "Not Found" or grade == "Not Found":
         logging.warning("Standard or grade not provided")
+        return "Not Found"
+    
+    try:
+        # Clean inputs
+        clean_standard = clean_text_encoding(str(standard))
+        clean_grade = clean_text_encoding(str(grade))
+        
+        # Special handling for MPAPS F-1 -> MPAPS F-30/F-1 mapping
+        if 'MPAPS F-1' in clean_standard.upper() or 'MPAPSF1' in clean_standard.upper():
+            clean_standard = 'MPAPS F-30/F-1'
+            logging.info(f"Mapping MPAPS F-1 to {clean_standard}")
+        
+        norm_standard = normalize_for_comparison(clean_standard)
+        norm_grade = normalize_for_comparison(clean_grade)
+        
+        logging.info(f"Material lookup initiated:\n"
+                    f"Original: Standard='{standard}', Grade='{grade}'\n"
+                    f"Cleaned: Standard='{clean_standard}', Grade='{clean_grade}'\n"
+                    f"Normalized: Standard='{norm_standard}', Grade='{norm_grade}'")
+        
+        # Stage 1: Exact match on cleaned values (less aggressive normalization)
+        exact_matches = material_df[
+            (material_df['STANDARD'].str.upper().str.strip() == clean_standard.upper()) &
+            (material_df['GRADE'].astype(str).str.upper().str.strip() == clean_grade.upper())
+        ]
+        
+        if not exact_matches.empty:
+            material = exact_matches.iloc[0]['MATERIAL']
+            logging.info(f"Exact match found: {material}")
+            return material
+        
+        # Stage 2: Flexible matching for F-series standards
+        best_match = None
+        best_score = 0
+        
+        for idx, row in material_df.iterrows():
+            db_standard = str(row['STANDARD']).upper().strip()
+            db_grade = str(row['GRADE']).upper().strip()
+            
+            # Score for standard matching
+            standard_score = 0
+            if clean_standard.upper() in db_standard or db_standard in clean_standard.upper():
+                standard_score = 1.0
+            elif 'F-1' in clean_standard.upper() and 'F-30' in db_standard:
+                standard_score = 0.9  # MPAPS F-1 should match MPAPS F-30/F-1
+            elif any(term in db_standard for term in clean_standard.upper().split()):
+                standard_score = 0.8
+            
+            # Score for grade matching
+            grade_score = 0
+            if clean_grade.upper() in db_grade or db_grade in clean_grade.upper():
+                grade_score = 1.0
+            elif norm_grade == normalize_for_comparison(db_grade):
+                grade_score = 0.9
+            
+            # Combined score with priority on standard
+            total_score = (standard_score * 0.7) + (grade_score * 0.3)
+            
+            if total_score > best_score:
+                best_score = total_score
+                best_match = row['MATERIAL']
+                logging.debug(f"New best match: {best_match} (score: {best_score})")
+        
+        # Return match if score is sufficient
+        if best_score >= 0.6:
+            logging.info(f"Best match found: '{best_match}' (score: {best_score:.2f})")
+            return best_match
+        
+        logging.warning(f"No suitable material match found for Standard: '{standard}', Grade: '{grade}'")
+        return "Not Found"
+    
+    except Exception as e:
+        logging.error(f"Error during material lookup: {str(e)}", exc_info=True)
         return "Not Found"
     
     try:
