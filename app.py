@@ -445,7 +445,10 @@ def extract_dimensions_from_text(text):
         "thickness": "Not Found",
         "centerline_length": "Not Found",
         "radius": "Not Found",
-        "angle": "Not Found"
+        "angle": "Not Found",
+        "working_pressure": "Not Found",
+        "burst_pressure": "Not Found",
+        "coordinates": []  # List to store coordinate points
     }
 
     try:
@@ -471,6 +474,9 @@ def extract_dimensions_from_text(text):
                 # Primary ID patterns with Ø symbol - these should match first
                 r'INSIDE\s*Ø\s*(\d+(?:\.\d+)?)',  # Matches "INSIDE Ø 50.8"
                 r'ID\s*Ø\s*(\d+(?:\.\d+)?)',      # Matches "ID Ø 50.8"
+                # Hose ID patterns
+                r'HOSE\s*ID\s*[=:]?\s*(\d+(?:\.\d+)?)',  # Matches "HOSE ID = 18.4"
+                r'(?:HOSE\s+)?ID\s*[=:]?\s*(\d+(?:\.\d+)?)',  # More general pattern
                 # Inside diameter variations
                 r'(?:INSIDE|INNER)\s*(?:DIAMETER|DIA\.?|DIAM\.?)?\s*(?:Ø|⌀)?\s*(\d+(?:\.\d+)?)',
                 # Standard ID formats
@@ -494,9 +500,23 @@ def extract_dimensions_from_text(text):
                 r'(?:THK|THICK)\.?\s*[=:]?\s*(\d+[.,]?\d*)'
             ],
             'centerline': [
+                r'(?:APPROX\.?)?\s*CTRLINE\s*LENGTH\s*[=:]?\s*(\d+(?:\.\d+)?)',  # Matches "APPROX CTRLINE LENGTH = 489.67"
                 r'(?:APPROX\.?)?\s*(?:CTRLINE|CENTERLINE|C/L)\s*(?:LENGTH)?\s*(?:AS\s+PER\s+2D|\(MM\))?\s*[=:]?\s*(\d+[.,]?\d*)',
                 r'(?:LENGTH|LEN\.?)\s*(?:AS\s+PER\s+2D|\(MM\))?\s*[=:]?\s*(\d+[.,]?\d*)',
                 r'(?:DEVELOPED|DEV\.?)\s*(?:LENGTH|LEN\.?)\s*[=:]?\s*(\d+[.,]?\d*)'
+            ],
+            'pressure': [
+                r'MAX\s*(?:OPERATING|WORKING)?\s*PRESSURE[^.]*?(\d+(?:\.\d+)?)\s*kPag?',  # Matches "MAX OPERATING PRESSURE... 430 kPag"
+                r'(?:OPERATING|WORKING)\s*PRESSURE[^.]*?(\d+(?:\.\d+)?)\s*kPag?',
+                r'PRESSURE\s*RATING[^.]*?(\d+(?:\.\d+)?)\s*kPag?'
+            ],
+            'burst_pressure': [
+                r'BURST\s*PRESSURE\s*(?:\(4×WP\))?\s*[=:]?\s*(\d+(?:\.\d+)?)\s*kPag?',
+                r'(?:MIN\.?|MINIMUM)?\s*BURST\s*(?:PRESSURE)?\s*[=:]?\s*(\d+(?:\.\d+)?)\s*kPag?'
+            ],
+            'coordinates': [
+                r'P(\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)',  # Matches coordinate points P0, P1, etc.
+                r'POINT\s*(\d+)\s*:\s*(?:X\s*=\s*)?(-?\d+\.\d+)\s*(?:Y\s*=\s*)?(-?\d+\.\d+)\s*(?:Z\s*=\s*)?(-?\d+\.\d+)'
             ],
             'radius': [
                 r'(?:RADIUS|RAD\.?|R)\s*(?:=|:|IS|:=)?\s*(\d+[.,]?\d*)',
