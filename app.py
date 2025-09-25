@@ -1586,8 +1586,46 @@ def analyze_drawing(pdf_bytes):
         # 3. Combine data from all pages
         if all_data:
             # Use the most complete data set as base
-            results = max(all_data, key=lambda x: sum(1 for v in x.values() if v != "Not Found"))
+            def completeness_score(data):
+                score = 0
+                # Check top-level fields
+                score += sum(1 for k, v in data.items() if v != "Not Found" and k not in ["dimensions", "operating_conditions", "coordinates"])
+                # Check dimensions
+                if isinstance(data.get("dimensions"), dict):
+                    score += sum(1 for v in data["dimensions"].values() if v != "Not Found")
+                # Check operating conditions
+                if isinstance(data.get("operating_conditions"), dict):
+                    score += sum(1 for v in data["operating_conditions"].values() if v != "Not Found")
+                # Check coordinates
+                if isinstance(data.get("coordinates"), list):
+                    score += len(data["coordinates"])
+                return score
             
+            results = max(all_data, key=completeness_score)
+            
+            # Ensure all required fields exist
+            if "dimensions" not in results:
+                results["dimensions"] = {}
+            if "operating_conditions" not in results:
+                results["operating_conditions"] = {}
+            if "coordinates" not in results:
+                results["coordinates"] = []
+            
+            # Convert numeric strings to floats where appropriate
+            for key in ["id1", "od1", "thickness", "centerline_length"]:
+                if results["dimensions"].get(key) and results["dimensions"][key] != "Not Found":
+                    try:
+                        results["dimensions"][key] = float(str(results["dimensions"][key]).replace(",", "."))
+                    except (ValueError, TypeError):
+                        results["dimensions"][key] = "Not Found"
+            
+            # Convert pressure values
+            for key in ["working_pressure", "burst_pressure"]:
+                if results["operating_conditions"].get(key) and results["operating_conditions"][key] != "Not Found":
+                    try:
+                        results["operating_conditions"][key] = float(str(results["operating_conditions"][key]).replace(",", "."))
+                    except (ValueError, TypeError):
+                        results["operating_conditions"][key] = "Not Found"
             # Merge coordinates from all pages
             all_coordinates = []
             for data in all_data:
@@ -1844,30 +1882,70 @@ def analyze_drawing_with_gemini(pdf_bytes):
             results["coordinates"] = points
         
         # Enhanced prompt for Gemini
-        prompt = """
-You are an expert in analyzing Navistar engineering drawings for hose components.
-Carefully extract the following information:
+        prompt = """Analyze this engineering drawing with high precision.
+Find the exact values for the keys below based on the specified labels.
+Return a JSON object. If a value is not explicitly found, use the string "Not Found".
 
-1. Child Part Number: Look for 7-8 digit numbers ending in 'C' followed by 1-2 digits
-2. Description: The component description in title block or notes
-3. Specification: Look for the PRIMARY material specification:
-   - Focus on hose material specs like MPAPS F-6032 for fuel/oil resistant hoses
-   - Don't confuse with tolerance specs like F-30 or assembly specs like F-1
-   - If multiple specs found, prioritize the one defining hose material type
-4. Grade: Look for Type designation (e.g., Type I) or grade code
-5. Material: Only report if explicitly stated in drawing, don't infer
-6. Dimensions:
-   - OD (outer diameter) in mm
-   - Wall thickness in mm
-   - Centerline length in mm
-7. Operating Conditions:
-   - Working pressure in bar
-   - Burst pressure in bar (if specified)
-   - Working temperature range (if specified)
-8. Notes: Any special requirements or restrictions
+Instructions:
+1. Part Number ('part_number'): 
+   - Look for the label "PART NO." or "PART NUMBER"
+   - It will typically be a 7-8 digit number followed by 'C' and 1-2 digits
+   - Also check title block and drawing header
 
-Respond with ONLY a JSON object containing these exact keys:
+2. Description ('description'):
+   - Find the main title or description of the part
+   - Usually located in the title block or drawing header
+   - Include the full description text
+
+3. Standard/Specification ('standard'):
+   - Look specifically for "SPEC:" label
+   - The value will typically be in format "MPAPS F-XXXX"
+   - Common values: MPAPS F-6032, MPAPS F-6028, MPAPS F-6034
+   - Don't include assembly specs like F-1
+
+4. Grade ('grade'):
+   - Look specifically for "TYPE" or "GRADE" labels
+   - Common values: "TYPE I", "TYPE II", "GRADE C-AN"
+   - Report exactly as shown on drawing
+
+5. Dimensions Object:
+   Look for these specific labels and report numeric values only:
+   - "id1": Find "HOSE ID" or "INSIDE DIAMETER"
+   - "od1": Find "HOSE OD" or "OUTSIDE DIAMETER"
+   - "thickness": Find "WALL THICKNESS" or "THK"
+   - "centerline_length": Find "CTRLINE LENGTH" or "C/L LENGTH"
+
+6. Operating Conditions:
+   - Find "MAX OPERATING PRESSURE" (in kPag)
+   - Find "BURST PRESSURE" (in kPag)
+   - Find "OPERATING TEMPERATURE" range
+
+7. Coordinate Points:
+   - Look for points labeled P0, P1, P2, etc.
+   - Each point should have X, Y, Z coordinates
+   - Report coordinates in array format
+
+Required JSON format:
 {
+    "part_number": "...",
+    "description": "...",
+    "standard": "...",
+    "grade": "...",
+    "dimensions": {
+        "id1": "...",
+        "od1": "...",
+        "thickness": "...",
+        "centerline_length": "..."
+    },
+    "operating_conditions": {
+        "working_pressure": "...",
+        "burst_pressure": "...",
+        "temperature_range": "..."
+    },
+    "coordinates": [{"point": "P0", "x": 0.0, "y": 0.0, "z": 0.0}, ...]
+}
+
+Important: Report numeric values WITHOUT units. Example: for "HOSE ID = 19.05 MM", report only "19.05".
     "part_number": string,
     "description": string,
     "standard": string,
