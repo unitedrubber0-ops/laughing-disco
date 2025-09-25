@@ -2046,7 +2046,7 @@ def upload_and_analyze():
         # 4. Analyze drawing
         final_results = analyze_drawing(pdf_bytes)
         
-        # 5. Response validation
+        # 5. Response validation and return
         if not isinstance(final_results, dict):
             logging.error(f"Invalid analyzer response type: {type(final_results)}")
             return jsonify({"error": "Internal error: Invalid response format"}), 500
