@@ -1538,7 +1538,7 @@ def analyze_drawing(pdf_bytes):
             os.remove(temp_pdf_path)
         
         # 2. Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-pro')
         all_data = []
         
         for i, page in enumerate(page_images):
@@ -1987,7 +1987,7 @@ Pay special attention to distinguishing primary material specs from reference sp
 
         # --- Step 3: Call Gemini API with vision model ---
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            model = genai.GenerativeModel('gemini-1.5-pro')
             response = model.generate_content([prompt, full_text])
             
             if response and response.text:
@@ -2250,7 +2250,7 @@ def analyze_image_with_gemini_vision(pdf_bytes):
         logger.info(f"Converted PDF to {len(page_images)} images at 150 DPI")
 
         # Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-1.5-pro')
         for i, page in enumerate(page_images):
             logger.info(f"Processing page {i+1} with Gemini Vision...")
             
