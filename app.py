@@ -1857,6 +1857,9 @@ def analyze_drawing_with_gemini(pdf_bytes):
                                 
                 except json.JSONDecodeError as e:
                     logger.warning(f"Failed to parse Gemini response as JSON: {e}")
+        except Exception as e:
+            logger.error(f"Error generating content with Gemini: {e}")
+            response = None
             
             logger.info("Gemini analysis completed, proceeding with text extraction")
         
