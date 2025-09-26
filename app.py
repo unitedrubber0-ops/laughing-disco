@@ -2356,7 +2356,10 @@ def analyze_image_with_gemini_vision(pdf_bytes):
             # Process with Gemini
             response = model.generate_content(["Extract all text from this engineering drawing.", *image_parts])
             if response and response.text:
-                full_text += response.text + "\n"
+                if isinstance(response.text, list):
+                    full_text += "\n".join(response.text) + "\n"
+                else:
+                    full_text += response.text + "\n"
 
         logger.info(f"OCR complete. Total characters extracted: {len(full_text)}")
         return full_text
