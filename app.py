@@ -2007,7 +2007,7 @@ Important: Report numeric values WITHOUT units. Example: for "HOSE ID = 19.05 MM
 For any value not found in drawing, use "Not Found" (not null or empty string).
 Pay special attention to distinguishing primary material specs from reference specs.
 """
-        model = genai.GenerativeModel('gemini-1.0-pro-vision') # Use a stable vision model
+        model = genai.GenerativeModel('gemini-pro-vision') # Use a stable vision model
         
         prompt = f"""
         Analyze the following text extracted from a technical engineering drawing. Your task is to find three specific pieces of information: the part number, the material standard, and the grade.
@@ -2028,7 +2028,7 @@ Pay special attention to distinguishing primary material specs from reference sp
 
         # --- Step 3: Call Gemini API with vision model ---
         try:
-            model = genai.GenerativeModel('gemini-1.0-pro-vision')  # Use stable vision model
+            model = genai.GenerativeModel('gemini-pro-vision')  # Use stable vision model
             response = model.generate_content([prompt, full_text])
             
             if response and response.text:
