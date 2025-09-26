@@ -1831,28 +1831,51 @@ def analyze_drawing_with_gemini(pdf_bytes):
             "burst_pressure": "value or Not Found"
         }}
         """
-                block_text = block[4].strip()
-                if block_text:
-                    block_texts.append(block_text)
-                    logger.debug(f"Block: {block_text}")
         
-        # Combine all text
-        combined_text = "\n".join(full_text)
-        logger.info(f"Initial text extraction length: {len(combined_text)}")
-        
-        # Use OCR if text content seems insufficient
-        if len(combined_text.strip()) < 100 or not re.search(r'\d{7}[A-Z]\d', combined_text):
-            logger.info("Text content appears insufficient, applying OCR")
-            ocr_texts = []
-            for img in images:
-                # First try with default settings
-                ocr_text = pytesseract.image_to_string(img)
-                if ocr_text.strip():
-                    ocr_texts.append(ocr_text)
+        try:
+            response = model.generate_content(prompt)
+            if response and response.text:
+                # Clean the response
+                if isinstance(response.text, list):
+                    cleaned_text = "\n".join(response.text).strip()
+                else:
+                    cleaned_text = response.text.strip()
                     
-            if ocr_texts:
-                combined_text = combined_text + "\n" + "\n".join(ocr_texts)
-                logger.info(f"After OCR text length: {len(combined_text)}")
+                cleaned_text = cleaned_text.replace("```json", "").replace("```", "").strip()
+                
+                try:
+                    # Parse JSON response
+                    gemini_data = json.loads(cleaned_text)
+                    
+                    # Update results with Gemini findings
+                    for key in gemini_data:
+                        if key in results:
+                            if key == "dimensions" and isinstance(gemini_data[key], dict):
+                                results["dimensions"].update(gemini_data[key])
+                            else:
+                                results[key] = gemini_data[key]
+                                
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Failed to parse Gemini response as JSON: {e}")
+            
+            logger.info("Gemini analysis completed, proceeding with text extraction")
+        
+            # Extract text from images using OCR if needed
+            if not results["part_number"] or results["part_number"] == "Not Found":
+                logger.info("No part number found, applying OCR to images")
+                ocr_texts = []
+                for img in images:
+                    ocr_text = pytesseract.image_to_string(img)
+                    if ocr_text.strip():
+                        ocr_texts.append(ocr_text)
+                
+                if ocr_texts:
+                    ocr_combined = "\n".join(ocr_texts)
+                    # Try to find part number in OCR text
+                    ocr_part_number = extract_part_number(ocr_combined)
+                    if ocr_part_number != "Not Found":
+                        results["part_number"] = ocr_part_number
+                        logger.info(f"Found part number from OCR: {ocr_part_number}")
         
         # Clean and normalize text
         combined_text = clean_text_encoding(combined_text)
