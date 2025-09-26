@@ -1579,7 +1579,7 @@ def analyze_drawing(pdf_bytes):
             os.remove(temp_pdf_path)
         
         # 2. Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-1.0-pro-vision')  # Use stable vision model
         all_data = []
         
         for i, page in enumerate(page_images):
@@ -1698,7 +1698,7 @@ def analyze_drawing(pdf_bytes):
         results["error"] = f"Analysis failed: {str(e)}"
         return results
     logging.info("Starting data parsing with Gemini...")
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model = genai.GenerativeModel('gemini-1.0-pro-vision')  # Use stable vision model
     
     # --- UPDATED PROMPT ---
     prompt = f"""
@@ -2007,7 +2007,7 @@ Important: Report numeric values WITHOUT units. Example: for "HOSE ID = 19.05 MM
 For any value not found in drawing, use "Not Found" (not null or empty string).
 Pay special attention to distinguishing primary material specs from reference specs.
 """
-        model = genai.GenerativeModel('gemini-1.5-flash') # Use a fast and capable model
+        model = genai.GenerativeModel('gemini-1.0-pro-vision') # Use a stable vision model
         
         prompt = f"""
         Analyze the following text extracted from a technical engineering drawing. Your task is to find three specific pieces of information: the part number, the material standard, and the grade.
@@ -2028,7 +2028,7 @@ Pay special attention to distinguishing primary material specs from reference sp
 
         # --- Step 3: Call Gemini API with vision model ---
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            model = genai.GenerativeModel('gemini-1.0-pro-vision')  # Use stable vision model
             response = model.generate_content([prompt, full_text])
             
             if response and response.text:
@@ -2333,7 +2333,7 @@ def analyze_image_with_gemini_vision(pdf_bytes):
         logger.info(f"Converted PDF to {len(page_images)} images at 150 DPI")
 
         # Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-1.0-pro-vision')  # Use stable vision model
         for i, page in enumerate(page_images):
             logger.info(f"Processing page {i+1} with Gemini Vision...")
             
