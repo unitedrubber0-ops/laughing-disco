@@ -36,6 +36,32 @@ CORS(app)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+def get_available_gemini_model():
+    """Get the best available Gemini model with fallbacks."""
+    try:
+        # Try to list available models to see what we have access to
+        available_models = genai.list_models()
+        available_names = [model.name for model in available_models]
+        
+        # Preferred models in order of preference
+        preferred_models = [
+            'gemini-pro',           # Most widely available
+            'gemini-1.0-pro',       # Specific version
+            'models/gemini-pro',    # Alternative naming
+        ]
+        
+        for model_name in preferred_models:
+            if any(model_name in name for name in available_names):
+                logging.info(f"Using Gemini model: {model_name}")
+                return model_name
+        
+        logging.warning(f"No preferred models available. Available: {available_names}")
+        return 'gemini-pro'  # Default fallback
+        
+    except Exception as e:
+        logging.error(f"Error checking available models: {e}")
+        return 'gemini-pro'  # Default fallback
+
 def extract_part_number(text):
     """
     Extract part number specifically for standardized format: 7718817C1
@@ -1584,7 +1610,7 @@ def analyze_drawing(pdf_bytes):
             os.remove(temp_pdf_path)
         
         # 2. Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-pro-vision')  # Use stable vision model
+        model = genai.GenerativeModel('gemini-pro-vision')  # Using vision model for image analysis
         all_data = []
         
         for i, page in enumerate(page_images):
@@ -1784,7 +1810,8 @@ def analyze_drawing_with_gemini(pdf_bytes):
     
     try:
         # Use the latest stable Gemini model
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        model_name = get_available_gemini_model()
+        model = genai.GenerativeModel(model_name)
         
         # Convert PDF to images
         images = convert_pdf_to_images(pdf_bytes)
@@ -2071,7 +2098,8 @@ Important: Report numeric values WITHOUT units. Example: for "HOSE ID = 19.05 MM
 For any value not found in drawing, use "Not Found" (not null or empty string).
 Pay special attention to distinguishing primary material specs from reference specs.
 """
-        model = genai.GenerativeModel('gemini-1.5-pro') # Use latest pro model
+        model_name = get_available_gemini_model()
+        model = genai.GenerativeModel(model_name)
         
         prompt = f"""
         Analyze the following text extracted from a technical engineering drawing. Your task is to find three specific pieces of information: the part number, the material standard, and the grade.
@@ -2092,7 +2120,8 @@ Pay special attention to distinguishing primary material specs from reference sp
 
         # --- Step 3: Call Gemini API with vision model ---
         try:
-            model = genai.GenerativeModel('gemini-1.5-pro')  # Use latest pro model
+            model_name = get_available_gemini_model()
+            model = genai.GenerativeModel(model_name)
             response = model.generate_content([prompt, full_text])
             
             if response and response.text:
