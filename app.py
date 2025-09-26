@@ -74,7 +74,12 @@ if not api_key:
     raise ValueError("GEMINI_API_KEY environment variable must be set to use Gemini AI features")
 
 try:
-    genai.configure(api_key=api_key)
+    # Configure Gemini with correct API version
+    genai.configure(
+        api_key=api_key,
+        transport='rest',
+        client_options={'api_endpoint': 'generativelanguage.googleapis.com'}
+    )
     logging.info("Gemini API key configured successfully")
 except Exception as e:
     logging.error(f"Failed to configure Gemini API key: {str(e)}")
@@ -1756,43 +1761,76 @@ def analyze_drawing(pdf_bytes):
 def analyze_drawing_with_gemini(pdf_bytes):
     """
     Analyze drawing using Google Gemini with improved prompt and image analysis.
-    Extracts dimensions, specifications, grades, and material properties using AI vision model.
     """
     results = {
         "part_number": "Not Found",
-        "description": "Not Found",
+        "description": "Not Found", 
         "standard": "Not Found",
         "grade": "Not Found",
         "material": "Not Found",
-        "od": "Not Found",
-        "thickness": "Not Found",
-        "centerline_length": "Not Found",
-        "development_length": "Not Found",
-        "burst_pressure": "Not Found",
-        "working_temperature": "Not Found",
+        "dimensions": {
+            "id1": "Not Found",
+            "id2": "Not Found", 
+            "od1": "Not Found",
+            "od2": "Not Found",
+            "thickness": "Not Found",
+            "centerline_length": "Not Found"
+        },
         "working_pressure": "Not Found",
+        "burst_pressure": "Not Found", 
         "coordinates": [],
-        "dimensions": {},
         "error": None
     }
     
     try:
-        # Convert PDF to images for better analysis
+        # Use the latest stable Gemini model
+        model = genai.GenerativeModel('gemini-1.5-pro')
+        
+        # Convert PDF to images
         images = convert_pdf_to_images(pdf_bytes)
         
-        # Extract text using both PyMuPDF and OCR if needed
+        # Extract text using PyMuPDF as primary method
         pdf_document = fitz.open("pdf", pdf_bytes)
-        full_text = []
-        block_texts = []
+        full_text = ""
+        for page in pdf_document:
+            full_text += page.get_text()
+        pdf_document.close()
         
-        # First pass: Extract text and structure from PDF
-        for page_num, page in enumerate(pdf_document):
-            page_text = page.get_text()
-            full_text.append(page_text)
-            
-            # Get text blocks for structural analysis
-            blocks = page.get_text("blocks")
-            for block in blocks:
+        # Clean the text
+        full_text = clean_text_encoding(full_text)
+        
+        # Enhanced prompt for text analysis
+        prompt = f"""
+        Analyze this engineering drawing text and extract key information. Return ONLY valid JSON.
+        
+        Text to analyze:
+        {full_text[:10000]}  # Limit text length
+        
+        Extract these fields:
+        - part_number: Look for "PART NO", "DWG NO", or 7-digit numbers like 7718817C1
+        - description: Main title starting with "HOSE" or similar
+        - standard: Specifications like "MPAPS F-30", "SAE JXXXX"  
+        - grade: "GRADE 1B", "TYPE I", etc.
+        - dimensions: ID, OD, thickness, centerline length values
+        - working_pressure: "MAX OPERATING PRESSURE" value
+        - coordinates: Point coordinates if available
+        
+        Return JSON format:
+        {{
+            "part_number": "value or Not Found",
+            "description": "value or Not Found", 
+            "standard": "value or Not Found",
+            "grade": "value or Not Found",
+            "dimensions": {{
+                "id1": "value or Not Found",
+                "od1": "value or Not Found", 
+                "thickness": "value or Not Found",
+                "centerline_length": "value or Not Found"
+            }},
+            "working_pressure": "value or Not Found",
+            "burst_pressure": "value or Not Found"
+        }}
+        """
                 block_text = block[4].strip()
                 if block_text:
                     block_texts.append(block_text)
@@ -2007,7 +2045,7 @@ Important: Report numeric values WITHOUT units. Example: for "HOSE ID = 19.05 MM
 For any value not found in drawing, use "Not Found" (not null or empty string).
 Pay special attention to distinguishing primary material specs from reference specs.
 """
-        model = genai.GenerativeModel('gemini-pro-vision') # Use a stable vision model
+        model = genai.GenerativeModel('gemini-1.5-pro') # Use latest pro model
         
         prompt = f"""
         Analyze the following text extracted from a technical engineering drawing. Your task is to find three specific pieces of information: the part number, the material standard, and the grade.
@@ -2028,7 +2066,7 @@ Pay special attention to distinguishing primary material specs from reference sp
 
         # --- Step 3: Call Gemini API with vision model ---
         try:
-            model = genai.GenerativeModel('gemini-pro-vision')  # Use stable vision model
+            model = genai.GenerativeModel('gemini-1.5-pro')  # Use latest pro model
             response = model.generate_content([prompt, full_text])
             
             if response and response.text:
@@ -2336,7 +2374,7 @@ def analyze_image_with_gemini_vision(pdf_bytes):
         logger.info(f"Converted PDF to {len(page_images)} images at 150 DPI")
 
         # Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-1.0-pro-vision')  # Use stable vision model
+        model = genai.GenerativeModel('gemini-1.5-pro')  # Use latest pro model
         for i, page in enumerate(page_images):
             logger.info(f"Processing page {i+1} with Gemini Vision...")
             
