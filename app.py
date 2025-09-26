@@ -407,37 +407,7 @@ def get_material_from_standard(standard, grade):
         return "Not Found"
 
 
-def extract_part_number(text):
-    """
-    Extract part number specifically for standardized format: 7718817C1
-    """
-    try:
-        # Patterns for specific part number format
-        patterns = [
-            r'STAMP\s+PN\s*["\']?\s*(\d{7}[Cc]\d)\b',  # STAMP PN "7718817C1"
-            r'PART\s+NO\.?\s*[:]?\s*(\d{7}[Cc]\d)\b',  # PART NO: 7718817C1
-            r'\b(\d{7}[Cc]\d)\b',  # Standalone format
-            r'7718817[Cc]1'  # Direct match for specific number
-        ]
-        
-        # Try each pattern in order
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE)
-            if match:
-                part_num = match.group(1).upper()  # Convert 'c' to 'C'
-                logging.info(f"Part number found: {part_num}")
-                return part_num
-        
-        # If no match found, try direct string match
-        if "7718817C1" in text.upper():
-            return "7718817C1"
-        
-        return "Not Found"
-        
-    except Exception as e:
-        logging.error(f"Error extracting part number: {e}")
-        return "Not Found"
-
+    
 
 from flask_cors import CORS
 import base64
@@ -463,8 +433,10 @@ import math
 # --- Dimension and Coordinate Extraction Functions ---
 def extract_dimensions_from_text(text):
     """
-    Enhanced dimension extraction specifically for standardized PDF format
+    Extract dimensions from the PDF text using regex patterns.
+    Handles various formats and common OCR variations.
     """
+    # Initialize results dictionary with default values
     dimensions = {
         "id1": "Not Found",
         "id2": "Not Found",
@@ -477,24 +449,12 @@ def extract_dimensions_from_text(text):
     }
 
     try:
-        # Clean text
+        # Clean the text and normalize spacing
         text = clean_text_encoding(text)
+        
+        # Enhanced cleaning for specific drawing formats
         text = text.replace('HOSE ID =', 'HOSE ID = ')  # Ensure space after equals
         text = re.sub(r'(\d)\s*=\s*(\d)', r'\1 = \2', text)  # Normalize equals spacing
-        
-        # Direct string matches for known patterns
-        direct_matches = {
-            'id1': ['HOSE ID = 18.4', 'INSIDE DIAMETER = 18.4'],
-            'centerline_length': ['APPROX CTRLINE LENGTH = 489.67', 'CENTERLINE LENGTH = 489.67']
-        }
-        
-        # Try direct matches first
-        for dim_key, patterns in direct_matches.items():
-            for pattern in patterns:
-                if pattern in text:
-                    value = pattern.split('=')[1].strip()
-                    dimensions[dim_key] = value
-                    logging.info(f"Direct match found for {dim_key}: {value}")
         
         # Replace common OCR errors
         text = text.replace('0/', 'Ø').replace('O/', 'Ø').replace('⌀', 'Ø')
@@ -2185,52 +2145,10 @@ def upload_and_analyze():
             logging.warning("Uploaded file is empty")
             return jsonify({"error": "Uploaded file is empty"}), 400
             
-        # 4. Extract text from PDF
-        try:
-            pdf_document = fitz.open("pdf", pdf_bytes)
-            full_text = ""
-            for page in pdf_document:
-                full_text += page.get_text()
-            pdf_document.close()
-            
-            # Store the cleaned text for processing
-            cleaned_text = clean_text_encoding(full_text)
-            logging.info("Successfully extracted text from PDF")
-        except Exception as e:
-            logging.error(f"Error extracting text from PDF: {e}")
-            return jsonify({"error": "Failed to extract text from PDF"}), 500
+        # 4. Analyze drawing
+        final_results = analyze_drawing(pdf_bytes)
         
-        # 5. Perform both AI analysis and regex extraction
-        try:
-            # AI analysis for high-level understanding
-            ai_results = analyze_drawing_with_gemini(pdf_bytes)
-            
-            # Direct regex extraction for specific values
-            regex_results = {
-                "part_number": extract_part_number(cleaned_text),
-                "dimensions": extract_dimensions_from_text(cleaned_text)
-            }
-            
-            # Merge results, preferring regex results for specific fields
-            final_results = {**ai_results}  # Start with AI results
-            
-            # Override with regex results where we have high confidence
-            if regex_results["part_number"] != "Not Found":
-                final_results["part_number"] = regex_results["part_number"]
-            
-            # Merge dimensions, preferring regex values when available
-            final_dimensions = {**ai_results.get("dimensions", {})}
-            for key, value in regex_results["dimensions"].items():
-                if value != "Not Found":
-                    final_dimensions[key] = value
-            final_results["dimensions"] = final_dimensions
-            
-            logging.info("Successfully performed both AI and regex analysis")
-        except Exception as e:
-            logging.error(f"Error in analysis: {e}")
-            return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
-            
-        # 6. Response validation and return
+        # 5. Response validation and return
         if not isinstance(final_results, dict):
             logging.error(f"Invalid analyzer response type: {type(final_results)}")
             return jsonify({"error": "Internal error: Invalid response format"}), 500

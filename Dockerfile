@@ -4,11 +4,9 @@ FROM python:3.11-slim
 # Set working directory in the container
 WORKDIR /app
 
-# Install system dependencies including Poppler and Tesseract OCR
+# Install system dependencies including Poppler
 RUN apt-get update && apt-get install -y \
     poppler-utils \
-    tesseract-ocr \
-    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements file and material database
