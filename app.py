@@ -1579,7 +1579,7 @@ def analyze_drawing(pdf_bytes):
             os.remove(temp_pdf_path)
         
         # 2. Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-1.0-pro-vision')  # Use stable vision model
+        model = genai.GenerativeModel('gemini-pro-vision')  # Use stable vision model
         all_data = []
         
         for i, page in enumerate(page_images):
@@ -1698,7 +1698,7 @@ def analyze_drawing(pdf_bytes):
         results["error"] = f"Analysis failed: {str(e)}"
         return results
     logging.info("Starting data parsing with Gemini...")
-    model = genai.GenerativeModel('gemini-1.0-pro-vision')  # Use stable vision model
+    model = genai.GenerativeModel('gemini-pro-vision')  # Use stable vision model
     
     # --- UPDATED PROMPT ---
     prompt = f"""
@@ -2033,7 +2033,10 @@ Pay special attention to distinguishing primary material specs from reference sp
             
             if response and response.text:
                 # Clean the response to ensure it's valid JSON
-                cleaned_response = re.sub(r'```json\s*|\s*```', '', response.text.strip())
+                if isinstance(response.text, list):
+                    cleaned_response = re.sub(r'```json\s*|\s*```', '', "\n".join(response.text).strip())
+                else:
+                    cleaned_response = re.sub(r'```json\s*|\s*```', '', response.text.strip())
                 
                 try:
                     # Parse the JSON response
