@@ -22,7 +22,12 @@ def extract_part_number(text):
         # If no match found, try direct string match
         if "7718817C1" in text.upper():
             return "7718817C1"
-            return 489.67
+            
+        return "Not Found"
+        
+    except Exception as e:
+        logging.error(f"Error extracting part number: {e}")
+        return "Not Found"
         
         # Convert points to coordinate tuples and extract radii
         if isinstance(points, list):
