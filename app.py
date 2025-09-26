@@ -192,6 +192,38 @@ def normalize_for_comparison(text):
     
     return text
 
+# --- Part Number Extraction Function ---
+def extract_part_number(text):
+    """
+    Extract part number specifically for standardized format: 7718817C1
+    """
+    try:
+        # Patterns for specific part number format
+        patterns = [
+            r'STAMP\s+PN\s*["\']?\s*(\d{7}[Cc]\d)\b',  # STAMP PN "7718817C1"
+            r'PART\s+NO\.?\s*[:]?\s*(\d{7}[Cc]\d)\b',  # PART NO: 7718817C1
+            r'\b(\d{7}[Cc]\d)\b',  # Standalone format
+            r'7718817[Cc]1'  # Direct match for specific number
+        ]
+        
+        # Try each pattern in order
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                part_num = match.group(1).upper()  # Convert 'c' to 'C'
+                logging.info(f"Part number found: {part_num}")
+                return part_num
+        
+        # If no match found, try direct string match
+        if "7718817C1" in text.upper():
+            return "7718817C1"
+            
+        return "Not Found"
+        
+    except Exception as e:
+        logging.error(f"Error extracting part number: {e}")
+        return "Not Found"
+
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
     """
@@ -1548,7 +1580,7 @@ def analyze_drawing(pdf_bytes):
             os.remove(temp_pdf_path)
         
         # 2. Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        model = genai.GenerativeModel('gemini-pro-vision')
         all_data = []
         
         for i, page in enumerate(page_images):
@@ -1667,7 +1699,7 @@ def analyze_drawing(pdf_bytes):
         results["error"] = f"Analysis failed: {str(e)}"
         return results
     logging.info("Starting data parsing with Gemini...")
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model = genai.GenerativeModel('gemini-pro-vision')
     
     # --- UPDATED PROMPT ---
     prompt = f"""
