@@ -1482,8 +1482,8 @@ def image_to_base64(image):
 # --- Enhanced drawing analysis using Gemini multimodal capabilities ---
 def analyze_drawing(pdf_bytes):
     """
-    Analyze engineering drawing using Gemini's multimodal capabilities.
-    Performs OCR, text extraction, and structured data parsing in a single pipeline.
+    Analyze engineering drawing using Gemini's multimodal capabilities with OCR fallback.
+    Attempts to use Gemini first, falls back to OCR and regex extraction if Gemini fails.
     
     Args:
         pdf_bytes: Raw PDF file content in bytes
@@ -1498,11 +1498,10 @@ def analyze_drawing(pdf_bytes):
             - coordinates for development length
             - other metadata
             
-    Raises:
-        ValueError: If pdf_bytes is None or empty
-        pdf2image.exceptions.PDFPageCountError: If PDF has no pages or is invalid
-        json.JSONDecodeError: If AI response cannot be parsed as JSON
-        genai.types.generation_types.BlockedPromptException: If content violates AI policy
+    The function will attempt to use Gemini first, but if it fails, it will:
+    1. Fall back to pytesseract OCR
+    2. Use regex patterns to extract information
+    3. Continue processing with reduced capabilities
     """
     if not pdf_bytes:
         raise ValueError("PDF content cannot be empty")
@@ -1531,17 +1530,33 @@ def analyze_drawing(pdf_bytes):
             temp_pdf.write(pdf_bytes)
             temp_pdf_path = temp_pdf.name
             
-        try:
-            page_images = convert_from_path(temp_pdf_path, dpi=150)
-            logger.info(f"Converted PDF to {len(page_images)} images")
-        finally:
-            os.remove(temp_pdf_path)
-        
-        # 2. Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-1.5-pro')
-        all_data = []
-        
-        for i, page in enumerate(page_images):
+        # Function to process with OCR fallback
+        def process_with_ocr_fallback(image):
+            """Process a single image with OCR when Gemini fails"""
+            try:
+                ocr_text = pytesseract.image_to_string(image)
+                return {
+                    "part_number": extract_part_number(ocr_text),
+                    "description": "Not Found",
+                    "standard": "Not Found",
+                    "grade": "Not Found",
+                    "dimensions": extract_dimensions_from_text(ocr_text),
+                    "coordinates": extract_coordinates_from_text(ocr_text)
+                }
+            except Exception as e:
+                logger.error(f"OCR fallback failed: {e}")
+                return None
+            
+            try:
+                page_images = convert_from_path(temp_pdf_path, dpi=150)
+                logger.info(f"Converted PDF to {len(page_images)} images")
+            finally:
+                os.remove(temp_pdf_path)
+            
+            # 2. Process each page with Gemini Vision and OCR fallback
+            model = genai.GenerativeModel('gemini-2.5-pro')
+            all_data = []
+            gemini_failed = False        for i, page in enumerate(page_images):
             logger.info(f"Processing page {i+1} with Gemini Vision...")
             
             # Prepare image for Gemini
@@ -1987,7 +2002,7 @@ Pay special attention to distinguishing primary material specs from reference sp
 
         # --- Step 3: Call Gemini API with vision model ---
         try:
-            model = genai.GenerativeModel('gemini-1.5-pro')
+            model = genai.GenerativeModel('gemini-2.5-pro')
             response = model.generate_content([prompt, full_text])
             
             if response and response.text:
@@ -2250,7 +2265,7 @@ def analyze_image_with_gemini_vision(pdf_bytes):
         logger.info(f"Converted PDF to {len(page_images)} images at 150 DPI")
 
         # Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        model = genai.GenerativeModel('gemini-2.5-pro')
         for i, page in enumerate(page_images):
             logger.info(f"Processing page {i+1} with Gemini Vision...")
             
