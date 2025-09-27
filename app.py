@@ -1551,28 +1551,10 @@ def image_to_base64(image):
 def analyze_drawing(pdf_bytes):
     """
     Analyze engineering drawing using Gemini's multimodal capabilities with OCR fallback.
-    Attempts to use Gemini first, falls back to OCR and regex extraction if Gemini fails.
-    
-    Args:
-        pdf_bytes: Raw PDF file content in bytes
-    
-    Returns:
-        dict: Structured data containing drawing information including:
-            - part_number
-            - description
-            - standard
-            - grade
-            - dimensions (id, od, thickness, etc.)
-            - coordinates for development length
-            - other metadata
-            
-    The function will attempt to use Gemini first, but if it fails, it will:
-    1. Fall back to pytesseract OCR
-    2. Use regex patterns to extract information
-    3. Continue processing with reduced capabilities
     """
     if not pdf_bytes:
         raise ValueError("PDF content cannot be empty")
+    
     results = {
         "part_number": "Not Found",
         "description": "Not Found",
@@ -1591,13 +1573,18 @@ def analyze_drawing(pdf_bytes):
         "error": None
     }
     
+    # Initialize variables outside try block to avoid scope issues
+    all_data = []
+    page_images = []
+    temp_pdf_path = None
+    
     try:
         # 1. Convert PDF to images
         logger.info("Converting PDF to images...")
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
             temp_pdf.write(pdf_bytes)
             temp_pdf_path = temp_pdf.name
-            
+
         # Function to process with OCR fallback
         def process_with_ocr_fallback(image):
             """Process a single image with OCR when Gemini fails"""
@@ -1619,20 +1606,27 @@ def analyze_drawing(pdf_bytes):
                 logger.error(f"OCR fallback failed: {e}")
                 return None
             
+        try:
+            page_images = convert_from_path(temp_pdf_path, dpi=150)
+            logger.info(f"Converted PDF to {len(page_images)} images")
+        except Exception as e:
+            logger.error(f"PDF to image conversion failed: {e}")
+            # Try alternative conversion method
             try:
-                page_images = convert_from_path(temp_pdf_path, dpi=150)
-                logger.info(f"Converted PDF to {len(page_images)} images")
-            finally:
-                os.remove(temp_pdf_path)
+                page_images = convert_from_bytes(pdf_bytes, dpi=150)
+                logger.info(f"Converted PDF using bytes method: {len(page_images)} images")
+            except Exception as e2:
+                logger.error(f"All PDF conversion methods failed: {e2}")
+                raise e2
             
-            # 2. Process each page with Gemini Vision and OCR fallback
-            model = genai.GenerativeModel('gemini-2.5-pro')
-            all_data = []
-            gemini_failed = False
-            logger.info("Starting Gemini Vision processing...")
-            
-            for i, page in enumerate(page_images):
-                logger.info(f"Processing page {i+1} with Gemini Vision...")
+        # 2. Process each page with Gemini Vision and OCR fallback
+        model = genai.GenerativeModel('gemini-pro-vision')  # Use correct model name
+        all_data = []  # Re-initialize here to ensure it's defined
+        gemini_failed = False
+        logger.info("Starting Gemini Vision processing...")
+        
+        for i, page in enumerate(page_images):
+            logger.info(f"Processing page {i+1} with Gemini Vision...")
             
             # Prepare image for Gemini
             img_byte_arr = io.BytesIO()
@@ -2172,7 +2166,7 @@ Important: Report numeric values WITHOUT units. Example: for "HOSE ID = 19.05 MM
 For any value not found in drawing, use "Not Found" (not null or empty string).
 Pay special attention to distinguishing primary material specs from reference specs.
 """
-        model = genai.GenerativeModel('gemini-1.5-flash') # Use a fast and capable model
+        model = genai.GenerativeModel('gemini-pro-vision') # Use vision-capable model
         
         prompt = f"""
         Analyze the following text extracted from a technical engineering drawing. Your task is to find three specific pieces of information: the part number, the material standard, and the grade.
@@ -2456,7 +2450,7 @@ def analyze_image_with_gemini_vision(pdf_bytes):
         logger.info(f"Converted PDF to {len(page_images)} images at 150 DPI")
 
         # Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-2.5-pro')
+        model = genai.GenerativeModel('gemini-pro-vision')
         for i, page in enumerate(page_images):
             logger.info(f"Processing page {i+1} with Gemini Vision...")
             
