@@ -27,6 +27,7 @@ import fitz  # PyMuPDF
 import pdf2image
 from pdf2image import convert_from_path, convert_from_bytes
 import google.generativeai as genai
+from gemini_helper import process_pages_with_vision_or_ocr
 
 # --- Helper Functions ---
 def process_with_gemini(image_path):
@@ -1551,6 +1552,7 @@ def image_to_base64(image):
 def analyze_drawing(pdf_bytes):
     """
     Analyze engineering drawing using Gemini's multimodal capabilities with OCR fallback.
+    Uses automated model discovery and robust fallback to OCR.
     """
     if not pdf_bytes:
         raise ValueError("PDF content cannot be empty")
@@ -1579,114 +1581,16 @@ def analyze_drawing(pdf_bytes):
     temp_pdf_path = None
     
     try:
-        # 1. Convert PDF to images
+        # Convert PDF to images and process with Gemini and OCR fallback
         logger.info("Converting PDF to images...")
         with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
             temp_pdf.write(pdf_bytes)
             temp_pdf_path = temp_pdf.name
-
-        # Function to process with OCR fallback
-        def process_with_ocr_fallback(image):
-            """Process a single image with OCR when Gemini fails"""
-            try:
-                ocr_text = pytesseract.image_to_string(image)
-                # Parse part number using regex patterns
-                part_pattern = r'(?i)(?:PART|DWG|DRAWING)[-\s]*(?:NO\.?|NUM\.?|NUMBER)?[-\s.:]*?(\d{7}C\d)\b'
-                part_match = re.search(part_pattern, ocr_text)
-                part_number = part_match.group(1) if part_match else "Not Found"
-                return {
-                    "part_number": part_number,
-                    "description": "Not Found",
-                    "standard": "Not Found",
-                    "grade": "Not Found",
-                    "dimensions": extract_dimensions_from_text(ocr_text),
-                    "coordinates": extract_coordinates_from_text(ocr_text)
-                }
-            except Exception as e:
-                logger.error(f"OCR fallback failed: {e}")
-                return None
-            
-        try:
-            page_images = convert_from_path(temp_pdf_path, dpi=150)
-            logger.info(f"Converted PDF to {len(page_images)} images")
-        except Exception as e:
-            logger.error(f"PDF to image conversion failed: {e}")
-            # Try alternative conversion method
-            try:
-                page_images = convert_from_bytes(pdf_bytes, dpi=150)
-                logger.info(f"Converted PDF using bytes method: {len(page_images)} images")
-            except Exception as e2:
-                logger.error(f"All PDF conversion methods failed: {e2}")
-                raise e2
-            
-        # 2. Process each page with Gemini Vision and OCR fallback
-        model = genai.GenerativeModel('gemini-pro-vision')  # Use correct model name
-        all_data = []  # Re-initialize here to ensure it's defined
-        gemini_failed = False
-        logger.info("Starting Gemini Vision processing...")
         
-        for i, page in enumerate(page_images):
-            logger.info(f"Processing page {i+1} with Gemini Vision...")
+        # Process pages using our helper module
+        all_data = process_pages_with_vision_or_ocr(temp_pdf_path)
             
-            # Prepare image for Gemini
-            img_byte_arr = io.BytesIO()
-            page.save(img_byte_arr, format='PNG')
-            img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
-            
-            prompt = """Analyze this engineering drawing and extract all relevant information.
-            Return a JSON object with the following structure:
-            {
-                "part_number": "The drawing number or part number",
-                "description": "Description or title of the part",
-                "standard": "Material standard specification",
-                "grade": "Material grade",
-                "dimensions": {
-                    "id1": "First inside diameter value",
-                    "id2": "Second inside diameter value (if exists)",
-                    "od1": "First outside diameter value",
-                    "od2": "Second outside diameter value (if exists)",
-                    "thickness": "Wall thickness",
-                    "centerline_length": "Centerline length"
-                },
-                "coordinates": [
-                    {"point": "P0", "x": 0.0, "y": 0.0, "z": 0.0},
-                    {"point": "P1", "x": 1.0, "y": 2.0, "z": 3.0}
-                ]
-            }
-            Include all measurement values in millimeters (mm).
-            If a value is not found, use "Not Found".
-            Focus on text near dimension lines and in the title block."""
-            
-            # Process with Gemini
-            image_part = [{"mime_type": "image/png", "data": img_base64}]
-            response = model.generate_content([prompt, *image_part])
-            
-            if response and response.text:
-                try:
-                    cleaned_text = response.text.strip().replace("```json", "").replace("```", "").strip()
-                    page_data = json.loads(cleaned_text)
-                    all_data.append(page_data)
-                    logger.info(f"Successfully parsed data from page {i+1}")
-                except json.JSONDecodeError as e:
-                    logger.error(f"Failed to parse JSON from page {i+1}: {e}")
-                    gemini_failed = True
-        
-        # Initialize OCR processing variables
-        if 'gemini_failed' not in locals():
-            gemini_failed = False
-        gemini_failed = gemini_failed or not all_data
-        page_images = []
-        
-        # Process images with OCR if Gemini failed
-        if gemini_failed:
-            ocr_results = []
-            for page in page_images:
-                result = process_with_ocr_fallback(page)
-                if result:
-                    ocr_results.append(result)
-            all_data = ocr_results
-
-        # 3. Combine data from all pages
+        # If we have data from the pages, process it        # 3. Combine data from all pages
         if all_data:
             # Use the most complete data set as base
             def completeness_score(data):
@@ -1837,148 +1741,83 @@ def analyze_drawing_with_gemini(pdf_bytes):
     }
     
     try:
-        # Convert PDF to images for better analysis
-        images = convert_pdf_to_images(pdf_bytes)
-        if not images:
-            raise Exception("Failed to convert PDF to images")
-
-        # Initialize variables
-        page_images = []
-        all_data = []
-        gemini_failed = False
-        logger.info("Starting Gemini image processing...")
-
-        # 1. Process each page with Gemini first
-        for page_image in images:
-            # Save the image temporarily
-            temp_image_path = "temp_page.png"
-            cv2.imwrite(temp_image_path, page_image)
+        # Process the drawing using helper module's functionality
+        logger.info("Processing drawing with Gemini and OCR fallback...")
+        
+        # Convert PDF to temporary file and process
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
+            temp_pdf.write(pdf_bytes)
+            temp_pdf_path = temp_pdf.name
             
-            try:
-                # Try with Gemini first
-                data = process_with_gemini(temp_image_path)
-                if data:
-                    all_data.append(data)
-                    page_images.append(page_image)
-                else:
-                    gemini_failed = True
-                    logger.warning("Gemini processing returned no data")
-            except Exception as e:
-                logger.error(f"Gemini processing failed: {str(e)}")
-                gemini_failed = True
+        # Process the pages using our helper module
+        all_data = process_pages_with_vision_or_ocr(temp_pdf_path)
 
-            # Clean up temp file
-            if os.path.exists(temp_image_path):
-                os.remove(temp_image_path)
-
-        # 2. If Gemini failed, fall back to OCR
-        if gemini_failed:
-            logger.info("Falling back to OCR processing")
-            results['processing_method'] = 'ocr'
-            
-            # Extract text using both PyMuPDF and OCR
-            pdf_document = fitz.open("pdf", pdf_bytes)
-            full_text = []
-            block_texts = []
-            
-            # Process each page
-            for page_num, page in enumerate(pdf_document):
-                # Extract text using PyMuPDF
-                page_text = page.get_text()
-                full_text.append(page_text)
-                
-                # Get text blocks for structural analysis
-                blocks = page.get_text("blocks")
-                for block in blocks:
-                    block_text = block[4].strip()
-                    if block_text:
-                        block_texts.append(block_text)
-                        logger.debug(f"Block: {block_text}")
-            
-            # Apply OCR to all pages
-            ocr_texts = []
-            for img in images:
-                # First try with default settings
-                ocr_text = pytesseract.image_to_string(img)
-                if ocr_text.strip():
-                    ocr_texts.append(ocr_text)
-
-            # Combine all text sources
-            combined_text = "\n".join(full_text + ocr_texts)
-            logger.info(f"Combined text length after OCR: {len(combined_text)}")
-
-            # Process the combined text
-            try:
-                processed_data = process_ocr_text(combined_text)
-                if processed_data:
-                    all_data.append(processed_data)
-            except Exception as e:
-                logger.error(f"Failed to process OCR text: {str(e)}")
-                return results
-
-        # 3. Combine and score results if we have any data
+        # If we have data, format and return results
         if all_data:
-            # Define completeness scoring function
+            # Use the most complete data as our base
             def completeness_score(data):
                 score = 0
                 # Check top-level fields
-                top_level_fields = ['part_number', 'description', 'standard', 'grade', 'material']
-                score += sum(1 for k in top_level_fields if data.get(k) and data[k] != "Not Found")
-                
-                # Check measurements
-                measurements = ['od', 'thickness', 'centerline_length', 'development_length']
-                score += sum(1 for k in measurements if data.get(k) and data[k] != "Not Found")
-                
-                # Check operating conditions
-                conditions = ['burst_pressure', 'working_temperature', 'working_pressure']
-                score += sum(1 for k in conditions if data.get(k) and data[k] != "Not Found")
-                
+                score += sum(1 for k, v in data.items() if v != "Not Found" and k not in ["dimensions", "coordinates"])
+                # Check dimensions
+                if isinstance(data.get("dimensions"), dict):
+                    score += sum(1 for v in data["dimensions"].values() if v != "Not Found")
                 # Check coordinates
-                if isinstance(data.get('coordinates'), list):
-                    score += len(data['coordinates'])
-                
+                if isinstance(data.get("coordinates"), list):
+                    score += len(data["coordinates"])
                 return score
-
-            # Find the most complete data set
-            most_complete = max(all_data, key=completeness_score)
+                
+            # Get the most complete result set
+            best_data = max(all_data, key=completeness_score)
             
-            # Merge data from all sources, preferring most complete but filling gaps
-            for key in results.keys():
-                if key in most_complete and most_complete[key] != "Not Found":
-                    results[key] = most_complete[key]
-                else:
-                    # Try to fill in from other data sets
-                    for data in all_data:
-                        if data.get(key) and data[key] != "Not Found":
-                            results[key] = data[key]
-                            break
-
-            # Special handling for coordinates
+            # Update results with the best data
+            results.update(best_data)
+            
+            # Ensure proper field types
+            if not isinstance(results.get("dimensions"), dict):
+                results["dimensions"] = {}
+            if not isinstance(results.get("coordinates"), list):
+                results["coordinates"] = []
+            
+            # Convert numeric values
+            for key in ["id1", "id2", "od1", "od2", "thickness", "centerline_length"]:
+                if results["dimensions"].get(key) and results["dimensions"][key] != "Not Found":
+                    try:
+                        results["dimensions"][key] = float(str(results["dimensions"][key]).replace(",", "."))
+                    except (ValueError, TypeError):
+                        results["dimensions"][key] = "Not Found"
+            
+            # Merge coordinates from all pages
             all_coordinates = []
             for data in all_data:
-                if isinstance(data.get('coordinates'), list):
-                    all_coordinates.extend(data['coordinates'])
-            if all_coordinates:
-                # Remove duplicates while preserving order
-                seen = set()
-                results['coordinates'] = []
-                for coord in all_coordinates:
-                    coord_tuple = tuple(sorted(coord.items()))
-                    if coord_tuple not in seen:
-                        seen.add(coord_tuple)
-                        results['coordinates'].append(coord)
+                if isinstance(data.get("coordinates"), list):
+                    all_coordinates.extend(data["coordinates"])
+            results["coordinates"] = all_coordinates
 
+        logger.info("Drawing analysis completed successfully")
         return results
-
+    
     except Exception as e:
-        logger.error(f"Error in analyze_drawing_with_gemini: {str(e)}")
-        results['error'] = str(e)
+        logger.error(f"Drawing analysis failed: {str(e)}")
+        results["error"] = f"Analysis failed: {str(e)}"
         return results
+    finally:
+        # Clean up any temporary files
+        if 'temp_pdf_path' in locals() and os.path.exists(temp_pdf_path):
+            try:
+                os.unlink(temp_pdf_path)
+            except Exception as e:
+                logger.warning(f"Failed to clean up temporary PDF file: {e}")
+    
 
-        # Clean and normalize text
+    # Clean and normalize text (post-processing outside the above try/except)
+    try:
         combined_text = clean_text_encoding(combined_text)
         combined_text = re.sub(r'\s+', ' ', combined_text)
         logger.info("Text cleaned and normalized")
+    except Exception:
+        # If cleaning fails, keep combined_text as-is (or empty)
+        combined_text = combined_text if 'combined_text' in locals() else ''
         
         # Extract part number (multiple patterns)
         part_patterns = [
@@ -2485,10 +2324,14 @@ def analyze_image_with_gemini_vision(pdf_bytes):
     finally:
         # Clean up temporary file
         if temp_pdf_path and os.path.exists(temp_pdf_path):
+            # Try unlink first, then fallback to remove if necessary
             try:
-                os.remove(temp_pdf_path)
-            except Exception as e:
-                logger.warning(f"Failed to remove temporary file: {e}")
+                os.unlink(temp_pdf_path)
+            except Exception:
+                try:
+                    os.remove(temp_pdf_path)
+                except Exception as e:
+                    logger.warning(f"Failed to remove temporary file: {e}")
 
 def extract_text_from_pdf(pdf_bytes):
     """
