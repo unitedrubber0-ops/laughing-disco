@@ -1678,6 +1678,8 @@ def analyze_drawing(pdf_bytes):
                     gemini_failed = True
         
         # Initialize OCR processing variables
+        if 'gemini_failed' not in locals():
+            gemini_failed = False
         gemini_failed = gemini_failed or not all_data
         page_images = []
         
