@@ -2691,8 +2691,9 @@ def upload_and_analyze():
         try:
             standard = final_results.get("standard", "Not Found")
             grade = final_results.get("grade", "Not Found")
+            ocr_text = extract_text_from_pdf(pdf_bytes) if pdf_bytes else ""
             # Handle standards and remarks
-            remark, suggested_standard = get_standards_remark(text, standard)
+            remark, suggested_standard = get_standards_remark(ocr_text, standard)
             if remark:
                 final_results['remark'] = remark
                 standard = suggested_standard
