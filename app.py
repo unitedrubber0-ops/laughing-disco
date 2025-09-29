@@ -1599,6 +1599,10 @@ def analyze_drawing(pdf_bytes):
         if all_data:
             # Use the most complete data set as base
             def completeness_score(data):
+                if not isinstance(data, dict):
+                    logger.warning(f"Expected dict but got {type(data)}")
+                    return 0
+                    
                 score = 0
                 # Check top-level fields
                 score += sum(1 for k, v in data.items() if v != "Not Found" and k not in ["dimensions", "operating_conditions", "coordinates"])
@@ -1614,6 +1618,29 @@ def analyze_drawing(pdf_bytes):
                 return score
             
             results = max(all_data, key=completeness_score)
+            
+            # Log the structure of results for debugging
+            logger.info(f"Type of results: {type(results)}")
+            logger.info(f"Keys in results (if dict): {results.keys() if isinstance(results, dict) else results}")
+            logger.info(f"Type of dimensions: {type(results.get('dimensions'))}")
+            
+            # Convert dimensions list to dict if needed
+            if isinstance(results.get("dimensions"), list):
+                logger.warning("Converting dimensions list to dict")
+                flat_dims = {}
+                for d in results["dimensions"]:
+                    if isinstance(d, dict):
+                        flat_dims.update(d)
+                results["dimensions"] = flat_dims
+            
+            # Convert operating_conditions list to dict if needed
+            if isinstance(results.get("operating_conditions"), list):
+                logger.warning("Converting operating_conditions list to dict")
+                flat_ops = {}
+                for d in results["operating_conditions"]:
+                    if isinstance(d, dict):
+                        flat_ops.update(d)
+                results["operating_conditions"] = flat_ops
             
             # Ensure all required fields exist
             if "dimensions" not in results:
@@ -1779,6 +1806,29 @@ def analyze_drawing_with_gemini(pdf_bytes):
                 
             # Get the most complete result set
             best_data = max(all_data, key=completeness_score)
+            
+            # Log data structure for debugging
+            logger.info(f"Type of best_data: {type(best_data)}")
+            logger.info(f"Keys in best_data (if dict): {best_data.keys() if isinstance(best_data, dict) else best_data}")
+            logger.info(f"Type of dimensions: {type(best_data.get('dimensions'))}")
+            
+            # Convert dimensions list to dict if needed
+            if isinstance(best_data.get("dimensions"), list):
+                logger.warning("Converting dimensions list to dict")
+                flat_dims = {}
+                for d in best_data["dimensions"]:
+                    if isinstance(d, dict):
+                        flat_dims.update(d)
+                best_data["dimensions"] = flat_dims
+            
+            # Convert operating_conditions list to dict if needed
+            if isinstance(best_data.get("operating_conditions"), list):
+                logger.warning("Converting operating_conditions list to dict")
+                flat_ops = {}
+                for d in best_data["operating_conditions"]:
+                    if isinstance(d, dict):
+                        flat_ops.update(d)
+                best_data["operating_conditions"] = flat_ops
             
             # Update results with the best data
             results.update(best_data)
