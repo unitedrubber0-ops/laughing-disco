@@ -1587,8 +1587,13 @@ def analyze_drawing(pdf_bytes):
             temp_pdf.write(pdf_bytes)
             temp_pdf_path = temp_pdf.name
         
-        # Process pages using our helper module
-        all_data = process_pages_with_vision_or_ocr(temp_pdf_path)
+        # Process pages using our helper module with required params
+        drawing_prompt = "Analyze this technical drawing and extract part number, description, material, dimensions, operating conditions and any coordinate points."
+        all_data = process_pages_with_vision_or_ocr(
+            pages=temp_pdf_path,
+            prompt=drawing_prompt,
+            ocr_fallback_fn=process_ocr_text
+        )
             
         # If we have data from the pages, process it        # 3. Combine data from all pages
         if all_data:
@@ -1749,8 +1754,13 @@ def analyze_drawing_with_gemini(pdf_bytes):
             temp_pdf.write(pdf_bytes)
             temp_pdf_path = temp_pdf.name
             
-        # Process the pages using our helper module
-        all_data = process_pages_with_vision_or_ocr(temp_pdf_path)
+        # Process the pages using our helper module with required params
+        drawing_prompt = "Analyze this technical drawing and extract part number, description, material, dimensions, operating conditions and any coordinate points."
+        all_data = process_pages_with_vision_or_ocr(
+            pages=temp_pdf_path,
+            prompt=drawing_prompt,
+            ocr_fallback_fn=process_ocr_text
+        )
 
         # If we have data, format and return results
         if all_data:
