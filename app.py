@@ -48,7 +48,29 @@ def process_with_gemini(image_path):
         
         if response and response.text:
             cleaned_text = response.text.strip().replace('```json', '').replace('```', '').strip()
-            return json.loads(cleaned_text)
+            try:
+                results = json.loads(cleaned_text)
+                
+                # Post-process standards
+                if 'standard' in results:
+                    std = results['standard']
+                    if isinstance(std, str) and 'F-1' in std and 'F-30' in std:
+                        results['standard'] = 'MPAPS F-30'
+                        results['standards_note'] = 'Drawing shows both F-1 and F-30 standards'
+                
+                # Normalize measurements
+                if 'working_pressure' in results and results['working_pressure'] != 'Not Found':
+                    if not results['working_pressure'].lower().endswith('kpag'):
+                        results['working_pressure'] = f"{results['working_pressure']} kPag"
+                
+                if 'weight' in results and results['weight'] != 'Not Found':
+                    if not results['weight'].lower().endswith('kg'):
+                        results['weight'] = f"{results['weight']} KG"
+                
+                return results
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse Gemini response: {e}")
+                return None
     except Exception as e:
         logger.error(f"Error in process_with_gemini: {str(e)}")
         return None
@@ -83,20 +105,45 @@ def process_ocr_text(text):
         if part_match:
             result["part_number"] = part_match.group(0)
         
-        # Extract description
-        desc_match = re.search(r'HOSE[,\s]+(.*?)(?:MPAPS|GRADE|TYPE|END|$)', text, re.IGNORECASE)
-        if desc_match:
-            result["description"] = desc_match.group(1).strip()
+        # Extract description with improved pattern matching
+        desc_patterns = [
+            r'(?:HOSE|HEATER)[,\s]+(.*?)(?=(?:MPAPS|TYPE\s+\d|GRADE\s+\d|\bWP\b|\bID\b|\bOD\b|STANDARD|$))',
+            r'(?:HOSE|HEATER)[,\s]+([^,]+(?:,[^,]+)*?)(?=(?:MPAPS|TYPE\s+\d|GRADE\s+\d|\bWP\b|\bID\b|\bOD\b|STANDARD|$))',
+            r'(?:HOSE|HEATER)[,\s]+(.*?)(?=\d{7}[A-Z]\d|$)'
+        ]
         
-        # Extract standard (MPAPS)
-        std_match = re.search(r'MPAPS\s*F[-\s]*(\d+(?:/F[-\s]*\d+)?)', text)
-        if std_match:
+        description = "Not Found"
+        for pattern in desc_patterns:
+            desc_match = re.search(pattern, text, re.IGNORECASE)
+            if desc_match:
+                desc_text = desc_match.group(1).strip()
+                if len(desc_text) > len(description):
+                    description = desc_text
+        
+        result["description"] = description
+        
+        # Extract standard (MPAPS) with priority to F-30
+        std_match_30 = re.search(r'MPAPS\s*F[-\s]*30', text, re.IGNORECASE)
+        std_match = re.search(r'MPAPS\s*F[-\s]*(\d+(?:/F[-\s]*\d+)?)', text, re.IGNORECASE)
+        
+        if std_match_30:
+            result["standard"] = "MPAPS F-30"
+        elif std_match:
             result["standard"] = f"MPAPS F-{std_match.group(1)}"
         
-        # Extract grade
-        grade_match = re.search(r'(?:GRADE|TYPE)\s*([0-9A-Z]+(?:\s*[0-9A-Z]+)?)', text)
+        # Extract grade with better pattern matching
+        grade_pattern = r'(?:GRADE|TYPE)\s*([0-9][A-Z]|[A-Z][0-9]|[0-9]+[A-Z]+|[A-Z]+[0-9]+)\b'
+        grade_match = re.search(grade_pattern, text, re.IGNORECASE)
+        
         if grade_match:
-            result["grade"] = grade_match.group(1)
+            grade = grade_match.group(1).strip()
+            # Normalize common grade formats
+            if re.match(r'[0-9][A-Z]', grade):
+                result["grade"] = f"{grade[0]}{grade[1]}"
+            elif re.match(r'[A-Z][0-9]', grade):
+                result["grade"] = f"{grade[1]}{grade[0]}"
+            else:
+                result["grade"] = grade
         
         # Extract dimensions
         dim_patterns = {
@@ -110,6 +157,21 @@ def process_ocr_text(text):
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
                 result["dimensions"][key] = match.group(1)
+        
+        # Extract weight
+        weight_match = re.search(r'(?:WEIGHT|WT\.?)\s*[=:]?\s*(\d+(?:\.\d+)?)\s*(?:KG|kg)', text)
+        if weight_match:
+            result["weight"] = f"{weight_match.group(1)} KG"
+        
+        # Extract working pressure
+        wp_match = re.search(r'(?:WORKING PRESSURE|WP)\s*[=:]?\s*(\d+(?:\.\d+)?)\s*(?:KPAG|kPag|KPA|kPa)', text, re.IGNORECASE)
+        if wp_match:
+            result["working_pressure"] = f"{wp_match.group(1)} kPag"
+        
+        # Extract burst pressure if present
+        bp_match = re.search(r'(?:BURST PRESSURE|BP)\s*[=:]?\s*(\d+(?:\.\d+)?)\s*(?:KPAG|kPag|KPA|kPa|BAR)', text, re.IGNORECASE)
+        if bp_match:
+            result["burst_pressure"] = f"{bp_match.group(1)} kPag"
         
         # Extract coordinates if present
         coord_matches = re.findall(r'P\d+\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)', text)
@@ -192,6 +254,26 @@ def load_material_database():
 material_df = load_material_database()
 
 # --- String Normalization Helper ---
+def get_standards_remark(text, standard):
+    """
+    Generate remarks about standards based on text content and extracted standard.
+    Returns tuple of (remark, suggested_standard)
+    """
+    if not text or not standard:
+        return None, standard
+        
+    f1_match = re.search(r'MPAPS\s*F[-\s]*1\b', text, re.IGNORECASE)
+    f30_match = re.search(r'MPAPS\s*F[-\s]*30\b', text, re.IGNORECASE)
+    
+    if f1_match and f30_match:
+        return 'Drawing shows both MPAPS F-1 and F-30 standards', 'MPAPS F-30'
+    elif f1_match and not f30_match:
+        return 'Drawing specifies MPAPS F-1, considered as MPAPS F-30', 'MPAPS F-30'
+    elif standard.startswith('MPAPS F-1'):
+        return 'Standard MPAPS F-1 is considered as MPAPS F-30', 'MPAPS F-30'
+    
+    return None, standard
+
 def normalize_for_comparison(text):
     """
     Converts text to a standardized format for reliable comparison.
@@ -2609,6 +2691,13 @@ def upload_and_analyze():
         try:
             standard = final_results.get("standard", "Not Found")
             grade = final_results.get("grade", "Not Found")
+            # Handle standards and remarks
+            remark, suggested_standard = get_standards_remark(text, standard)
+            if remark:
+                final_results['remark'] = remark
+                standard = suggested_standard
+            
+            # Lookup material using the potentially updated standard
             final_results["material"] = get_material_from_standard(standard, grade)
         except Exception as e:
             logging.error(f"Error in material lookup: {e}")
