@@ -75,6 +75,21 @@ def process_with_vision_model(
         logger.error(f"Vision model processing failed: {e}")
         return None
 
+def extract_text_from_image_wrapper(image):
+    """
+    Wrapper function to extract text from image for OCR fallback.
+    This should be imported from app.py or defined here.
+    """
+    try:
+        import pytesseract
+        from PIL import Image
+        # Basic OCR extraction
+        text = pytesseract.image_to_string(image, config='--psm 1')
+        return text
+    except Exception as e:
+        logger.error(f"OCR extraction failed: {e}")
+        return ""
+
 def process_pages_with_vision_or_ocr(
     pages: Union[str, List[Any]],
     prompt: str,
@@ -139,15 +154,31 @@ def process_pages_with_vision_or_ocr(
             gemini_failed = True
     
     # Fall back to OCR if vision failed
-    if gemini_failed:
+    if gemini_failed or not results:
         logger.info("Processing all pages with OCR fallback")
-        results = []
+        results = []  # Reset results
         for i, page in enumerate(page_images):
-            result = ocr_fallback_fn(page)
-            if result:
-                results.append(result)
-                logger.info(f"Successfully processed page {i+1} with OCR")
-            else:
-                logger.warning(f"OCR failed on page {i+1}")
+            try:
+                # Extract text from image first
+                extracted_text = extract_text_from_image_wrapper(page)
+                # Then process the text with the OCR function
+                result = ocr_fallback_fn(extracted_text)
+                if result:
+                    results.append(result)
+                    logger.info(f"Successfully processed page {i+1} with OCR")
+                else:
+                    logger.warning(f"OCR processing failed on page {i+1}")
+            except Exception as e:
+                logger.error(f"Error in OCR fallback for page {i+1}: {e}")
+                # Create a default result for this page
+                results.append({
+                    "part_number": "Not Found",
+                    "description": "Not Found", 
+                    "standard": "Not Found",
+                    "grade": "Not Found",
+                    "material": "Not Found",
+                    "dimensions": {},
+                    "coordinates": []
+                })
     
     return results

@@ -11,6 +11,7 @@ import tempfile
 import numpy as np
 import unicodedata
 import openpyxl
+import fitz  # PyMuPDF
 from PIL import Image, ImageFilter
 
 try:
@@ -27,7 +28,7 @@ import fitz  # PyMuPDF
 import pdf2image
 from pdf2image import convert_from_path, convert_from_bytes
 import google.generativeai as genai
-from gemini_helper import process_pages_with_vision_or_ocr
+from gemini_helper import process_pages_with_vision_or_ocr, extract_text_from_image_wrapper
 
 # --- Helper Functions ---
 def process_with_gemini(image_path):
@@ -54,25 +55,52 @@ def process_with_gemini(image_path):
 def process_ocr_text(text):
     """
     Process extracted OCR text to structure it into the required format.
+    Always returns a valid dictionary.
     """
     result = {
         "part_number": "Not Found",
         "description": "Not Found",
+        "standard": "Not Found",
+        "grade": "Not Found",
         "material": "Not Found",
         "dimensions": {},
         "operating_conditions": {},
         "coordinates": []
     }
     
+    # If text is not a string, return default result
+    if not isinstance(text, str):
+        logger.warning(f"process_ocr_text received non-string input: {type(text)}")
+        return result
+    
     try:
+        # Clean and normalize text for better pattern matching
+        text = clean_text_encoding(text)
+        
         # Extract part number
         part_match = re.search(r'\d{7}[A-Z]\d', text)
         if part_match:
             result["part_number"] = part_match.group(0)
         
+        # Extract description
+        desc_match = re.search(r'HOSE[,\s]+(.*?)(?:MPAPS|GRADE|TYPE|END|$)', text, re.IGNORECASE)
+        if desc_match:
+            result["description"] = desc_match.group(1).strip()
+        
+        # Extract standard (MPAPS)
+        std_match = re.search(r'MPAPS\s*F[-\s]*(\d+(?:/F[-\s]*\d+)?)', text)
+        if std_match:
+            result["standard"] = f"MPAPS F-{std_match.group(1)}"
+        
+        # Extract grade
+        grade_match = re.search(r'(?:GRADE|TYPE)\s*([0-9A-Z]+(?:\s*[0-9A-Z]+)?)', text)
+        if grade_match:
+            result["grade"] = grade_match.group(1)
+        
         # Extract dimensions
         dim_patterns = {
-            "od": r'OD[:\s]+([\d.]+)',
+            "id1": r'HOSE\s+ID\s*[=:]?\s*(\d+(?:\.\d+)?)',
+            "od1": r'OD\s*[=:]?\s*(\d+(?:\.\d+)?)',
             "thickness": r'THICKNESS[:\s]+([\d.]+)',
             "length": r'LENGTH[:\s]+([\d.]+)'
         }
@@ -1549,6 +1577,118 @@ def image_to_base64(image):
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
 # --- Enhanced drawing analysis using Gemini multimodal capabilities ---
+def analyze_drawing_simple(pdf_bytes):
+    """
+    Simplified analysis function that uses direct PyMuPDF text extraction.
+    """
+    results = {
+        "part_number": "Not Found",
+        "description": "Not Found",
+        "standard": "Not Found", 
+        "grade": "Not Found",
+        "material": "Not Found",
+        "dimensions": {
+            "id1": "Not Found",
+            "id2": "Not Found",
+            "od1": "Not Found",
+            "od2": "Not Found",
+            "thickness": "Not Found",
+            "centerline_length": "Not Found"
+        },
+        "coordinates": [],
+        "error": None
+    }
+    
+    try:
+        # Extract text using PyMuPDF (most reliable method)
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            full_text = ""
+            for page in doc:
+                full_text += page.get_text()
+        
+        logger.info(f"Extracted {len(full_text)} characters from PDF")
+        
+        # Process the text with our OCR processing function
+        processed_data = process_ocr_text(full_text)
+        
+        if processed_data:
+            # Merge the processed data with results
+            for key in ['part_number', 'description', 'standard', 'grade', 'material', 'coordinates']:
+                if key in processed_data and processed_data[key] != "Not Found":
+                    results[key] = processed_data[key]
+            
+            if 'dimensions' in processed_data and processed_data['dimensions']:
+                results['dimensions'].update(processed_data['dimensions'])
+        
+        # Also try to extract dimensions using the dedicated function
+        additional_dims = extract_dimensions_from_text(full_text)
+        if additional_dims:
+            results['dimensions'].update(additional_dims)
+            
+        logger.info("Simple analysis completed successfully")
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error in simple analysis: {str(e)}")
+        results["error"] = f"Analysis failed: {str(e)}"
+        return results
+
+def analyze_drawing_simple(pdf_bytes):
+    """
+    Simplified analysis function that uses direct PyMuPDF text extraction.
+    """
+    results = {
+        "part_number": "Not Found",
+        "description": "Not Found",
+        "standard": "Not Found", 
+        "grade": "Not Found",
+        "material": "Not Found",
+        "dimensions": {
+            "id1": "Not Found",
+            "id2": "Not Found",
+            "od1": "Not Found",
+            "od2": "Not Found",
+            "thickness": "Not Found",
+            "centerline_length": "Not Found"
+        },
+        "coordinates": [],
+        "error": None
+    }
+    
+    try:
+        # Extract text using PyMuPDF (most reliable method)
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            full_text = ""
+            for page in doc:
+                full_text += page.get_text()
+        
+        logger.info(f"Extracted {len(full_text)} characters from PDF")
+        
+        # Process the text with our OCR processing function
+        processed_data = process_ocr_text(full_text)
+        
+        if processed_data:
+            # Merge the processed data with results
+            for key in ['part_number', 'description', 'standard', 'grade', 'material', 'coordinates']:
+                if key in processed_data and processed_data[key] != "Not Found":
+                    results[key] = processed_data[key]
+            
+            if 'dimensions' in processed_data and processed_data['dimensions']:
+                results['dimensions'].update(processed_data['dimensions'])
+        
+        # Also try to extract dimensions using the dedicated function
+        additional_dims = extract_dimensions_from_text(full_text)
+        if additional_dims:
+            results['dimensions'].update(additional_dims)
+            
+        logger.info("Simple analysis completed successfully")
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error in simple analysis: {str(e)}")
+        results["error"] = f"Analysis failed: {str(e)}"
+        return results
+
 def analyze_drawing(pdf_bytes):
     """
     Analyze engineering drawing using Gemini's multimodal capabilities with OCR fallback.
@@ -1557,6 +1697,7 @@ def analyze_drawing(pdf_bytes):
     if not pdf_bytes:
         raise ValueError("PDF content cannot be empty")
     
+    # Initialize default results structure
     results = {
         "part_number": "Not Found",
         "description": "Not Found",
@@ -1575,9 +1716,6 @@ def analyze_drawing(pdf_bytes):
         "error": None
     }
     
-    # Initialize variables outside try block to avoid scope issues
-    all_data = []
-    page_images = []
     temp_pdf_path = None
     
     try:
@@ -1588,12 +1726,59 @@ def analyze_drawing(pdf_bytes):
             temp_pdf_path = temp_pdf.name
         
         # Process pages using our helper module with required params
-        drawing_prompt = "Analyze this technical drawing and extract part number, description, material, dimensions, operating conditions and any coordinate points."
+        drawing_prompt = """Analyze this technical drawing and extract the following information as JSON:
+        - part_number: Look for part numbers like 7718817C1, 4582819C2, etc.
+        - description: Description of the hose or tube
+        - standard: Material standard (e.g., MPAPS F-30, MPAPS F-6032)
+        - grade: Material grade (e.g., 1B, TYPE I)
+        - dimensions: Include id1, od1, thickness, centerline_length
+        - coordinates: Any coordinate points if present
+        
+        Return ONLY valid JSON. If any value is not found, use "Not Found"."""
+        
         all_data = process_pages_with_vision_or_ocr(
             pages=temp_pdf_path,
             prompt=drawing_prompt,
             ocr_fallback_fn=process_ocr_text
         )
+        
+        logger.info(f"Processing completed. Got {len(all_data) if isinstance(all_data, list) else 0} results")
+        
+        # Process the results
+        if not all_data or (isinstance(all_data, list) and len(all_data) == 0):
+            logger.warning("No data returned from processing pipeline")
+            results["error"] = "No data extracted from PDF"
+            return results
+        
+        # Ensure all_data is a list
+        if not isinstance(all_data, list):
+            all_data = [all_data]
+        
+        # Filter out non-dict results
+        valid_results = [item for item in all_data if isinstance(item, dict)]
+        
+        if not valid_results:
+            logger.error("No valid dictionary results found")
+            results["error"] = "No structured data could be extracted"
+            return results
+        
+        # Use the first valid result (you can enhance this to pick the best one)
+        best_result = valid_results[0]
+        
+        # Merge the best result with our default structure
+        for key in results.keys():
+            if key in best_result and best_result[key] != "Not Found":
+                results[key] = best_result[key]
+        
+        # Handle nested structures
+        if "dimensions" in best_result and isinstance(best_result["dimensions"], dict):
+            results["dimensions"].update(best_result["dimensions"])
+        
+        if "coordinates" in best_result and isinstance(best_result["coordinates"], list):
+            results["coordinates"] = best_result["coordinates"]
+        
+        logger.info("Drawing analysis completed successfully")
+        return results
             
         # ------------------ Robust post-processing of all_data ------------------
         logger.info(f"Raw all_data type: {type(all_data)}; length (if list): {len(all_data) if isinstance(all_data, list) else 'N/A'}")
