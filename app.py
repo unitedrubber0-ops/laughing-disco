@@ -681,37 +681,64 @@ def extract_dimensions_from_text(text):
         logger.info("Starting direct string matching for dimensions...")
         
         # 1. Hose ID extraction
-        if "HOSE ID = 18.4" in text:
-            dimensions["id1"] = "18.4"
-            dimensions["id2"] = "18.4"
-            logger.info("Direct match: HOSE ID = 18.4")
+        # First try direct pattern matching
+        id_patterns = [
+            r'HOSE\s+ID\s*[=:.]\s*(\d+(?:\.\d+)?)',
+            r'(?:INSIDE|INNER)?\s*(?:DIAMETER|DIA\.?)?\s*ID\s*[=:.]\s*(\d+(?:\.\d+)?)',
+            r'(?:TUBE|HOSE)?\s*I\.?D\.?\s*[=:.]\s*(\d+(?:\.\d+)?)',
+            r'BORE\s*(?:Ø|⌀)?\s*[=:.]\s*(\d+(?:\.\d+)?)'
+        ]
+        
+        for pattern in id_patterns:
+            id_match = re.search(pattern, text, re.IGNORECASE)
+            if id_match:
+                id_value = id_match.group(1)
+                dimensions["id1"] = id_value
+                dimensions["id2"] = id_value
+                logger.info(f"ID match found: {id_value} using pattern {pattern}")
+                break
         
         # 2. Centerline length extraction  
         if "APPROX CTRLINE LENGTH = 489.67" in text:
             dimensions["centerline_length"] = "489.67"
             logger.info("Direct match: APPROX CTRLINE LENGTH = 489.67")
         
-        # 3. Working pressure extraction
-        if "430 kPag" in text:
-            dimensions["working_pressure"] = "430"
-            # Calculate burst pressure (4 × working pressure)
-            try:
-                burst_pressure = float(430) * 4
-                dimensions["burst_pressure"] = str(burst_pressure)
-                logger.info(f"Calculated burst pressure: {burst_pressure} kPag")
-            except:
-                pass
-            logger.info("Direct match: Working pressure = 430 kPag")
+        # 3. Working pressure and burst pressure extraction/calculation
+        # First try to find working pressure with unit
+        wp_patterns = [
+            r'(?:WORKING PRESSURE|WP)\s*[=:.]\s*(\d+(?:\.\d+)?)\s*(?:KPAG|kPag|KPA|kPa)\b',
+            r'(?:WORKING PRESSURE|WP)\s*[=:.]\s*(\d+(?:\.\d+)?)\s*(?:BAR|bar)\b'
+        ]
+        
+        for pattern in wp_patterns:
+            wp_match = re.search(pattern, text, re.IGNORECASE)
+            if wp_match:
+                wp_value = float(wp_match.group(1))
+                # Store working pressure in kPa
+                if 'bar' in wp_match.group().lower():
+                    wp_value_kpa = wp_value * 100  # Convert bar to kPa
+                    dimensions["working_pressure"] = f"{wp_value} bar ({wp_value_kpa} kPag)"
+                else:
+                    wp_value_kpa = wp_value
+                    dimensions["working_pressure"] = f"{wp_value} kPag"
+                
+                # Calculate and store burst pressure (4x working pressure) in both units
+                burst_kpa = wp_value_kpa * 4
+                burst_bar = burst_kpa / 100  # Convert kPa to bar
+                dimensions["burst_pressure"] = f"{burst_bar:.1f} bar ({burst_kpa:.0f} kPag)"
+                
+                logger.info(f"Working pressure found: {dimensions['working_pressure']}")
+                logger.info(f"Calculated burst pressure: {dimensions['burst_pressure']}")
+                break
         
         # ENHANCED REGEX PATTERNS for fallback
         patterns = {
             'id': [
-                # Direct patterns for specific values
-                r'HOSE\s+ID\s*=\s*(18\.4)',  # Specific to our PDF
                 # General ID patterns
                 r'HOSE\s+ID\s*[=:.]\s*(\d+(?:\.\d+)?)',
-                r'(?:INSIDE|INNER)?\s*(?:DIAMETER|DIA\.?)?\s*ID\s*[=:.]\s*(\d+(?:\.\d+)?)',
+                r'(?:INSIDE|INNER)?\s*(?:DIAMETER|DIA\.?)?\s*(?:I\.?D\.?|ID)\s*[=:.]\s*(\d+(?:\.\d+)?)',
                 r'(?:TUBE|HOSE)?\s*I\.?D\.?\s*[=:.]\s*(\d+(?:\.\d+)?)',
+                r'(?:INSIDE|INNER)?\s*(?:Ø|⌀)?\s*[=:.]\s*(\d+(?:\.\d+)?)',
                 r'BORE\s*(?:Ø|⌀)?\s*[=:.]\s*(\d+(?:\.\d+)?)',
                 r'(?:INT\.?|INTERNAL)\s*(?:DIA\.?|DIAM\.?)\s*[=:.]\s*(\d+(?:\.\d+)?)',
             ],
@@ -2892,6 +2919,25 @@ def analyze_image_with_gemini_vision(pdf_bytes):
                     os.remove(temp_pdf_path)
                 except Exception as e:
                     logger.warning(f"Failed to remove temporary file: {e}")
+
+def format_description(text):
+    """
+    Format description text with proper spacing and commas.
+    """
+    if not text:
+        return "Not Found"
+    
+    # Clean and normalize commas and spaces
+    text = text.strip()
+    text = re.sub(r',\s*', ', ', text)
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip(' ,')
+    
+    # Ensure proper HOSE prefix
+    if not text.upper().startswith('HOSE'):
+        text = f"HOSE, {text}"
+    
+    return text
 
 def extract_text_from_pdf(pdf_bytes):
     """
