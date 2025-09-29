@@ -1595,37 +1595,107 @@ def analyze_drawing(pdf_bytes):
             ocr_fallback_fn=process_ocr_text
         )
             
-        # If we have data from the pages, process it        # 3. Combine data from all pages
-        if all_data:
-            # Use the most complete data set as base
-            def completeness_score(data):
-                if not isinstance(data, dict):
-                    logger.warning(f"Expected dict but got {type(data)}")
-                    return 0
-                    
-                score = 0
-                # Check top-level fields
-                score += sum(1 for k, v in data.items() if v != "Not Found" and k not in ["dimensions", "operating_conditions", "coordinates"])
-                # Check dimensions
-                if isinstance(data.get("dimensions"), dict):
-                    score += sum(1 for v in data["dimensions"].values() if v != "Not Found")
-                # Check operating conditions
-                if isinstance(data.get("operating_conditions"), dict):
-                    score += sum(1 for v in data["operating_conditions"].values() if v != "Not Found")
-                # Check coordinates
-                if isinstance(data.get("coordinates"), list):
-                    score += len(data["coordinates"])
-                return score
+        # ------------------ Robust post-processing of all_data ------------------
+        logger.info(f"Raw all_data type: {type(all_data)}; length (if list): {len(all_data) if isinstance(all_data, list) else 'N/A'}")
+
+        # Normalize all_data into a flat list
+        if isinstance(all_data, dict):
+            normalized = [all_data]
+        elif isinstance(all_data, list):
+            # flatten one level if nested lists exist
+            normalized = []
+            for item in all_data:
+                if isinstance(item, list):
+                    normalized.extend(item)
+                else:
+                    normalized.append(item)
+        else:
+            # Unexpected type (e.g., bool, str). Wrap to preserve for logging and fail gracefully.
+            logger.warning(f"process_pages_with_vision_or_ocr returned unexpected type: {type(all_data)}")
+            normalized = [all_data]
+
+        logger.info(f"Normalized results count: {len(normalized)}")
+
+        # Keep only dict items (each dict is expected to be page-level structured data)
+        dict_results = [item for item in normalized if isinstance(item, dict)]
+        non_dict_count = len(normalized) - len(dict_results)
+        if non_dict_count:
+            logger.warning(f"Ignoring {non_dict_count} non-dict entries from all_data")
+
+        if not dict_results:
+            # Nothing usable — log details and return the default results object with an error.
+            logger.error("No valid page dictionaries returned from vision/OCR pipeline.")
+            # Put some diagnostic sample into results.error for visibility
+            results["error"] = "No valid structured page results (process_pages_with_vision_or_ocr returned no dicts)."
+            # Optionally attach a compact sample for debugging
+            try:
+                sample = normalized[:5]
+                results["debug_sample"] = sample
+            except Exception:
+                pass
+            return results
+
+        # Use completeness_score to choose the best page dict
+        def completeness_score(data):
+            if not isinstance(data, dict):
+                return 0
+            score = 0
+            # top-level fields except nested ones
+            score += sum(1 for k, v in data.items() if v not in ("Not Found", None) and k not in ["dimensions", "operating_conditions", "coordinates"])
+            if isinstance(data.get("dimensions"), dict):
+                score += sum(1 for v in data["dimensions"].values() if v != "Not Found")
+            if isinstance(data.get("operating_conditions"), dict):
+                score += sum(1 for v in data["operating_conditions"].values() if v != "Not Found")
+            if isinstance(data.get("coordinates"), list):
+                score += len(data["coordinates"])
+            return score
+
+        # select best result
+        try:
+            results = max(dict_results, key=completeness_score)
+        except Exception as e:
+            logger.exception("Failed to select best result from dict_results; returning first dict as fallback.")
+            results = dict_results[0]
+
+        # Diagnostics
+        logger.info(f"Selected best result type: {type(results)}")
+        logger.debug(f"Best result keys: {list(results.keys()) if isinstance(results, dict) else 'N/A'}")
+
+        # Normalize nested fields: convert lists -> dicts when necessary
+        if isinstance(results.get("dimensions"), list):
+            logger.warning("Converting dimensions list -> dict")
+            flat_dims = {}
+            for d in results["dimensions"]:
+                if isinstance(d, dict):
+                    flat_dims.update(d)
+            results["dimensions"] = flat_dims
+
+        if isinstance(results.get("operating_conditions"), list):
+            logger.warning("Converting operating_conditions list -> dict")
+            flat_ops = {}
+            for d in results["operating_conditions"]:
+                if isinstance(d, dict):
+                    flat_ops.update(d)
+            results["operating_conditions"] = flat_ops
+
+        # Ensure required keys exist and have expected types
+        if "dimensions" not in results or not isinstance(results["dimensions"], dict):
+            results["dimensions"] = {}
+        if "operating_conditions" not in results or not isinstance(results["operating_conditions"], dict):
+            results["operating_conditions"] = {}
+        if "coordinates" not in results or not isinstance(results["coordinates"], list):
+            results["coordinates"] = []
+
+        logger.info("Normalized results ready for downstream processing")
+        # ------------------ end robust processing ------------------
             
-            results = max(all_data, key=completeness_score)
-            
-            # Log the structure of results for debugging
-            logger.info(f"Type of results: {type(results)}")
-            logger.info(f"Keys in results (if dict): {results.keys() if isinstance(results, dict) else results}")
-            logger.info(f"Type of dimensions: {type(results.get('dimensions'))}")
-            
-            # Convert dimensions list to dict if needed
-            if isinstance(results.get("dimensions"), list):
+        # Log the structure of results for debugging
+        logger.info(f"Type of results: {type(results)}")
+        logger.info(f"Keys in results (if dict): {results.keys() if isinstance(results, dict) else results}")
+        logger.info(f"Type of dimensions: {type(results.get('dimensions'))}")
+        
+        # Convert dimensions list to dict if needed
+        if isinstance(results.get("dimensions"), list):
                 logger.warning("Converting dimensions list to dict")
                 flat_dims = {}
                 for d in results["dimensions"]:
@@ -1633,44 +1703,45 @@ def analyze_drawing(pdf_bytes):
                         flat_dims.update(d)
                 results["dimensions"] = flat_dims
             
-            # Convert operating_conditions list to dict if needed
-            if isinstance(results.get("operating_conditions"), list):
-                logger.warning("Converting operating_conditions list to dict")
-                flat_ops = {}
-                for d in results["operating_conditions"]:
-                    if isinstance(d, dict):
-                        flat_ops.update(d)
-                results["operating_conditions"] = flat_ops
-            
-            # Ensure all required fields exist
-            if "dimensions" not in results:
-                results["dimensions"] = {}
-            if "operating_conditions" not in results:
-                results["operating_conditions"] = {}
-            if "coordinates" not in results:
-                results["coordinates"] = []
-            
-            # Convert numeric strings to floats where appropriate
-            for key in ["id1", "od1", "thickness", "centerline_length"]:
-                if results["dimensions"].get(key) and results["dimensions"][key] != "Not Found":
-                    try:
-                        results["dimensions"][key] = float(str(results["dimensions"][key]).replace(",", "."))
-                    except (ValueError, TypeError):
-                        results["dimensions"][key] = "Not Found"
-            
-            # Convert pressure values
-            for key in ["working_pressure", "burst_pressure"]:
-                if results["operating_conditions"].get(key) and results["operating_conditions"][key] != "Not Found":
-                    try:
-                        results["operating_conditions"][key] = float(str(results["operating_conditions"][key]).replace(",", "."))
-                    except (ValueError, TypeError):
-                        results["operating_conditions"][key] = "Not Found"
-            # Merge coordinates from all pages
-            all_coordinates = []
-            for data in all_data:
-                if "coordinates" in data and isinstance(data["coordinates"], list):
-                    all_coordinates.extend(data["coordinates"])
-            results["coordinates"] = all_coordinates
+        # Convert operating_conditions list to dict if needed
+        if isinstance(results.get("operating_conditions"), list):
+            logger.warning("Converting operating_conditions list to dict")
+            flat_ops = {}
+            for d in results["operating_conditions"]:
+                if isinstance(d, dict):
+                    flat_ops.update(d)
+            results["operating_conditions"] = flat_ops
+        
+        # Ensure all required fields exist
+        if "dimensions" not in results:
+            results["dimensions"] = {}
+        if "operating_conditions" not in results:
+            results["operating_conditions"] = {}
+        if "coordinates" not in results:
+            results["coordinates"] = []
+        
+        # Convert numeric strings to floats where appropriate
+        for key in ["id1", "od1", "thickness", "centerline_length"]:
+            if results["dimensions"].get(key) and results["dimensions"][key] != "Not Found":
+                try:
+                    results["dimensions"][key] = float(str(results["dimensions"][key]).replace(",", "."))
+                except (ValueError, TypeError):
+                    results["dimensions"][key] = "Not Found"
+        
+        # Convert pressure values
+        for key in ["working_pressure", "burst_pressure"]:
+            if results["operating_conditions"].get(key) and results["operating_conditions"][key] != "Not Found":
+                try:
+                    results["operating_conditions"][key] = float(str(results["operating_conditions"][key]).replace(",", "."))
+                except (ValueError, TypeError):
+                    results["operating_conditions"][key] = "Not Found"
+        
+        # Merge coordinates from all pages
+        all_coordinates = []
+        for data in all_data:
+            if "coordinates" in data and isinstance(data["coordinates"], list):
+                all_coordinates.extend(data["coordinates"])
+        results["coordinates"] = all_coordinates
         
         logger.info("Drawing analysis completed successfully")
         return results

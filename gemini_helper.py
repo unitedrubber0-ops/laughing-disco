@@ -76,25 +76,38 @@ def process_with_vision_model(
         return None
 
 def process_pages_with_vision_or_ocr(
-    pages: List[Any],
+    pages: Union[str, List[Any]],
     prompt: str,
     ocr_fallback_fn: callable,
     mime_type: str = "image/png"
-) -> tuple[List[Dict[Any, Any]], bool]:
+) -> List[Dict[Any, Any]]:
     """
-    Process a list of pages with vision model, falling back to OCR if needed.
+    Process pages from a PDF with vision model, falling back to OCR if needed.
     
     Args:
-        pages: List of page images to process
+        pages: Either a path to a PDF file or a list of PIL Image objects
         prompt: Prompt for the vision model
         ocr_fallback_fn: Function to call for OCR processing if vision fails
         mime_type: MIME type of the images
         
     Returns:
-        Tuple of (results list, whether vision failed)
+        List of parsed results from each page
     """
     results = []
     gemini_failed = False
+    page_images = []
+    
+    # Convert PDF path to images if needed
+    if isinstance(pages, str):
+        try:
+            from pdf2image import convert_from_path
+            page_images = convert_from_path(pages, dpi=150)
+            logger.info(f"Converted PDF to {len(page_images)} pages")
+        except Exception as e:
+            logger.error(f"Failed to convert PDF to images: {e}")
+            return []
+    else:
+        page_images = pages
     
     # Try vision model first
     model_name = discover_vision_model()
@@ -104,7 +117,7 @@ def process_pages_with_vision_or_ocr(
     
     if not gemini_failed:
         try:
-            for i, page in enumerate(pages):
+            for i, page in enumerate(page_images):
                 # Convert page to expected format
                 import io
                 import base64
@@ -129,7 +142,7 @@ def process_pages_with_vision_or_ocr(
     if gemini_failed:
         logger.info("Processing all pages with OCR fallback")
         results = []
-        for i, page in enumerate(pages):
+        for i, page in enumerate(page_images):
             result = ocr_fallback_fn(page)
             if result:
                 results.append(result)
@@ -137,4 +150,4 @@ def process_pages_with_vision_or_ocr(
             else:
                 logger.warning(f"OCR failed on page {i+1}")
     
-    return results, gemini_failed
+    return results
