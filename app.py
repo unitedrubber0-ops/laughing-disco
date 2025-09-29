@@ -856,7 +856,7 @@ def extract_dimensions_from_text(text):
 
 def extract_coordinates_from_text(text):
     """
-    Enhanced coordinate extraction for the specific PDF table format
+    Enhanced coordinate extraction with improved pattern matching and validation
     """
     coordinates = []
     
@@ -1410,6 +1410,82 @@ def assess_text_quality(text):
     except Exception as e:
         logging.error(f"Error in text quality assessment: {str(e)}", exc_info=True)
         return 0.0
+
+def convert_pressure_to_bar(value, unit):
+    """
+    Convert pressure values to bar based on input unit
+    """
+    unit = unit.lower() if unit else ''
+    try:
+        value = float(value)
+        if 'kpa' in unit:
+            return value / 100  # kPa to bar
+        elif 'psi' in unit:
+            return value * 0.0689476  # PSI to bar
+        elif 'bar' in unit:
+            return value
+        else:
+            # Default to kPa if no unit specified
+            return value / 100
+    except (ValueError, TypeError):
+        return None
+
+def calculate_burst_pressure(working_pressure):
+    """
+    Calculate burst pressure (4x working pressure)
+    """
+    try:
+        wp = float(working_pressure)
+        return wp * 4
+    except (ValueError, TypeError):
+        return None
+
+def calculate_arc_length(point1, point2, radius):
+    """
+    Calculate the arc length between two points given a radius
+    """
+    if radius is None or radius == 0:
+        dx = point2['x'] - point1['x']
+        dy = point2['y'] - point1['y']
+        dz = point2['z'] - point1['z']
+        return math.sqrt(dx*dx + dy*dy + dz*dz)
+    
+    # Calculate vectors
+    v1 = np.array([point2['x'] - point1['x'], 
+                   point2['y'] - point1['y'], 
+                   point2['z'] - point1['z']])
+    
+    length = np.linalg.norm(v1)
+    if length == 0:
+        return 0
+    
+    # Calculate angle using cosine law
+    angle = 2 * math.asin(length / (2 * radius))
+    
+    # Calculate arc length
+    arc_length = radius * angle
+    return arc_length
+
+def calculate_development_length(coordinates):
+    """
+    Calculate development length considering radii at bends
+    """
+    if not coordinates or len(coordinates) < 2:
+        return 0
+    
+    total_length = 0
+    for i in range(len(coordinates) - 1):
+        current = coordinates[i]
+        next_point = coordinates[i + 1]
+        
+        # Use radius from the point that has it
+        radius = current.get('r') or next_point.get('r')
+        
+        # Calculate length considering radius if present
+        segment_length = calculate_arc_length(current, next_point, radius)
+        total_length += segment_length
+    
+    return total_length
 
 def clean_text_encoding(text):
     """
