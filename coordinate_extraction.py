@@ -34,7 +34,16 @@ def extract_coordinates_from_text(text):
         logger.info("Starting coordinate extraction...")
         
         # Look for the coordinate table section
-        coord_section_match = re.search(r'COORDS\s+POINTS\s+(.*?)(?:\n\s*\n|\Z)', text, re.DOTALL | re.IGNORECASE)
+        logger.info("Looking for coordinate table section...")
+        coord_pattern = r'COORDS\s+POINTS\s+(.*?)(?:\n\s*\n|\Z)'
+        logger.info(f"Using coordinate section pattern: {coord_pattern}")
+        coord_section_match = re.search(coord_pattern, text, re.DOTALL | re.IGNORECASE)
+        
+        if coord_section_match:
+            logger.info("Found coordinate table section!")
+        else:
+            logger.warning("No coordinate table section found in text")
+            
         if coord_section_match:
             coord_section = coord_section_match.group(1)
             logger.info(f"Found coordinate section: {coord_section[:200]}...")

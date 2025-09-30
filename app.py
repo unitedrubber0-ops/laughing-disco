@@ -2589,6 +2589,12 @@ def analyze_drawing_with_gemini(pdf_bytes):
         logger.info(f"Extracted dimensions: {results['dimensions']}")
         
         # Extract coordinates
+        logger.info("=== START OF EXTRACTED TEXT FOR DEBUGGING ===")
+        logger.info(f"Cleaned Text Length: {len(combined_text)}")
+        logger.info("First 1000 characters of text:")
+        logger.info(combined_text[:1000])
+        logger.info("=== END OF EXTRACTED TEXT FOR DEBUGGING ===")
+        
         results["coordinates"] = extract_coordinates_from_text(combined_text)
         logger.info(f"Extracted coordinates: {len(results['coordinates'])} points")
         
