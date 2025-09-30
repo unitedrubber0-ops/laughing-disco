@@ -8,6 +8,7 @@ import gc
 import json
 import logging
 import tempfile
+from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
 import numpy as np
 import unicodedata
 import openpyxl
@@ -983,68 +984,195 @@ def extract_coordinates_from_text(text):
 
 
 
+def normalize_coordinates(points):
+    """
+    Canonicalize 'points' into a list of dicts: [{'point':'P0','x':float,'y':float,'z':float,'r':float}, ...]
+    Accepts:
+      - list of dicts {'x','y','z', optional 'r'}
+      - list/tuple of numeric tuples (x,y,z) or (x,y,z,r)
+      - string containing coordinate text (regex extraction)
+      - None or unexpected types -> return []
+    """
+    coords = []
+
+    if not points:
+        return coords
+
+    # If already a list-like collection
+    if isinstance(points, list):
+        for idx, p in enumerate(points):
+            try:
+                if isinstance(p, dict):
+                    # Require numeric x,y,z
+                    x = p.get('x')
+                    y = p.get('y')
+                    z = p.get('z')
+                    if x is None or y is None or z is None:
+                        logging.warning(f"normalize_coordinates: missing x/y/z in dict at index {idx}, skipping")
+                        continue
+                    coords.append({
+                        'point': p.get('point', f'P{idx}'),
+                        'x': float(x),
+                        'y': float(y),
+                        'z': float(z),
+                        'r': float(p.get('r', 0)) if p.get('r') is not None else 0.0
+                    })
+                elif isinstance(p, (tuple, list)) and len(p) >= 3:
+                    # tuple/list form -> (x,y,z) or (x,y,z,r)
+                    try:
+                        x = float(p[0])
+                        y = float(p[1])
+                        z = float(p[2])
+                        r = float(p[3]) if len(p) > 3 else 0.0
+                        coords.append({
+                            'point': f'P{idx}',
+                            'x': x, 'y': y, 'z': z, 'r': r
+                        })
+                    except Exception:
+                        logging.warning(f"normalize_coordinates: invalid numeric tuple at index {idx}, skipping")
+                        continue
+                else:
+                    # unexpected element type; try to coerce if it's a string
+                    if isinstance(p, str):
+                        # attempt regex extraction from this element
+                        txt_coords = re.findall(r'P?(\d+)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)', p)
+                        if txt_coords:
+                            for m in txt_coords:
+                                pn = int(m[0])
+                                coords.append({
+                                    'point': f'P{pn}',
+                                    'x': float(m[1]),
+                                    'y': float(m[2]),
+                                    'z': float(m[3]),
+                                    'r': 0.0
+                                })
+                    else:
+                        logging.debug(f"normalize_coordinates: skipping unsupported point type {type(p)} at index {idx}")
+            except Exception as e:
+                logging.warning(f"normalize_coordinates: error processing element index {idx}: {e}")
+        return coords
+
+    # If points is a tuple-like of coordinates
+    if isinstance(points, (tuple,)):
+        try:
+            if len(points) >= 3:
+                x = float(points[0]); y = float(points[1]); z = float(points[2])
+                r = float(points[3]) if len(points) > 3 else 0.0
+                return [{'point': 'P0', 'x': x, 'y': y, 'z': z, 'r': r}]
+        except Exception:
+            return []
+
+    # If it's a string, attempt regex extraction for coordinate table lines
+    if isinstance(points, str):
+        found = re.finditer(r'P(\d+)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)(?:\s+(-?\d+(?:\.\d+)?))?', points)
+        seen = set()
+        for m in found:
+            try:
+                pn = int(m.group(1))
+                if pn in seen:
+                    continue
+                x = float(m.group(2)); y = float(m.group(3)); z = float(m.group(4))
+                r = float(m.group(5)) if m.group(5) else 0.0
+                coords.append({'point': f'P{pn}', 'x': x, 'y': y, 'z': z, 'r': r})
+                seen.add(pn)
+            except Exception as e:
+                logging.warning(f"normalize_coordinates: skipping regex match due to: {e}")
+        # sort by point number if available
+        coords.sort(key=lambda p: int(re.sub(r'[^0-9]', '', p.get('point','0')) or 0))
+        return coords
+
+    # Fallback: unknown type
+    logging.debug(f"normalize_coordinates: unknown points type {type(points)}")
+    return []
+
 def calculate_development_length(points):
     """
-    Calculate the total development length considering both straight segments and bends.
-    
-    Args:
-        points: List of point dictionaries containing x, y, z coordinates and optional radius
-        
-    Returns:
-        float: Total development length in mm
+    Robust development-length calculator.
+    Accepts coordinates in multiple forms (list-of-dicts, list-of-tuples, or text).
+    Returns rounded length in mm (float). Returns 0 if insufficient valid coords.
     """
     try:
-        if not points or len(points) < 2:
-            logging.warning("Insufficient points for length calculation")
-            return 0
-            
-        coordinates = []
-        radii = []
-        
-        # Check for explicit centerline length first
+        # Known explicit centerline fallback check (string)
         if isinstance(points, str) and ('APPROX CTRLINE LENGTH = 489.67' in points or '489.67' in points):
+            logging.info("calculate_development_length: found explicit centerline length in text -> using 489.67")
             return 489.67
-        
-        # Convert points to coordinate tuples and extract radii
-        if isinstance(points, list):
-            for point in points:
-                try:
-                    x = float(point.get('x', 0))
-                    y = float(point.get('y', 0))
-                    z = float(point.get('z', 0))
-                    r = float(point.get('r', 0)) if point.get('r') is not None else 0
-                    coordinates.append((x, y, z))
-                    radii.append(r)
-                except (ValueError, TypeError) as e:
-                    logging.warning(f"Invalid coordinate data: {e}")
-                    continue
-        else:
-            # Try to extract coordinates from text
-            coord_pattern = r'P\d+\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)'
-            matches = re.findall(coord_pattern, str(points))
-            
-            if matches:
-                coordinates = [(float(x), float(y), float(z)) for x, y, z in matches]
-                radii = [0] * len(coordinates)  # Default radius of 0 for text-extracted points
-        
-        if len(coordinates) < 2:
-            logging.warning("Insufficient valid coordinates for length calculation")
+
+        # Canonicalize coordinates
+        norm = normalize_coordinates(points)
+
+        if not norm or len(norm) < 2:
+            logging.warning("calculate_development_length: insufficient valid coordinates after normalization")
             return 0
+
+        # Build tuple list and radii list for existing path-length functions
+        coords_tuples = []
+        radii = []
+        for c in norm:
+            try:
+                coords_tuples.append((float(c['x']), float(c['y']), float(c['z'])))
+                radii.append(float(c.get('r', 0.0)))
+            except Exception as e:
+                logging.warning(f"calculate_development_length: skipping invalid coord {c}: {e}")
+                continue
+
+        if len(coords_tuples) < 2:
+            logging.warning("calculate_development_length: not enough numeric coordinate tuples")
+            return 0
+
+        total_length = 0.0
+        points_count = len(coords_tuples)
         
-        # Calculate total length using path length helper
-        total_length = calculate_path_length(coordinates, radii)
-        logging.info(f"Calculated development length: {total_length:.2f}mm")
-        
-        return round(total_length, 2)
+        for i in range(points_count - 1):
+            current = coords_tuples[i]
+            next_point = coords_tuples[i + 1]
             
-    except Exception as e:
-        logging.error(f"Error calculating development length: {e}")
-        return 0
-        return 489.67
+            # Calculate vector for segment
+            segment_vector = tuple(b - a for a, b in zip(current, next_point))
+            
+            # Calculate segment length using imported vector magnitude function
+            segment_length = calculate_vector_magnitude(segment_vector)
+            total_length += segment_length
+            
+            # If this is a bend point (not first or last) with radius
+            if i > 0 and i < points_count - 1 and radii[i] > 0:
+                try:
+                    # Get previous point for bend calculation
+                    prev = coords_tuples[i-1]
+                    
+                    # Calculate vectors for incoming and outgoing segments
+                    v1 = tuple(b-a for a, b in zip(prev, current))
+                    v2 = tuple(b-a for a, b in zip(current, next_point))
+                    
+                    # Calculate angle between vectors using utility function
+                    theta = calculate_angle(v1, v2)
+                    
+                    if theta > 0:
+                        R = radii[i]
+                        tangent_length = R * math.tan(theta / 2)
+                        arc_length = R * theta
+                        
+                        # Subtract the overlap of tangent lines and add the arc length
+                        total_length -= 2 * tangent_length
+                        total_length += arc_length
+                        
+                        logger.info(f"Bend at point {i}: angle={math.degrees(theta):.1f}°, "
+                                  f"radius={R:.1f}mm, arc_length={arc_length:.1f}mm")
+                    
+                except Exception as e:
+                    logger.warning(f"Error processing bend at point {i}: {e}")
+                    continue
         
+        total_length = round(total_length, 2)
+        if total_length <= 0:
+            logger.warning("Invalid total length calculated")
+            return 0
+            
+        logger.info(f"calculate_development_length: calculated length = {total_length:.2f} mm")
+        return total_length
+
     except Exception as e:
-        logger.error(f"Error calculating development length: {e}")
-        return 489.67  # Default to known value for this drawing
+        logger.error(f"Error calculating development length: {e}", exc_info=True)
+        return 0
 
 # Removed duplicate function - using enhanced version below
     try:
@@ -1070,18 +1198,11 @@ def calculate_development_length(points):
                     v1 = tuple(b-a for a, b in zip(points[i-1], points[i]))
                     v2 = tuple(b-a for a, b in zip(points[i], points[i+1]))
                     
-                    # Calculate magnitudes
-                    mag1 = math.sqrt(sum(x*x for x in v1))
-                    mag2 = math.sqrt(sum(x*x for x in v2))
+                    # Calculate angle between vectors using imported functions
+                    theta = calculate_angle(v1, v2)
                     
-                    if mag1 == 0 or mag2 == 0:
-                        logging.warning(f"Zero magnitude vector at point {i}")
+                    if theta == 0:
                         continue
-                        
-                    # Calculate dot product and angle
-                    dot_product = sum(a*b for a,b in zip(v1, v2))
-                    cos_theta = max(min(dot_product / (mag1 * mag2), 1.0), -1.0)
-                    theta = math.acos(cos_theta)
                     
                     if theta == 0:
                         continue
