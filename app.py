@@ -7,8 +7,14 @@ import io
 import gc
 import json
 import logging
+from development_length import calculate_development_length
 import tempfile
-from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
+from development_length import (
+    calculate_development_length,
+    calculate_vector_magnitude,
+    calculate_dot_product,
+    calculate_angle
+)
 import numpy as np
 import unicodedata
 import openpyxl
@@ -1085,148 +1091,7 @@ def normalize_coordinates(points):
     logging.debug(f"normalize_coordinates: unknown points type {type(points)}")
     return []
 
-def calculate_development_length(points):
-    """
-    Robust development-length calculator.
-    Accepts coordinates in multiple forms (list-of-dicts, list-of-tuples, or text).
-    Returns rounded length in mm (float). Returns 0 if insufficient valid coords.
-    """
-    try:
-        # Known explicit centerline fallback check (string)
-        if isinstance(points, str) and ('APPROX CTRLINE LENGTH = 489.67' in points or '489.67' in points):
-            logging.info("calculate_development_length: found explicit centerline length in text -> using 489.67")
-            return 489.67
-
-        # Canonicalize coordinates
-        norm = normalize_coordinates(points)
-
-        if not norm or len(norm) < 2:
-            logging.warning("calculate_development_length: insufficient valid coordinates after normalization")
-            return 0
-
-        # Build tuple list and radii list for existing path-length functions
-        coords_tuples = []
-        radii = []
-        for c in norm:
-            try:
-                coords_tuples.append((float(c['x']), float(c['y']), float(c['z'])))
-                radii.append(float(c.get('r', 0.0)))
-            except Exception as e:
-                logging.warning(f"calculate_development_length: skipping invalid coord {c}: {e}")
-                continue
-
-        if len(coords_tuples) < 2:
-            logging.warning("calculate_development_length: not enough numeric coordinate tuples")
-            return 0
-
-        total_length = 0.0
-        points_count = len(coords_tuples)
-        
-        for i in range(points_count - 1):
-            current = coords_tuples[i]
-            next_point = coords_tuples[i + 1]
-            
-            # Calculate vector for segment
-            segment_vector = tuple(b - a for a, b in zip(current, next_point))
-            
-            # Calculate segment length using imported vector magnitude function
-            segment_length = calculate_vector_magnitude(segment_vector)
-            total_length += segment_length
-            
-            # If this is a bend point (not first or last) with radius
-            if i > 0 and i < points_count - 1 and radii[i] > 0:
-                try:
-                    # Get previous point for bend calculation
-                    prev = coords_tuples[i-1]
-                    
-                    # Calculate vectors for incoming and outgoing segments
-                    v1 = tuple(b-a for a, b in zip(prev, current))
-                    v2 = tuple(b-a for a, b in zip(current, next_point))
-                    
-                    # Calculate angle between vectors using utility function
-                    theta = calculate_angle(v1, v2)
-                    
-                    if theta > 0:
-                        R = radii[i]
-                        tangent_length = R * math.tan(theta / 2)
-                        arc_length = R * theta
-                        
-                        # Subtract the overlap of tangent lines and add the arc length
-                        total_length -= 2 * tangent_length
-                        total_length += arc_length
-                        
-                        logger.info(f"Bend at point {i}: angle={math.degrees(theta):.1f}°, "
-                                  f"radius={R:.1f}mm, arc_length={arc_length:.1f}mm")
-                    
-                except Exception as e:
-                    logger.warning(f"Error processing bend at point {i}: {e}")
-                    continue
-        
-        total_length = round(total_length, 2)
-        if total_length <= 0:
-            logger.warning("Invalid total length calculated")
-            return 0
-            
-        logger.info(f"calculate_development_length: calculated length = {total_length:.2f} mm")
-        return total_length
-
-    except Exception as e:
-        logger.error(f"Error calculating development length: {e}", exc_info=True)
-        return 0
-
-# Removed duplicate function - using enhanced version below
-    try:
-        n = len(points)
-        if n < 2:
-            return 0
-        
-        # For just two points, return straight distance
-        if n == 2:
-            return math.dist(points[0], points[1])
-        
-        total_length = 0
-        
-        for i in range(n-1):
-            # Calculate straight segment length
-            straight_length = math.dist(points[i], points[i+1])
-            total_length += straight_length
-            
-            # If this is a bend point (not first or last point)
-            if i > 0 and i < n-1 and radii[i] and radii[i] > 0:
-                try:
-                    # Calculate vectors for incoming and outgoing segments
-                    v1 = tuple(b-a for a, b in zip(points[i-1], points[i]))
-                    v2 = tuple(b-a for a, b in zip(points[i], points[i+1]))
-                    
-                    # Calculate angle between vectors using imported functions
-                    theta = calculate_angle(v1, v2)
-                    
-                    if theta == 0:
-                        continue
-                    
-                    if theta == 0:
-                        continue
-                        
-                    # Calculate bend adjustments
-                    R = radii[i]
-                    tangent_length = R * math.tan(theta / 2)
-                    arc_length = R * theta
-                    
-                    # Subtract the overlap of tangent lines and add the arc length
-                    total_length -= 2 * tangent_length
-                    total_length += arc_length
-                    logging.debug(f"Bend at point {i}: angle={math.degrees(theta):.1f}°, "
-                                f"radius={R:.1f}mm, arc_length={arc_length:.1f}mm")
-                    
-                except Exception as e:
-                    logging.warning(f"Error processing bend at point {i}: {e}")
-                    continue
-        
-        return total_length
-    
-    except Exception as e:
-        logging.error(f"Error calculating path length: {e}")
-        return 0
+# Using calculate_development_length from development_length.py
 
 def calculate_path_length(points, radii):
     """
@@ -1614,26 +1479,7 @@ def calculate_arc_length(point1, point2, radius):
     arc_length = radius * angle
     return arc_length
 
-def calculate_development_length(coordinates):
-    """
-    Calculate development length considering radii at bends
-    """
-    if not coordinates or len(coordinates) < 2:
-        return 0
-    
-    total_length = 0
-    for i in range(len(coordinates) - 1):
-        current = coordinates[i]
-        next_point = coordinates[i + 1]
-        
-        # Use radius from the point that has it
-        radius = current.get('r') or next_point.get('r')
-        
-        # Calculate length considering radius if present
-        segment_length = calculate_arc_length(current, next_point, radius)
-        total_length += segment_length
-    
-    return total_length
+# Removed duplicate calculate_development_length function - now using the one from development_length.py
 
 def clean_text_encoding(text):
     """
