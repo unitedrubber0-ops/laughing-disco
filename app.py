@@ -2455,6 +2455,12 @@ def analyze_drawing_with_gemini(pdf_bytes):
             print(f"--- FAILED to save debug text file: {e} ---")
         # -----------------------------------------
 
+        # --- ADD THIS BLOCK TO SAVE THE EXTRACTED TEXT TO A FILE ---
+        with open("debug_output.txt", "w", encoding="utf-8") as f:
+            f.write(combined_text)
+        # -----------------------------------------------------------
+
+        # This is your existing line that calls the extraction function
         results["coordinates"] = extract_coordinates_from_text(combined_text)
         logger.info(f"Extracted coordinates: {len(results['coordinates'])} points")
         
