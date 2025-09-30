@@ -2441,6 +2441,20 @@ def analyze_drawing_with_gemini(pdf_bytes):
         logger.info(combined_text[:1000])
         logger.info("=== END OF EXTRACTED TEXT FOR DEBUGGING ===")
         
+        # --- ADD DEBUG LOGGING TO CAPTURE TEXT ---
+        print("--- START OF EXTRACTED TEXT FOR DEBUGGING ---")
+        print(combined_text)
+        print("--- END OF EXTRACTED TEXT FOR DEBUGGING ---")
+
+        # --- ALTERNATIVE DEBUGGING: SAVE TO FILE ---
+        try:
+            with open("debug_text.txt", "w", encoding="utf-8") as f:
+                f.write(combined_text)
+            print("--- Successfully saved extracted text to debug_text.txt ---")
+        except Exception as e:
+            print(f"--- FAILED to save debug text file: {e} ---")
+        # -----------------------------------------
+
         results["coordinates"] = extract_coordinates_from_text(combined_text)
         logger.info(f"Extracted coordinates: {len(results['coordinates'])} points")
         
