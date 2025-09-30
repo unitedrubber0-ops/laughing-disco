@@ -39,8 +39,8 @@ def extract_coordinates_from_text(text):
             coord_section = coord_section_match.group(1)
             logger.info(f"Found coordinate section: {coord_section[:200]}...")
             
-            # Pattern for coordinate lines: P0, P1, etc. with X, Y, Z, R
-            coord_pattern = r'P(\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)(?:\s+(-?\d+\.\d+))?' 
+            # Pattern for coordinate lines: P0, P1, etc. with X, Y, Z, R (handles integers and floats)
+            coord_pattern = r'P(\d+)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)(?:\s+(-?\d+(?:\.\d+)?))?'
             
             matches = re.finditer(coord_pattern, coord_section)
             
@@ -72,8 +72,8 @@ def extract_coordinates_from_text(text):
         # Alternative pattern for the entire table
         if not coordinates:
             logger.info("Trying alternative coordinate pattern...")
-            # Pattern that matches the full table structure
-            alt_pattern = r'P(\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)(?:\s+(-?\d+\.\d+))?\s*\n'
+            # Pattern that matches the full table structure (handles integers and floats)
+            alt_pattern = r'P(\d+)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)(?:\s+(-?\d+(?:\.\d+)?))?\s*\n'
             matches = re.finditer(alt_pattern, text)
             
             for match in matches:
