@@ -2455,9 +2455,7 @@ def analyze_drawing_with_gemini(pdf_bytes):
             print(f"--- FAILED to save debug text file: {e} ---")
         # -----------------------------------------
 
-That's a great question and a common issue when working with hosting platforms like Render. The easiest way to get the debug information is to print it directly to the logs you are already watching.
-
-On Render, the file system is **ephemeral**, meaning files you create like `debug_output.txt` can be hard to access and will be deleted when your service restarts. Printing to the log is a much more direct method.
+        # Your existing line that calls the extraction function
 
 -----
 
