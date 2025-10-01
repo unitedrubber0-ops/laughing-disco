@@ -2455,7 +2455,61 @@ def analyze_drawing_with_gemini(pdf_bytes):
             print(f"--- FAILED to save debug text file: {e} ---")
         # -----------------------------------------
 
-        # --- ADD THIS BLOCK TO LOG THE EXTRACTED TEXT ---
+That's a great question and a common issue when working with hosting platforms like Render. The easiest way to get the debug information is to print it directly to the logs you are already watching.
+
+On Render, the file system is **ephemeral**, meaning files you create like `debug_output.txt` can be hard to access and will be deleted when your service restarts. Printing to the log is a much more direct method.
+
+-----
+
+### The Easiest Solution: Print to Logs
+
+Let's go back to the `print()` method, which will show the text directly in the "Live tail" log viewer you've been sharing.
+
+1.  **Remove the file-writing code** from `app.py`. Delete these lines:
+
+    ```python
+    # REMOVE THIS BLOCK
+    with open("debug_output.txt", "w", encoding="utf-8") as f:
+        f.write(text_from_pdf)
+    ```
+
+2.  **Add the `print()` statements instead**, right before you call the extraction function:
+
+    ```python
+    # In app.py
+
+    # --- ADD THESE LINES FOR DEBUGGING ---
+    print("--- START OF EXTRACTED TEXT FOR DEBUGGING ---")
+    print(text_from_pdf)
+    print("--- END OF EXTRACTED TEXT FOR DEBUGGING ---")
+    # ------------------------------------
+
+    # This is your existing line
+    # --- ADD THESE LINES FOR DEBUGGING ---
+    print("--- START OF EXTRACTED TEXT FOR DEBUGGING (Location 1) ---")
+    print(text_from_pdf)
+    print("--- END OF EXTRACTED TEXT FOR DEBUGGING ---")
+    # ------------------------------------
+
+    coordinates = extract_coordinates_from_text(text_from_pdf)
+    ```
+
+3.  **Deploy and Check Logs**: Save the file and let Render redeploy your service. Now, when you run the analysis, the full extracted text will appear in the log stream between the "START" and "END" markers.
+
+You can then simply copy that text directly from the log viewer and paste it here.
+
+-----
+
+### Where the File *Would* Be (For Future Reference)
+
+If you ever need to find a file you've created, it will be in the root directory of your project on the Render instance. You can access it using the **"Shell"** tab on your Render dashboard.
+
+1.  Go to your service on Render.com.
+2.  Click the **"Shell"** tab.
+3.  In the command line that appears, type `ls` and press Enter to list files. You would see `debug_output.txt` there.
+4.  To view it, you would type `cat debug_output.txt`.
+
+For now, **I strongly recommend using the `print()` method**. It's much simpler for this kind of debugging.        # --- ADD THIS BLOCK TO LOG THE EXTRACTED TEXT ---
         print("\n=== START OF EXTRACTED TEXT ===")
         print(combined_text)
         print("=== END OF EXTRACTED TEXT ===\n")
@@ -2465,6 +2519,12 @@ def analyze_drawing_with_gemini(pdf_bytes):
         # -------------------------------------------
 
         # This is your existing line that calls the extraction function
+        # --- ADD THESE LINES FOR DEBUGGING ---
+        print("--- START OF EXTRACTED TEXT FOR DEBUGGING (Location 2) ---")
+        print(combined_text)
+        print("--- END OF EXTRACTED TEXT FOR DEBUGGING ---")
+        # ------------------------------------
+
         results["coordinates"] = extract_coordinates_from_text(combined_text)
         logger.info(f"Extracted coordinates: {len(results['coordinates'])} points")
         
