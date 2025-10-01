@@ -888,6 +888,8 @@ def extract_dimensions_from_text(text):
     
     return dimensions
 
+
+
 def extract_coordinates_from_text(text):
     """
     Enhanced coordinate extraction with improved pattern matching and validation
@@ -2455,74 +2457,13 @@ def analyze_drawing_with_gemini(pdf_bytes):
             print(f"--- FAILED to save debug text file: {e} ---")
         # -----------------------------------------
 
-        # Your existing line that calls the extraction function
-
------
-
-### The Easiest Solution: Print to Logs
-
-Let's go back to the `print()` method, which will show the text directly in the "Live tail" log viewer you've been sharing.
-
-1.  **Remove the file-writing code** from `app.py`. Delete these lines:
-
-    ```python
-    # REMOVE THIS BLOCK
-    with open("debug_output.txt", "w", encoding="utf-8") as f:
-        f.write(text_from_pdf)
-    ```
-
-2.  **Add the `print()` statements instead**, right before you call the extraction function:
-
-    ```python
-    # In app.py
-
-    # --- ADD THESE LINES FOR DEBUGGING ---
-    print("--- START OF EXTRACTED TEXT FOR DEBUGGING ---")
-    print(text_from_pdf)
-    print("--- END OF EXTRACTED TEXT FOR DEBUGGING ---")
-    # ------------------------------------
-
-    # This is your existing line
-    # --- ADD THESE LINES FOR DEBUGGING ---
-    print("--- START OF EXTRACTED TEXT FOR DEBUGGING (Location 1) ---")
-    print(text_from_pdf)
-    print("--- END OF EXTRACTED TEXT FOR DEBUGGING ---")
-    # ------------------------------------
-
-    coordinates = extract_coordinates_from_text(text_from_pdf)
-    ```
-
-3.  **Deploy and Check Logs**: Save the file and let Render redeploy your service. Now, when you run the analysis, the full extracted text will appear in the log stream between the "START" and "END" markers.
-
-You can then simply copy that text directly from the log viewer and paste it here.
-
------
-
-### Where the File *Would* Be (For Future Reference)
-
-If you ever need to find a file you've created, it will be in the root directory of your project on the Render instance. You can access it using the **"Shell"** tab on your Render dashboard.
-
-1.  Go to your service on Render.com.
-2.  Click the **"Shell"** tab.
-3.  In the command line that appears, type `ls` and press Enter to list files. You would see `debug_output.txt` there.
-4.  To view it, you would type `cat debug_output.txt`.
-
-For now, **I strongly recommend using the `print()` method**. It's much simpler for this kind of debugging.        # --- ADD THIS BLOCK TO LOG THE EXTRACTED TEXT ---
-        print("\n=== START OF EXTRACTED TEXT ===")
-        print(combined_text)
-        print("=== END OF EXTRACTED TEXT ===\n")
-        # Log to application logger as well
-        logger.info("Extracted Text Content:")
-        logger.info(combined_text)
-        # -------------------------------------------
-
-        # This is your existing line that calls the extraction function
         # --- ADD THESE LINES FOR DEBUGGING ---
-        print("--- START OF EXTRACTED TEXT FOR DEBUGGING (Location 2) ---")
+        print("--- START OF EXTRACTED TEXT FOR DEBUGGING ---")
         print(combined_text)
         print("--- END OF EXTRACTED TEXT FOR DEBUGGING ---")
         # ------------------------------------
 
+        # Extract coordinates
         results["coordinates"] = extract_coordinates_from_text(combined_text)
         logger.info(f"Extracted coordinates: {len(results['coordinates'])} points")
         
@@ -2558,89 +2499,7 @@ For now, **I strongly recommend using the `print()` method**. It's much simpler 
         if points:
             results["coordinates"] = points
         
-        # Enhanced prompt for Gemini
-        prompt = """Analyze this engineering drawing with high precision.
-Find the exact values for the keys below based on the specified labels.
-Return a JSON object. If a value is not explicitly found, use the string "Not Found".
-
-Instructions:
-1. Part Number ('part_number'): 
-   - Look for the label "PART NO." or "PART NUMBER"
-   - It will typically be a 7-8 digit number followed by 'C' and 1-2 digits
-   - Also check title block and drawing header
-
-2. Description ('description'):
-   - Find the main title or description of the part
-   - Usually located in the title block or drawing header
-   - Include the full description text
-
-3. Standard/Specification ('standard'):
-   - Look specifically for "SPEC:" label
-   - The value will typically be in format "MPAPS F-XXXX"
-   - Common values: MPAPS F-6032, MPAPS F-6028, MPAPS F-6034
-   - Don't include assembly specs like F-1
-
-4. Grade ('grade'):
-   - Look specifically for "TYPE" or "GRADE" labels
-   - Common values: "TYPE I", "TYPE II", "GRADE C-AN"
-   - Report exactly as shown on drawing
-
-5. Dimensions Object:
-   Look for these specific labels and report numeric values only:
-   - "id1": Find "HOSE ID" or "INSIDE DIAMETER"
-   - "od1": Find "HOSE OD" or "OUTSIDE DIAMETER"
-   - "thickness": Find "WALL THICKNESS" or "THK"
-   - "centerline_length": Find "CTRLINE LENGTH" or "C/L LENGTH"
-
-6. Operating Conditions:
-   - Find "MAX OPERATING PRESSURE" (in kPag)
-   - Find "BURST PRESSURE" (in kPag)
-   - Find "OPERATING TEMPERATURE" range
-
-7. Coordinate Points:
-   - Look for points labeled P0, P1, P2, etc.
-   - Each point should have X, Y, Z coordinates
-   - Report coordinates in array format
-
-Required JSON format:
-{
-    "part_number": "...",
-    "description": "...",
-    "standard": "...",
-    "grade": "...",
-    "dimensions": {
-        "id1": "...",
-        "od1": "...",
-        "thickness": "...",
-        "centerline_length": "..."
-    },
-    "operating_conditions": {
-        "working_pressure": "...",
-        "burst_pressure": "...",
-        "temperature_range": "..."
-    },
-    "coordinates": [{"point": "P0", "x": 0.0, "y": 0.0, "z": 0.0}, ...]
-}
-
-Important: Report numeric values WITHOUT units. Example: for "HOSE ID = 19.05 MM", report only "19.05".
-    "part_number": string,
-    "description": string,
-    "standard": string,
-    "grade": string,
-    "material": string,
-    "od": string,
-    "thickness": string,
-    "centerline_length": string,
-    "burst_pressure": string,
-    "working_temperature": string,
-    "working_pressure": string
-}
-
-For any value not found in drawing, use "Not Found" (not null or empty string).
-Pay special attention to distinguishing primary material specs from reference specs.
-"""
-        model = genai.GenerativeModel('gemini-pro-vision') # Use vision-capable model
-        
+        # Define the Gemini prompt for analyzing the text
         prompt = f"""
         Analyze the following text extracted from a technical engineering drawing. Your task is to find three specific pieces of information: the part number, the material standard, and the grade.
 
