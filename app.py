@@ -87,6 +87,7 @@ def process_ocr_text(text):
         "standard": "Not Found",
         "grade": "Not Found",
         "material": "Not Found",
+        "reinforcement": "Not Found",
         "dimensions": {},
         "operating_conditions": {},
         "coordinates": []
@@ -1582,6 +1583,19 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
         # Ensure dimensions param is the dict you expect
         dims = dimensions or analysis_results.get('dimensions', {})
 
+        # determine reinforcement to write: prefer previously-resolved reinforcement, else query DB, else 'Not Found'
+        reinforcement_to_write = analysis_results.get('reinforcement')
+        if reinforcement_to_write in (None, '', 'Not Found'):
+            try:
+                # attempt DB lookup by material if we don't already have a value
+                reinforcement_to_write = get_reinforcement_from_material(analysis_results.get('standard', 'Not Found'),
+                                                                     analysis_results.get('grade', 'Not Found'),
+                                                                     analysis_results.get('material', 'Not Found'))
+                if reinforcement_to_write is None or (isinstance(reinforcement_to_write, str) and reinforcement_to_write.strip() == ""):
+                    reinforcement_to_write = "None"
+            except Exception:
+                reinforcement_to_write = analysis_results.get('reinforcement', 'Not Found')
+
         # Build the row data dictionary
         row_data = {
             'child part': part_number.lower(),
@@ -1591,7 +1605,7 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
             'CHILD PART QTY': "1",
             'SPECIFICATION': specification,
             'MATERIAL': analysis_results.get('material', 'Not Found'),
-            'REINFORCEMENT': "Not Found",
+            'REINFORCEMENT': reinforcement_to_write,
             'VOLUME AS PER 2D': analysis_results.get('volume', 'Not Found'),
         }
         
@@ -3224,9 +3238,24 @@ def upload_and_analyze():
             
             # Lookup material using the potentially updated standard
             final_results["material"] = get_material_from_standard(standard, grade)
+
+            # --- NEW: lookup reinforcement based on standard, grade and material ---
+            try:
+                # try to get reinforcement from the reinforcement table (helper exists in this file)
+                reinforcement_val = get_reinforcement_from_material(standard, grade, final_results.get("material", "Not Found"))
+                # Normalize common outputs: empty -> 'None', explicit 'Not Found' stays 'Not Found'
+                if reinforcement_val is None or (isinstance(reinforcement_val, str) and reinforcement_val.strip() == ""):
+                    reinforcement_val = "None"
+                final_results["reinforcement"] = reinforcement_val
+                logging.info(f"Reinforcement resolved: {final_results['reinforcement']}")
+            except Exception as e:
+                logging.warning(f"Reinforcement lookup failed: {e}", exc_info=True)
+                # Keep a deterministic key for downstream code
+                final_results["reinforcement"] = final_results.get("reinforcement", "Not Found")
         except Exception as e:
             logging.error(f"Error in material lookup: {e}")
             final_results["material"] = "Not Found"
+            final_results["reinforcement"] = "Not Found"
 
         # Validate the extracted data
         try:
