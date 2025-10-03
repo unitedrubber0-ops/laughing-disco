@@ -210,24 +210,27 @@ except Exception as e:
     logging.error(f"Failed to configure Gemini API key: {str(e)}")
     raise RuntimeError(f"Failed to initialize Gemini AI: {str(e)}")
 
-# --- Load and Clean Material Database on Startup with Enhanced Debugging ---
+# --- Load and Clean Material and Reinforcement Database on Startup with Enhanced Debugging ---
 def load_material_database():
-    """Load and clean the material database from either Excel or CSV file."""
+    """Load and clean the material and reinforcement database from Excel file."""
     try:
         # First try loading from Excel file
         material_df = pd.read_excel("MATERIAL WITH STANDARD.xlsx", sheet_name="Sheet1")
+        reinforcement_df = pd.read_excel("MATERIAL WITH STANDARD.xlsx", sheet_name="Reinforcement")
         source = "Excel"
     except FileNotFoundError:
         try:
             # Fall back to CSV if Excel file is not found
             material_df = pd.read_csv('material_data.csv')
             source = "CSV"
+            reinforcement_df = None
+            logging.warning("Reinforcement data not available in CSV format")
         except FileNotFoundError:
             logging.error("Neither MATERIAL WITH STANDARD.xlsx nor material_data.csv found. Material lookup will not work.")
-            return None
+            return None, None
     
     try:
-        # Clean and standardize the data
+        # Clean and standardize the material data
         material_df.columns = material_df.columns.str.strip()
         material_df['STANDARD'] = material_df['STANDARD'].str.strip()
         material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
@@ -237,10 +240,25 @@ def load_material_database():
         logging.info(f"Unique STANDARD values:\n{material_df['STANDARD'].unique().tolist()}")
         logging.info(f"Unique GRADE values:\n{material_df['GRADE'].unique().tolist()}")
         
-        return material_df
+        # Clean and standardize reinforcement data if available
+        if reinforcement_df is not None:
+            reinforcement_df.columns = reinforcement_df.columns.str.strip()
+            if 'STANDARD' in reinforcement_df.columns:
+                reinforcement_df['STANDARD'] = reinforcement_df['STANDARD'].str.strip()
+            if 'GRADE' in reinforcement_df.columns:
+                reinforcement_df['GRADE'] = reinforcement_df['GRADE'].astype(str).str.strip()
+            if 'MATERIAL' in reinforcement_df.columns:
+                reinforcement_df['MATERIAL'] = reinforcement_df['MATERIAL'].str.strip()
+            if 'REINFORCEMENT' in reinforcement_df.columns:
+                reinforcement_df['REINFORCEMENT'] = reinforcement_df['REINFORCEMENT'].str.strip()
+            
+            logging.info(f"Successfully loaded reinforcement database with {len(reinforcement_df)} entries.")
+            logging.info(f"Reinforcement database head (first 5 rows):\n{reinforcement_df.head().to_string()}")
+        
+        return material_df, reinforcement_df
     except FileNotFoundError as e:
         logging.error(f"Material database file not found: {str(e)}")
-        return None
+        return None, None
     except pd.errors.EmptyDataError:
         logging.error("Material database file is empty")
         return None
@@ -251,8 +269,66 @@ def load_material_database():
         logging.error(f"Unexpected error processing material database: {str(e)}")
         return None
 
-# Load the material database
-material_df = load_material_database()
+# Load the material and reinforcement databases
+material_df, reinforcement_df = load_material_database()
+
+def get_reinforcement_from_material(standard, grade, material):
+    """
+    Look up reinforcement information based on standard, grade, and material.
+    Returns the reinforcement type or "Not Found" if no match is found.
+    """
+    if reinforcement_df is None:
+        logging.error("Reinforcement database not loaded")
+        return "Not Found"
+    
+    if standard == "Not Found" or grade == "Not Found" or material == "Not Found":
+        logging.warning("Standard, grade, or material not provided")
+        return "Not Found"
+    
+    try:
+        # Clean inputs
+        clean_standard = clean_text_encoding(str(standard))
+        clean_grade = clean_text_encoding(str(grade))
+        clean_material = clean_text_encoding(str(material))
+        
+        logging.info(f"Reinforcement lookup initiated: Standard='{standard}', Grade='{grade}', Material='{material}'")
+        
+        # Try exact match first
+        matches = reinforcement_df[
+            (reinforcement_df['STANDARD'].str.upper() == clean_standard.upper()) &
+            (reinforcement_df['GRADE'].astype(str).str.upper() == clean_grade.upper()) &
+            (reinforcement_df['MATERIAL'].str.upper() == clean_material.upper())
+        ]
+        
+        if not matches.empty:
+            reinforcement = matches.iloc[0]['REINFORCEMENT']
+            logging.info(f"Exact reinforcement match found: {reinforcement}")
+            return reinforcement
+        
+        # Try matching with normalized values
+        norm_standard = normalize_for_comparison(clean_standard)
+        norm_grade = normalize_for_comparison(clean_grade)
+        norm_material = normalize_for_comparison(clean_material)
+        
+        matches = reinforcement_df[
+            reinforcement_df.apply(lambda row: (
+                normalize_for_comparison(str(row['STANDARD'])) == norm_standard and
+                normalize_for_comparison(str(row['GRADE'])) == norm_grade and
+                normalize_for_comparison(str(row['MATERIAL'])) == norm_material
+            ), axis=1)
+        ]
+        
+        if not matches.empty:
+            reinforcement = matches.iloc[0]['REINFORCEMENT']
+            logging.info(f"Normalized reinforcement match found: {reinforcement}")
+            return reinforcement
+        
+        logging.warning(f"No reinforcement match found for Standard: '{standard}', Grade: '{grade}', Material: '{material}'")
+        return "Not Found"
+    
+    except Exception as e:
+        logging.error(f"Error during reinforcement lookup: {str(e)}", exc_info=True)
+        return "Not Found"
 
 # --- String Normalization Helper ---
 def get_standards_remark(text, standard):
