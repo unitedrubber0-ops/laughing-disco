@@ -126,6 +126,86 @@ def process_ocr_text(text):
         
         result["description"] = description
         
+        # ENHANCED: Extract full reinforcement and rings from MATERIAL block
+        # Look for the material section with more flexible patterns
+        material_patterns = [
+            r'MATERIAL:\s*(.*?)(?=UNLESS|NOTES:|$)',  # Capture until UNLESS or NOTES
+            r'HOSE:\s*(.*?)(?=UNLESS|NOTES:|$)',      # Alternative pattern starting with HOSE:
+            r'MATERIAL:\s*(.*?REINFORCEMENT.*?RINGS.*?)(?=UNLESS|NOTES:|$)',  # Specific for reinforcement and rings
+        ]
+        
+        material_text = ""
+        for pattern in material_patterns:
+            material_match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+            if material_match:
+                material_text = material_match.group(1).strip()
+                logging.info(f"Extracted material block with pattern '{pattern}': {material_text}")
+                break
+        
+        if material_text:
+            # Extract reinforcement with multiple patterns
+            rein_patterns = [
+                r'REINFORCEMENT:\s*(.*?)(?=\n\s*RINGS:|\n\s*UNLESS|\n\s*NOTES|$)',
+                r'REINFORCEMENT:\s*(.*?)\n',
+                r'REINFORCEMENT:\s*([^\n]+)'
+            ]
+            
+            for pattern in rein_patterns:
+                rein_match = re.search(pattern, material_text, re.IGNORECASE)
+                if rein_match:
+                    reinforcement = rein_match.group(1).strip()
+                    # Clean up any trailing punctuation or whitespace
+                    reinforcement = re.sub(r'[,\s\.]+$', '', reinforcement)
+                    result["reinforcement_raw"] = reinforcement
+                    logging.info(f"Extracted reinforcement: '{reinforcement}'")
+                    break
+            
+            # Extract rings with multiple patterns
+            rings_patterns = [
+                r'RINGS:\s*(.*?)(?=\n\s*UNLESS|\n\s*NOTES|$)',
+                r'RINGS:\s*(.*?)\n',
+                r'RINGS:\s*([^\n]+)'
+            ]
+            
+            for pattern in rings_patterns:
+                rings_match = re.search(pattern, material_text, re.IGNORECASE)
+                if rings_match:
+                    rings = rings_match.group(1).strip()
+                    # Clean up any trailing punctuation or whitespace
+                    rings = re.sub(r'[,\s\.]+$', '', rings)
+                    result["rings"] = rings
+                    logging.info(f"Extracted rings: '{rings}'")
+                    break
+            
+            # Combine reinforcement and rings for the main reinforcement field
+            if result["reinforcement_raw"] != "Not Found" and result["rings"] != "Not Found":
+                result["reinforcement"] = f"{result['reinforcement_raw']}, {result['rings']}"
+                logging.info(f"Combined reinforcement with rings: {result['reinforcement']}")
+            elif result["reinforcement_raw"] != "Not Found":
+                result["reinforcement"] = result["reinforcement_raw"]
+            elif result["rings"] != "Not Found":
+                result["reinforcement"] = result["rings"]
+        
+        # If we still haven't found reinforcement, try direct search in full text
+        if result["reinforcement"] == "Not Found":
+            # Direct search for reinforcement
+            direct_rein_match = re.search(r'REINFORCEMENT:\s*([^\n]+)', text, re.IGNORECASE)
+            if direct_rein_match:
+                result["reinforcement_raw"] = direct_rein_match.group(1).strip()
+                result["reinforcement"] = result["reinforcement_raw"]
+                logging.info(f"Direct reinforcement extraction: {result['reinforcement']}")
+            
+            # Direct search for rings
+            direct_rings_match = re.search(r'RINGS:\s*([^\n]+)', text, re.IGNORECASE)
+            if direct_rings_match:
+                result["rings"] = direct_rings_match.group(1).strip()
+                # If we already have reinforcement, combine them
+                if result["reinforcement"] != "Not Found":
+                    result["reinforcement"] = f"{result['reinforcement']}, {result['rings']}"
+                else:
+                    result["reinforcement"] = result["rings"]
+                logging.info(f"Direct rings extraction and combination: {result['reinforcement']}")
+        
         # Extract standard (MPAPS) with priority to F-30
         std_match_30 = re.search(r'MPAPS\s*F[-\s]*30', text, re.IGNORECASE)
         std_match = re.search(r'MPAPS\s*F[-\s]*(\d+(?:/F[-\s]*\d+)?)', text, re.IGNORECASE)
@@ -3347,33 +3427,51 @@ def upload_and_analyze():
             # Handle reinforcement: combine drawing details with database lookup
             try:
                 drawing_rein = final_results.get("reinforcement_raw", "Not Found")
-                drawing_rings = final_results.get("rings", "Not Found")  # NEW: Get rings from drawing
+                drawing_rings = final_results.get("rings", "Not Found")
                 db_rein = get_reinforcement_from_material(standard, grade, final_results.get("material", "Not Found"))
                 
                 # Normalize common outputs
                 if db_rein is None or (isinstance(db_rein, str) and db_rein.strip() == ""):
                     db_rein = "Not Found"
                 
-                # If drawing has both reinforcement and rings, combine them with database reinforcement
-                if drawing_rein != "Not Found" and drawing_rings != "Not Found":
-                    # Use database reinforcement if available, otherwise use drawing reinforcement
-                    base_reinforcement = db_rein if db_rein != "Not Found" else drawing_rein
-                    final_results["reinforcement"] = f"{base_reinforcement}, {drawing_rings}"
-                    logging.info(f"Combined reinforcement with rings: {final_results['reinforcement']}")
-                elif drawing_rings != "Not Found":
-                    # Only rings found in drawing
-                    final_results["reinforcement"] = f"{db_rein}, {drawing_rings}" if db_rein != "Not Found" else drawing_rings
-                elif drawing_rein != "Not Found" and db_rein != "Not Found":
-                    # Both drawing and database have reinforcement, prefer database but log both
-                    final_results["reinforcement"] = db_rein
-                    logging.info(f"Using database reinforcement: {db_rein} (drawing had: {drawing_rein})")
-                else:
-                    # Use drawing reinforcement if available, fallback to database
-                    final_results["reinforcement"] = (
-                        drawing_rein if drawing_rein != "Not Found" else 
-                        db_rein if db_rein != "Not Found" else "None"
-                    )
+                logging.info(f"Reinforcement components - Drawing: '{drawing_rein}', Rings: '{drawing_rings}', DB: '{db_rein}'")
                 
+                # Decision logic for final reinforcement value
+                if drawing_rings != "Not Found":
+                    # We have rings from drawing - always include them
+                    if db_rein != "Not Found":
+                        # Use database reinforcement plus drawing rings
+                        final_results["reinforcement"] = f"{db_rein}, {drawing_rings}"
+                    elif drawing_rein != "Not Found":
+                        # Use drawing reinforcement plus drawing rings
+                        final_results["reinforcement"] = f"{drawing_rein}, {drawing_rings}"
+                    else:
+                        # Only rings available
+                        final_results["reinforcement"] = drawing_rings
+                elif drawing_rein != "Not Found":
+                    # We have reinforcement from drawing but no rings
+                    if db_rein != "Not Found":
+                        # Prefer database reinforcement but log the drawing value
+                        final_results["reinforcement"] = db_rein
+                        logging.info(f"Using database reinforcement '{db_rein}' over drawing '{drawing_rein}'")
+                    else:
+                        # Use drawing reinforcement
+                        final_results["reinforcement"] = drawing_rein
+                else:
+                    # No drawing information, use database or default
+                    final_results["reinforcement"] = db_rein if db_rein != "Not Found" else "None"
+                
+                logging.info(f"Final reinforcement: '{final_results['reinforcement']}'")
+                
+                # Remove the raw fields from final results as they're no longer needed
+                final_results.pop("reinforcement_raw", None)
+                final_results.pop("rings", None)
+                
+                logging.info(f"Reinforcement resolved - Drawing: '{drawing_rein}', Rings: '{drawing_rings}', DB: '{db_rein}', Final: '{final_results['reinforcement']}'")
+            except Exception as e:
+                logging.warning(f"Reinforcement lookup failed: {e}", exc_info=True)
+                # Keep a deterministic key for downstream code
+                final_results["reinforcement"] = final_results.get("reinforcement", "Not Found")
                 logging.info(f"Reinforcement resolved: Drawing='{drawing_rein}', Rings='{drawing_rings}', DB='{db_rein}', " + 
                            f"Final='{final_results['reinforcement']}'")
                 
