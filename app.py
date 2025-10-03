@@ -33,6 +33,64 @@ import google.generativeai as genai
 from gemini_helper import process_pages_with_vision_or_ocr, extract_text_from_image_wrapper
 
 # --- Helper Functions ---
+def parse_material_block(material_text: str) -> dict:
+    """
+    Extract reinforcement and rings robustly from a material block.
+    Returns safe string values and a source tag.
+    """
+    if not material_text:
+        return {'reinforcement': 'Not Found', 'rings': 'Not Found', 'reinforcement_source': 'none'}
+
+    rein_pat = re.compile(
+        r'REINFORCEMENT\s*[:\-]?\s*(.*?)(?=\n\s*(?:RINGS|UNLESS|NOTES|MUST|$))',
+        re.IGNORECASE | re.DOTALL
+    )
+    rings_pat = re.compile(
+        r'RINGS\s*[:\-]?\s*(.*?)(?=\n\s*(?:UNLESS|NOTES|MUST|$))',
+        re.IGNORECASE | re.DOTALL
+    )
+
+    def _clean(s):
+        if s is None:
+            return None
+        s = s.strip()
+        s = re.sub(r'\s+', ' ', s)           # collapse whitespace/newlines
+        s = s.strip(' .;,-:')                # trim stray punctuation
+        return s
+
+    rein_m = rein_pat.search(material_text)
+    rings_m = rings_pat.search(material_text)
+
+    reinforcement = _clean(rein_m.group(1)) if rein_m else None
+    rings = _clean(rings_m.group(1)) if rings_m else None
+
+    # Fallback keyword sniffing (useful if label missing or OCR dropped colon)
+    if not reinforcement:
+        kw = re.search(r'(META[\s\-]?ARAMID|ARAMID|NOMEX|KEVLAR|POLYESTER FABRIC)',
+                       material_text, re.IGNORECASE)
+        if kw:
+            reinforcement = kw.group(0).upper().replace('META ARAMID', 'META-ARAMID')
+
+    # Normalizations
+    if reinforcement:
+        reinforcement = reinforcement.replace('META ARAMID', 'META-ARAMID')
+        reinforcement = reinforcement.replace('META-ARAMID FABRIC', 'META-ARAMID FABRIC')
+    if rings:
+        rings = rings.replace('PER ASTM-A-313', 'PER ASTM A-313')
+
+    return {
+        'reinforcement': reinforcement if reinforcement else 'Not Found',
+        'rings': rings if rings else 'Not Found',
+        'reinforcement_source': 'drawing' if reinforcement else 'none'
+    }
+
+def parse_float_with_tolerance(s):
+    """Return the first float found in the string, or None if none."""
+    if s is None:
+        return None
+    m = re.search(r'[-+]?\d+(?:\.\d+)?', str(s))
+    return float(m.group(0)) if m else None
+
 def process_with_gemini(image_path):
     """
     Process an image with Google's Gemini Vision model.
@@ -255,37 +313,70 @@ def process_ocr_text(text):
                 "z": float(z)
             })
         
-        # ENHANCED: Extract full reinforcement and rings from MATERIAL block
+        # Extract material block and process reinforcement using the robust parser
         material_block_pattern = r'MATERIAL:\s*(.+?)(?=\n\s*(?:UNLESS|NOTES|DIMENSION|\Z))'
         material_match = re.search(material_block_pattern, text, re.DOTALL | re.IGNORECASE)
         
-        if material_match:
-            material_text = material_match.group(1).strip()
-            logging.info(f"Extracted material block: {material_text}")
+        material_text = material_match.group(1).strip() if material_match else ""
+        parsed = parse_material_block(material_text)
+
+        # Keep raw parsed outputs separate for debugging/excel/traceability
+        result['reinforcement_raw'] = parsed['reinforcement']            # raw string or 'Not Found'
+        result['rings_raw'] = parsed['rings']
+        result['reinforcement_parsed_source'] = parsed['reinforcement_source']
+
+        # Debug: log the material text snippet + parsed result
+        logging.debug("Material block (first 500 chars): %s", (material_text or "")[:500].replace("\n", "\\n"))
+        logging.debug("Parsed material block: %s", parsed)
+
+        # Final decision: prefer drawing-parsed reinforcement if it's a real value
+        def _is_real_value(v):
+            if v is None:
+                return False
+            if isinstance(v, str):
+                vstr = v.strip().lower()
+                return vstr not in ("", "not found", "none", "nan")
+            return True
+
+        final_reinf = None
+        final_source = None
+
+        if _is_real_value(result.get('reinforcement_raw')):
+            final_reinf = result['reinforcement_raw']
+            final_source = 'drawing'
+            logging.info("Using drawing-extracted reinforcement: %s", final_reinf)
             
-            # Extract reinforcement
-            rein_match = re.search(r'REINFORCEMENT:\s*(.*?)(?=\n\s*(?:RINGS|UNLESS|NOTES|\Z))', material_text, re.IGNORECASE | re.DOTALL)
-            if rein_match:
-                reinforcement = rein_match.group(1).strip()
-                result["reinforcement_raw"] = reinforcement
-                logging.info(f"Extracted reinforcement: {reinforcement}")
-            
-            # Extract rings separately
-            rings_match = re.search(r'RINGS:\s*(.*?)(?=\n\s*(?:UNLESS|NOTES|DIMENSION|\Z))', material_text, re.IGNORECASE | re.DOTALL)
-            if rings_match:
-                rings = rings_match.group(1).strip()
-                result["rings"] = rings
-                logging.info(f"Extracted rings: {rings}")
-            
-            # Combine reinforcement and rings for the main reinforcement field
-            if result["reinforcement_raw"] != "Not Found" and result["rings"] != "Not Found":
-                result["reinforcement"] = f"{result['reinforcement_raw']}, {result['rings']}"
-            elif result["reinforcement_raw"] != "Not Found":
-                result["reinforcement"] = result["reinforcement_raw"]
-            elif result["rings"] != "Not Found":
-                result["reinforcement"] = result["rings"]
-            
-            logging.info(f"Final combined reinforcement: {result['reinforcement']}")
+        else:
+            # Fallback to database lookup ONLY if drawing did not provide it
+            db_reinf = None
+            try:
+                db_reinf = get_reinforcement_from_material(result.get('standard'), result.get('grade'), result.get('material'))
+            except Exception as e:
+                logging.warning("DB reinforcement lookup failed: %s", e)
+                db_reinf = None
+
+            if _is_real_value(db_reinf):
+                # keep DB match as fallback, but record it separately
+                result['reinforcement_db'] = db_reinf
+                final_reinf = db_reinf
+                final_source = 'db'
+                logging.info("Using reinforcement from DB fallback: %s", db_reinf)
+            else:
+                final_reinf = 'Not Found'
+                final_source = 'none'
+                logging.info("No reinforcement found in drawing or DB for this part")
+
+        # Final safe assignment (always store a string)
+        result['reinforcement'] = final_reinf if isinstance(final_reinf, str) else str(final_reinf)
+        result['reinforcement_source'] = final_source
+        # Keep trace of DB even if not used
+        if 'reinforcement_db' not in result:
+            result['reinforcement_db'] = db_reinf if 'db_reinf' in locals() else 'Not Found'
+
+        # Extra logging to help pinpoint failures
+        logging.info("Final reinforcement decision - Value: '%s', Source: %s", result.get('reinforcement'), result.get('reinforcement_source'))
+        logging.debug("reinforcement_raw='%s', reinforcement_db='%s', rings_raw='%s'",
+                    result.get('reinforcement_raw'), result.get('reinforcement_db'), result.get('rings_raw'))
         
         return result
     except Exception as e:
