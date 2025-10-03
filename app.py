@@ -215,13 +215,12 @@ except Exception as e:
 def load_material_database():
     """Load and clean the material and reinforcement database from Excel file."""
     try:
-        # First try loading from Excel file
+        # Load from Sheet1 (contains both material and reinforcement)
         material_df = pd.read_excel("MATERIAL WITH STANDARD.xlsx", sheet_name="Sheet1")
-        reinforcement_df = pd.read_excel("MATERIAL WITH STANDARD.xlsx", sheet_name="Reinforcement")
+        reinforcement_df = material_df  # Use the same DataFrame for reinforcement lookups
         source = "Excel"
     except FileNotFoundError:
         try:
-            # Fall back to CSV if Excel file is not found
             material_df = pd.read_csv('material_data.csv')
             source = "CSV"
             reinforcement_df = None
@@ -241,41 +240,20 @@ def load_material_database():
         logging.info(f"Unique STANDARD values:\n{material_df['STANDARD'].unique().tolist()}")
         logging.info(f"Unique GRADE values:\n{material_df['GRADE'].unique().tolist()}")
         
-        # Clean and standardize reinforcement data if available
-        if reinforcement_df is not None:
-            reinforcement_df.columns = reinforcement_df.columns.str.strip()
-            if 'STANDARD' in reinforcement_df.columns:
-                reinforcement_df['STANDARD'] = reinforcement_df['STANDARD'].str.strip()
-            if 'GRADE' in reinforcement_df.columns:
-                reinforcement_df['GRADE'] = reinforcement_df['GRADE'].astype(str).str.strip()
-            if 'MATERIAL' in reinforcement_df.columns:
-                reinforcement_df['MATERIAL'] = reinforcement_df['MATERIAL'].str.strip()
-            if 'REINFORCEMENT' in reinforcement_df.columns:
-                reinforcement_df['REINFORCEMENT'] = reinforcement_df['REINFORCEMENT'].str.strip()
-            
-            logging.info(f"Successfully loaded reinforcement database with {len(reinforcement_df)} entries.")
-            logging.info(f"Reinforcement database head (first 5 rows):\n{reinforcement_df.head().to_string()}")
+        # Since reinforcement is in the same DataFrame, log confirmation
+        logging.info(f"Reinforcement database set to material_df with {len(reinforcement_df)} entries.")
         
         return material_df, reinforcement_df
-    except FileNotFoundError as e:
-        logging.error(f"Material database file not found: {str(e)}")
-        return None, None
-    except pd.errors.EmptyDataError:
-        logging.error("Material database file is empty")
-        return None
-    except pd.errors.ParserError as e:
-        logging.error(f"Error parsing material database: {str(e)}")
-        return None
     except Exception as e:
         logging.error(f"Unexpected error processing material database: {str(e)}")
-        return None
+        return None, None
 
 # Load the material and reinforcement databases
 material_df, reinforcement_df = load_material_database()
 
 def get_reinforcement_from_material(standard, grade, material):
     """
-    Look up reinforcement information based on standard, grade, and material.
+    Look up reinforcement information based on standard, grade, and material with flexible matching.
     Returns the reinforcement type or "Not Found" if no match is found.
     """
     if reinforcement_df is None:
@@ -294,10 +272,101 @@ def get_reinforcement_from_material(standard, grade, material):
         
         logging.info(f"Reinforcement lookup initiated: Standard='{standard}', Grade='{grade}', Material='{material}'")
         
-        # Try exact match first
-        matches = reinforcement_df[
-            (reinforcement_df['STANDARD'].str.upper() == clean_standard.upper()) &
-            (reinforcement_df['GRADE'].astype(str).str.upper() == clean_grade.upper()) &
+        # Enhanced normalization for comparison
+        def normalize_standard(std):
+            std = str(std).upper().strip()
+            # Handle MPAPS F-series variations
+            std = re.sub(r'MPAPS\s*F\s*[-_]?\s*(\d+)', r'MPAPS F-\1', std)
+            std = re.sub(r'\s+', ' ', std).strip()
+            return std
+        
+        def normalize_grade(grd):
+            grd = str(grd).upper().strip()
+            # Handle grade variations (1B, I-B, etc.)
+            grd = re.sub(r'GRADE\s*', '', grd)
+            grd = re.sub(r'TYPE\s*', '', grd)
+            grd = re.sub(r'[_\-\s]', '', grd)
+            # Convert Roman numerals
+            roman_map = {'I': '1', 'II': '2', 'III': '3'}
+            for roman, num in roman_map.items():
+                if grd == roman:
+                    grd = num + 'B'  # Assume B type if not specified
+            return grd
+        
+        norm_standard = normalize_standard(clean_standard)
+        norm_grade = normalize_grade(clean_grade)
+        
+        logging.info(f"Normalized: Standard='{norm_standard}', Grade='{norm_grade}'")
+        
+        # Stage 1: Exact match on cleaned values
+        exact_matches = reinforcement_df[
+            (reinforcement_df['STANDARD'].str.upper().str.strip() == norm_standard) &
+            (reinforcement_df['GRADE'].astype(str).str.upper().str.strip() == norm_grade)
+        ]
+        
+        if not exact_matches.empty:
+            reinforcement = exact_matches.iloc[0]['REINFORCEMENT']
+            logging.info(f"Exact match found: {reinforcement}")
+            return reinforcement
+        
+        # Stage 2: Handle common variations like MPAPS F-30/F-1
+        if norm_standard == 'MPAPS F-30' and norm_grade in ['1B', '1']:
+            matches = reinforcement_df[
+                (reinforcement_df['STANDARD'].str.upper().str.contains('MPAPS F-30', regex=False)) &
+                (reinforcement_df['GRADE'].astype(str).str.upper().str.contains('1B|1', regex=True))
+            ]
+            if not matches.empty:
+                reinforcement = matches.iloc[0]['REINFORCEMENT']
+                logging.info(f"Found reinforcement for MPAPS F-30/1B: {reinforcement}")
+                return reinforcement
+        
+        # Stage 3: Partial matching with scoring
+        best_match = None
+        best_score = 0
+        
+        for idx, row in reinforcement_df.iterrows():
+            db_standard = normalize_standard(str(row['STANDARD']))
+            db_grade = normalize_grade(str(row['GRADE']))
+            
+            # Standard matching score
+            standard_score = 0
+            if norm_standard == db_standard:
+                standard_score = 1.0
+            elif 'F-30' in norm_standard and 'F-30' in db_standard:
+                standard_score = 0.9
+            elif any(term in db_standard for term in norm_standard.split()):
+                standard_score = 0.7
+            
+            # Grade matching score
+            grade_score = 0
+            if norm_grade == db_grade:
+                grade_score = 1.0
+            elif norm_grade in db_grade or db_grade in norm_grade:
+                grade_score = 0.8
+            
+            # Combined score with weighted standard matching
+            total_score = (standard_score * 0.7) + (grade_score * 0.3)
+            
+            if total_score > best_score:
+                best_score = total_score
+                best_match = row['REINFORCEMENT']
+                logging.info(f"New best match found: '{best_match}' (score: {best_score:.2f})\n" +
+                             f"  DB Standard: {db_standard}\n" +
+                             f"  DB Grade: {db_grade}\n" +
+                             f"  Standard Score: {standard_score:.2f}\n" +
+                             f"  Grade Score: {grade_score:.2f}")
+        
+        # Return best match if score is high enough
+        if best_score >= 0.6:
+            logging.info(f"Best match accepted: '{best_match}' (score: {best_score:.2f})")
+            return best_match
+        
+        logging.warning(f"No reinforcement match found for Standard: '{standard}', Grade: '{grade}', Material: '{material}'")
+        return "Not Found"
+    
+    except Exception as e:
+        logging.error(f"Error during reinforcement lookup: {str(e)}", exc_info=True)
+        return "Not Found"
             (reinforcement_df['MATERIAL'].str.upper() == clean_material.upper())
         ]
         
