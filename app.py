@@ -144,69 +144,33 @@ def process_ocr_text(text):
         
         logging.debug(f"Raw material block (first 500 chars): {material_text[:500]}")
         
+        # Debug log the raw material block for regex iteration
+        logging.debug("Material block (first 400 chars): %s", material_text[:400].replace("\n", "\\n"))
+
         if material_text:
-            # Extract reinforcement with multiple patterns
-            rein_patterns = [
-                r'REINFORCEMENT\s*[:\-]?\s*(.*?)(?=\n\s*(?:RINGS|UNLESS|NOTES|$))',
-                r'REINFORCEMENT\s*[:\-]?\s*([^\n\r]+)',
-                r'REINF[:\-]?\s*([^\n\r]+)'
-            ]
+            # Use the robust parser to extract reinforcement and rings
+            parsed = parse_material_block(material_text)
             
-            for pattern in rein_patterns:
-                rein_match = re.search(pattern, material_text, re.IGNORECASE)
-                if rein_match:
-                    reinforcement = rein_match.group(1).strip()
-                    # Clean up any trailing punctuation or whitespace
-                    reinforcement = re.sub(r'[,\s\.]+$', '', reinforcement)
-                    result["reinforcement_raw"] = reinforcement
-                    logging.info(f"Extracted reinforcement: '{reinforcement}'")
-                    break
-            
-            # Extract rings with multiple patterns
-            rings_patterns = [
-                r'RINGS:\s*(.*?)(?=\n\s*UNLESS|\n\s*NOTES|$)',
-                r'RINGS:\s*(.*?)\n',
-                r'RINGS:\s*([^\n]+)'
-            ]
-            
-            for pattern in rings_patterns:
-                rings_match = re.search(pattern, material_text, re.IGNORECASE)
-                if rings_match:
-                    rings = rings_match.group(1).strip()
-                    # Clean up any trailing punctuation or whitespace
-                    rings = re.sub(r'[,\s\.]+$', '', rings)
-                    result["rings"] = rings
-                    logging.info(f"Extracted rings: '{rings}'")
-                    break
-            
-            logging.debug(f"reinforcement_raw='{result.get('reinforcement_raw')}', rings='{result.get('rings')}'")
+            # Store raw values for debugging
+            result["reinforcement_raw"] = parsed["reinforcement"]
+            result["rings"] = parsed["rings"]
+            logging.debug(f"Existing reinforcement_raw='{result.get('reinforcement_raw')}', rings='{result.get('rings')}'")
 
-            # --- Prefer explicit drawing values if present (patch) ---
+            # prefer drawing values when present
             try:
-                # Normalize whitespace
-                if result.get("reinforcement_raw") and result["reinforcement_raw"] != "Not Found":
-                    drawing_rein = re.sub(r'\s+', ' ', result["reinforcement_raw"]).strip()
-                else:
-                    drawing_rein = None
-
-                if result.get("rings") and result["rings"] != "Not Found":
-                    drawing_rings = re.sub(r'\s+', ' ', result["rings"]).strip()
-                else:
-                    drawing_rings = None
-
-                # If drawing explicitly states reinforcement/rings, prefer them.
-                if drawing_rein or drawing_rings:
-                    if drawing_rein and drawing_rings:
-                        result["reinforcement"] = f"{drawing_rein}, {drawing_rings}"
-                    elif drawing_rein:
-                        result["reinforcement"] = drawing_rein
-                    else:
-                        result["reinforcement"] = drawing_rings
-                    # mark source to help debugging
-                    result["reinforcement_source"] = "drawing"
+                if parsed['reinforcement'] != 'Not Found':
+                    result['reinforcement'] = parsed['reinforcement']
+                    result['reinforcement_source'] = parsed['reinforcement_source']
                     logging.info(f"Using drawing-extracted reinforcement: {result['reinforcement']}")
-                else:
-                    result["reinforcement_source"] = "none"
+
+                    # If we have rings too, combine them
+                    if parsed['rings'] != 'Not Found':
+                        result['reinforcement'] = f"{result['reinforcement']}, {parsed['rings']}"
+                        logging.info(f"Combined with rings: {result['reinforcement']}")
+                        result["reinforcement_source"] = "drawing"
+                        logging.info(f"Using drawing-extracted reinforcement: {result['reinforcement']}")
+                    else:
+                        result["reinforcement_source"] = "none"
             except Exception as e:
                 logging.warning(f"Error when preferring drawing reinforcement: {e}")
         
@@ -2086,6 +2050,62 @@ def calculate_development_length(coordinates):
     
     return total_length
 
+def parse_material_block(material_text: str) -> dict:
+    """
+    Robustly extract reinforcement and rings from a material/text block.
+    Returns dict with keys: reinforcement, rings, reinforcement_source
+    """
+    rein_pat = re.compile(
+        r'REINFORCEMENT\s*[:\-]?\s*(.*?)(?=\n\s*(?:RINGS|UNLESS|NOTES|MUST|$))',
+        re.IGNORECASE | re.DOTALL
+    )
+    rings_pat = re.compile(
+        r'RINGS\s*[:\-]?\s*(.*?)(?=\n\s*(?:UNLESS|NOTES|MUST|$))',
+        re.IGNORECASE | re.DOTALL
+    )
+
+    def _clean(s):
+        if s is None:
+            return None
+        s = s.strip()
+        s = re.sub(r'\s+', ' ', s)           # collapse newlines/extra spaces
+        s = s.strip(' .;,-:')                # trim trailing punctuation
+        return s
+
+    rein_m = rein_pat.search(material_text)
+    rings_m = rings_pat.search(material_text)
+
+    reinforcement = _clean(rein_m.group(1)) if rein_m else None
+    rings = _clean(rings_m.group(1)) if rings_m else None
+
+    # Fallback: keyword sniffing (helps when label is missing or OCR dropped colon)
+    if not reinforcement:
+        kw = re.search(r'(META[\s\-]?ARAMID|ARAMID|NOMEX|KEVLAR|POLYESTER FABRIC)',
+                       material_text, re.IGNORECASE)
+        if kw:
+            reinforcement = kw.group(0).upper().replace('META ARAMID', 'META-ARAMID')
+
+    # Normalizations
+    if reinforcement:
+        reinforcement = reinforcement.replace('META ARAMID', 'META-ARAMID')
+        reinforcement = reinforcement.replace('META-ARAMID FABRIC', 'META-ARAMID FABRIC')
+    if rings:
+        rings = rings.replace('PER ASTM-A-313', 'PER ASTM A-313')
+
+    # Ensure string outputs (never None)
+    return {
+        'reinforcement': reinforcement if reinforcement else 'Not Found',
+        'rings': rings if rings else 'Not Found',
+        'reinforcement_source': 'drawing' if reinforcement else 'none'
+    }
+
+def parse_float_with_tolerance(s):
+    """Parse numeric value from strings containing tolerances."""
+    if s is None:
+        return None
+    m = re.search(r'[-+]?\d+(?:\.\d+)?', str(s))
+    return float(m.group(0)) if m else None
+
 def clean_text_encoding(text):
     """
     Clean and normalize text with focus on engineering and technical content.
@@ -3448,32 +3468,50 @@ def upload_and_analyze():
             # Lookup material using the potentially updated standard
             final_results["material"] = get_material_from_standard(standard, grade)
 
-            # Handle reinforcement: prefer drawing details over database lookup
+            # Handle reinforcement: always prefer drawing details over database lookup
             try:
-                # Only fallback to DB lookup if no drawing-extracted reinforcement
-                if final_results.get("reinforcement") == "Not Found" or final_results.get("reinforcement_source") == "none":
-                    db_rein = get_reinforcement_from_material(standard, grade, final_results.get("material", "Not Found"))
-                    if db_rein and db_rein != "Not Found":
-                        final_results["reinforcement_db"] = db_rein
-                        # Only set final reinforcement if drawing didn't provide one
-                        if final_results.get("reinforcement") == "Not Found":
-                            final_results["reinforcement"] = db_rein
-                            final_results["reinforcement_source"] = "db"
-                        logging.info(f"DB reinforcement used: {db_rein}")
+                # Store raw extracted reinforcement data for reference
+                raw_reinforcement = final_results.get("reinforcement")
+                raw_source = final_results.get("reinforcement_source", "unknown")
+                
+                logger.debug("Raw reinforcement data - Value: %s, Source: %s", raw_reinforcement, raw_source)
+                
+                # Look up DB reinforcement for comparison and fallback
+                db_rein = get_reinforcement_from_material(standard, grade, final_results.get("material", "Not Found"))
+                if db_rein and db_rein != "Not Found":
+                    final_results["reinforcement_db"] = db_rein
+                    logger.debug("Found DB reinforcement: %s", db_rein)
+                
+                # Decision logic for final reinforcement value
+                if raw_reinforcement and raw_reinforcement != "Not Found" and raw_source != "none":
+                    # Keep the drawing-extracted value
+                    final_results["reinforcement"] = raw_reinforcement
+                    final_results["reinforcement_source"] = raw_source
+                    logger.info("Using reinforcement from drawing: %s (source: %s)", raw_reinforcement, raw_source)
+                elif db_rein and db_rein != "Not Found":
+                    # Fallback to DB value
+                    final_results["reinforcement"] = db_rein
+                    final_results["reinforcement_source"] = "db"
+                    logger.info("Using reinforcement from DB: %s", db_rein)
                 else:
-                    logging.info("Drawing-provided reinforcement kept; DB lookup skipped.")
-                    
-                logging.info(f"Final reinforcement: '{final_results.get('reinforcement')}'")
-                logging.info(f"Reinforcement source: {final_results.get('reinforcement_source', 'unknown')}")
+                    # No valid value found
+                    final_results["reinforcement"] = "Not Found"
+                    final_results["reinforcement_source"] = "none"
+                    logger.warning("No valid reinforcement found in drawing or DB")
                 
-            except Exception as e:
-                logging.warning(f"Reinforcement lookup failed: {e}", exc_info=True)
-                # Keep a deterministic key for downstream code
-                final_results["reinforcement"] = final_results.get("reinforcement", "Not Found")
+                # Always log the final decision
+                logger.info("Final reinforcement decision - Value: '%s', Source: %s", 
+                          final_results.get("reinforcement"), 
+                          final_results.get("reinforcement_source"))
                 
-                # Remove the raw fields from final results as they're no longer needed
+                # Clean up raw extraction fields
                 final_results.pop("reinforcement_raw", None)
                 final_results.pop("rings", None)
+                
+            except Exception as e:
+                logger.exception("Reinforcement processing failed")
+                final_results["reinforcement"] = final_results.get("reinforcement", "Not Found")
+                final_results["reinforcement_source"] = "error"
             except Exception as e:
                 logging.warning(f"Reinforcement lookup failed: {e}", exc_info=True)
                 # Keep a deterministic key for downstream code
