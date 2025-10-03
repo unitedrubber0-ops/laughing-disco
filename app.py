@@ -188,31 +188,46 @@ def process_ocr_text(text):
             })
         
         # Extract full reinforcement from MATERIAL block
-        material_block_pattern = r'MATERIAL:?\s*(.*?)(?=(?:NOTES:|UNLESS|DIMENSION|$))'
+        material_block_pattern = r'MATERIAL:\s*(.+?)(?=\n\s*\nUNLESS|\Z)'
         material_match = re.search(material_block_pattern, text, re.DOTALL | re.IGNORECASE)
         if material_match:
             material_text = material_match.group(1).strip()
-            # Parse reinforcement and rings
-            rein_patterns = [
-                r'REINFORCEMENT:\s*([\w\s\-]+(?:FABRIC|PLY))(?:\s*[,.]?\s*RINGS?:?\s*(.*?))?(?=(?:NOTES:|UNLESS|DIMENSION|$))',
-                r'REINFORCEMENT:\s*(.*?)(?:RINGS?:?\s*(.*?))?(?=(?:NOTES:|UNLESS|DIMENSION|$))'
+            logging.info(f"Extracted material block: {material_text}")
+            
+            # Parse reinforcement and rings with improved pattern
+            rein_pattern = r'REINFORCEMENT:\s*([\w\s\-]+(?:FABRIC|PLY))\s*[,.]?\s*RINGS?:\s*(.*?)(?=\n\n|$)'
+            rein_match = re.search(rein_pattern, material_text, re.DOTALL | re.IGNORECASE)
+            
+            # Fallback patterns if primary pattern doesn't match
+            fallback_patterns = [
+                r'REINFORCEMENT:\s*([\w\s\-]+(?:FABRIC|PLY))(?:\s*[,.]?\s*RINGS?:?\s*(.*?))?(?=\n\n|$)',
+                r'REINFORCEMENT:\s*([^,\n]+)(?:\s*[,.]?\s*RINGS?:?\s*(.*?))?(?=\n\n|$)'
             ]
             
-            for pattern in rein_patterns:
-                rein_match = re.search(pattern, material_text, re.IGNORECASE | re.DOTALL)
-                if rein_match:
-                    base_rein = rein_match.group(1).strip()
-                    rings = rein_match.group(2).strip() if rein_match.group(2) else ""
-                    
-                    # Store raw reinforcement text for combination with database lookup
-                    result["reinforcement_raw"] = base_rein
-                    if rings:
-                        result["reinforcement_raw"] += ", " + rings
-                    
-                    # Set main reinforcement field (will be updated in /api/analyze if needed)
-                    result["reinforcement"] = result["reinforcement_raw"].upper()
-                    logger.info(f"Extracted full reinforcement from drawing: {result['reinforcement']}")
-                    break
+            # Try primary pattern first
+            rein_match = re.search(rein_pattern, material_text, re.DOTALL | re.IGNORECASE)
+            
+            # If primary pattern fails, try fallback patterns
+            if not rein_match:
+                for pattern in fallback_patterns:
+                    rein_match = re.search(pattern, material_text, re.DOTALL | re.IGNORECASE)
+                    if rein_match:
+                        break
+            
+            if rein_match:
+                base_rein = rein_match.group(1).strip()
+                rings = rein_match.group(2).strip() if rein_match.group(2) else ""
+                
+                # Store raw reinforcement text for combination with database lookup
+                result["reinforcement_raw"] = base_rein
+                if rings:
+                    result["reinforcement_raw"] += ", " + rings
+                
+                # Set main reinforcement field (will be updated in /api/analyze if needed)
+                result["reinforcement"] = result["reinforcement_raw"].upper()
+                logging.info(f"Extracted full reinforcement from drawing: {result['reinforcement']}")
+                # Log the individual components for debugging
+                logging.debug(f"Reinforcement components - Base: '{base_rein}', Rings: '{rings}'")
         
         return result
     except Exception as e:
