@@ -25,6 +25,16 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
     Returns:
         BytesIO: Excel file data
     """
+    # Log incoming data for debugging
+    logger.info(f"Excel generation - Analysis results overview:")
+    logger.info(f"  Part Number: {analysis_results.get('part_number', 'Not Found')}")
+    logger.info(f"  Standard: {analysis_results.get('standard', 'Not Found')}")
+    logger.info(f"  Grade: {analysis_results.get('grade', 'Not Found')}")
+    logger.info(f"  Material: {analysis_results.get('material', 'Not Found')}")
+    logger.info(f"  Reinforcement: {analysis_results.get('reinforcement', 'Not Found')}")
+    logger.info(f"  Raw reinforcement data: {analysis_results.get('reinforcement_raw', 'Not Found')}")
+    logger.info(f"  Rings data: {analysis_results.get('rings', 'Not Found')}")
+
     try:
         # Define column structure with proper formatting
         columns = [
