@@ -79,6 +79,7 @@ def process_with_gemini(image_path):
 def process_ocr_text(text):
     """
     Process extracted OCR text to structure it into the required format.
+    Extracts key information including full reinforcement details from MATERIAL block.
     Always returns a valid dictionary.
     """
     result = {
@@ -88,6 +89,7 @@ def process_ocr_text(text):
         "grade": "Not Found",
         "material": "Not Found",
         "reinforcement": "Not Found",
+        "reinforcement_raw": "Not Found",  # Store raw reinforcement text from drawing
         "dimensions": {},
         "operating_conditions": {},
         "coordinates": []
@@ -184,6 +186,33 @@ def process_ocr_text(text):
                 "y": float(y),
                 "z": float(z)
             })
+        
+        # Extract full reinforcement from MATERIAL block
+        material_block_pattern = r'MATERIAL:?\s*(.*?)(?=(?:NOTES:|UNLESS|DIMENSION|$))'
+        material_match = re.search(material_block_pattern, text, re.DOTALL | re.IGNORECASE)
+        if material_match:
+            material_text = material_match.group(1).strip()
+            # Parse reinforcement and rings
+            rein_patterns = [
+                r'REINFORCEMENT:\s*([\w\s\-]+(?:FABRIC|PLY))(?:\s*[,.]?\s*RINGS?:?\s*(.*?))?(?=(?:NOTES:|UNLESS|DIMENSION|$))',
+                r'REINFORCEMENT:\s*(.*?)(?:RINGS?:?\s*(.*?))?(?=(?:NOTES:|UNLESS|DIMENSION|$))'
+            ]
+            
+            for pattern in rein_patterns:
+                rein_match = re.search(pattern, material_text, re.IGNORECASE | re.DOTALL)
+                if rein_match:
+                    base_rein = rein_match.group(1).strip()
+                    rings = rein_match.group(2).strip() if rein_match.group(2) else ""
+                    
+                    # Store raw reinforcement text for combination with database lookup
+                    result["reinforcement_raw"] = base_rein
+                    if rings:
+                        result["reinforcement_raw"] += ", " + rings
+                    
+                    # Set main reinforcement field (will be updated in /api/analyze if needed)
+                    result["reinforcement"] = result["reinforcement_raw"].upper()
+                    logger.info(f"Extracted full reinforcement from drawing: {result['reinforcement']}")
+                    break
         
         return result
     except Exception as e:
@@ -3310,15 +3339,39 @@ def upload_and_analyze():
             # Lookup material using the potentially updated standard
             final_results["material"] = get_material_from_standard(standard, grade)
 
-            # --- NEW: lookup reinforcement based on standard, grade and material ---
+            # Handle reinforcement: combine drawing details with database lookup
             try:
-                # try to get reinforcement from the reinforcement table (helper exists in this file)
-                reinforcement_val = get_reinforcement_from_material(standard, grade, final_results.get("material", "Not Found"))
-                # Normalize common outputs: empty -> 'None', explicit 'Not Found' stays 'Not Found'
-                if reinforcement_val is None or (isinstance(reinforcement_val, str) and reinforcement_val.strip() == ""):
-                    reinforcement_val = "None"
-                final_results["reinforcement"] = reinforcement_val
-                logging.info(f"Reinforcement resolved: {final_results['reinforcement']}")
+                drawing_rein = final_results.get("reinforcement_raw", "Not Found")
+                db_rein = get_reinforcement_from_material(standard, grade, final_results.get("material", "Not Found"))
+                
+                # Normalize common outputs
+                if db_rein is None or (isinstance(db_rein, str) and db_rein.strip() == ""):
+                    db_rein = "Not Found"
+                
+                # If drawing has details (including rings) and database has a match, combine them
+                if drawing_rein != "Not Found" and db_rein != "Not Found":
+                    # If drawing mentions rings, append them to the database reinforcement
+                    if "RINGS:" in drawing_rein.upper():
+                        rings_part = re.search(r'RINGS:?\s*(.*?)(?=(?:NOTES:|UNLESS|DIMENSION|$))', 
+                                             drawing_rein, re.IGNORECASE | re.DOTALL)
+                        if rings_part:
+                            final_results["reinforcement"] = f"{db_rein}, {rings_part.group(1).strip()}"
+                        else:
+                            final_results["reinforcement"] = db_rein
+                    else:
+                        final_results["reinforcement"] = db_rein
+                else:
+                    # Use drawing reinforcement if available, fallback to database
+                    final_results["reinforcement"] = (
+                        drawing_rein if drawing_rein != "Not Found" else 
+                        db_rein if db_rein != "Not Found" else "None"
+                    )
+                
+                logging.info(f"Reinforcement resolved: Drawing='{drawing_rein}', DB='{db_rein}', " + 
+                           f"Final='{final_results['reinforcement']}'")
+                
+                # Remove the raw reinforcement from final results as it's no longer needed
+                final_results.pop("reinforcement_raw", None)
             except Exception as e:
                 logging.warning(f"Reinforcement lookup failed: {e}", exc_info=True)
                 # Keep a deterministic key for downstream code
