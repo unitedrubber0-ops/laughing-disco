@@ -984,6 +984,90 @@ def extract_coordinates_from_text(text):
 
 
 
+# --- Helper: try to coerce a value to float, else None ---
+def _to_float(val):
+    try:
+        if val is None:
+            return None
+        # strip commas, spaces
+        s = str(val).strip().replace(',', '.')
+        # allow things like "18.4mm" by extracting first number
+        m = re.search(r'[-+]?\d*\.\d+|\d+', s)
+        if m:
+            return float(m.group(0))
+    except Exception:
+        pass
+    return None
+
+# --- Helper: try many common shapes and extract first three numeric coords ---
+_num_re = re.compile(r'[-+]?\d*\.\d+|\d+')
+
+def point_to_xyz(p):
+    """
+    Convert a point in many possible forms to (x, y, z) (floats).
+    Accepts:
+      - dict with keys like 'x','X','x_coord','X_COORD', etc.
+      - list/tuple like [x, y, z, ...]
+      - string like "P0 0.0 0.0 0.0" or "0.0, 0.0, 0.0"
+      - other objects: will inspect .values() if dict-like
+    Returns:
+      (x, y, z) as floats if at least 3 numeric values found, else None
+    """
+    # dict-like path
+    if isinstance(p, dict):
+        # try common keys first
+        candidates = []
+        for k in p.keys():
+            candidates.append((str(k).lower(), p[k]))
+        # gather numeric values among values (ordered)
+        vals = []
+        for k, v in candidates:
+            nf = _to_float(v)
+            if nf is not None:
+                vals.append(nf)
+        if len(vals) >= 3:
+            return vals[0], vals[1], vals[2]
+        # attempt specifically by common key names
+        x = _to_float(p.get('x') or p.get('X') or p.get('x_coord') or p.get('X_COORD'))
+        y = _to_float(p.get('y') or p.get('Y') or p.get('y_coord') or p.get('Y_COORD'))
+        z = _to_float(p.get('z') or p.get('Z') or p.get('z_coord') or p.get('Z_COORD'))
+        if x is not None and y is not None and z is not None:
+            return x, y, z
+        return None
+
+    # list/tuple path
+    if isinstance(p, (list, tuple)):
+        nums = []
+        for item in p:
+            nf = _to_float(item)
+            if nf is not None:
+                nums.append(nf)
+            if len(nums) >= 3:
+                return nums[0], nums[1], nums[2]
+        return None
+
+    # string path
+    if isinstance(p, str):
+        found = _num_re.findall(p)
+        if len(found) >= 3:
+            return float(found[0]), float(found[1]), float(found[2])
+        return None
+
+    # last resort: try iterating attributes / values
+    try:
+        values = list(getattr(p, '__dict__', {}).values()) or list(getattr(p, 'values', lambda: [])())
+        nums = []
+        for v in values:
+            nf = _to_float(v)
+            if nf is not None:
+                nums.append(nf)
+            if len(nums) >= 3:
+                return nums[0], nums[1], nums[2]
+    except Exception:
+        pass
+
+    return None
+
 def normalize_coordinates(points):
     """
     Canonicalize 'points' into a list of dicts: [{'point':'P0','x':float,'y':float,'z':float,'r':float}, ...]
@@ -1084,6 +1168,33 @@ def normalize_coordinates(points):
     # Fallback: unknown type
     logging.debug(f"normalize_coordinates: unknown points type {type(points)}")
     return []
+
+def calculate_development_length_safe(coords, *args, **kwargs):
+    """
+    coords: iterable of points in mixed forms.
+    Returns development length (float) or raises ValueError if not enough valid coords.
+    This wraps the existing calculate_development_length logic but first normalizes points.
+    """
+    normalized = []
+    for i, p in enumerate(coords or []):
+        xyz = point_to_xyz(p)
+        if xyz is None:
+            logger.warning("Invalid coordinates: Missing numeric coords in point %s, skipping. Raw: %s", i, p)
+            continue
+        x, y, z = xyz
+        normalized.append({'x': float(x), 'y': float(y), 'z': float(z)})
+
+    if len(normalized) < 2:
+        # preserve old behavior (warning + None) but avoid KeyError
+        logger.warning("Insufficient valid coordinates after normalization (%d points).", len(normalized))
+        raise ValueError("Insufficient valid coordinates to compute development length")
+
+    # Call the original function with normalized coordinates
+    try:
+        return calculate_development_length(normalized, *args, **kwargs)
+    except Exception as e:
+        logger.exception("Development length calculation failed on normalized coords: %s", e)
+        raise
 
 def calculate_development_length(points):
     """
@@ -3054,18 +3165,28 @@ def upload_and_analyze():
         # Initialize development length
         dev_length = 0
         
-        # Calculate development length
+        # Calculate development length with improved handling
         try:
             coordinates = final_results.get("coordinates", [])
+            logger.debug("Raw coordinates (first 6): %s", coordinates[:6] if coordinates else [])
+            
             if coordinates:
-                dev_length = calculate_development_length(coordinates)
-                final_results["development_length_mm"] = f"{dev_length:.2f}" if dev_length > 0 else "Not Found"
+                try:
+                    dev_length = calculate_development_length_safe(coordinates)
+                    final_results["development_length_mm"] = f"{dev_length:.2f}"
+                    logger.debug("Development length computed: %s", final_results["development_length_mm"])
+                except ValueError:
+                    final_results["development_length_mm"] = "Not Found"
+                    logger.warning("Could not compute development length due to insufficient valid coordinates")
+                except Exception as exc:
+                    final_results["development_length_mm"] = "Not Found"
+                    logger.exception("Unexpected error computing development length: %s", exc)
             else:
                 final_results["development_length_mm"] = "Not Found"
-                logging.info("No coordinates found for development length calculation")
+                logger.info("No coordinates found for development length calculation")
         except Exception as e:
-            logging.error(f"Error calculating development length: {e}")
             final_results["development_length_mm"] = "Not Found"
+            logger.exception("Error in development length calculation: %s", e)
         
         # Generate Excel report if helper function exists
         try:
