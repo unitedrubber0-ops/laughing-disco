@@ -78,9 +78,21 @@ def parse_material_block(material_text: str) -> dict:
     if rings:
         rings = rings.replace('PER ASTM-A-313', 'PER ASTM A-313')
 
+    # Process rings into a list if found
+    rings_list = []
+    if rings:
+        # Split on commas and clean each ring spec
+        ring_specs = [r.strip() for r in rings.split(',')]
+        for spec in ring_specs:
+            if spec:  # Only add non-empty specs
+                rings_list.append({
+                    'specification': spec,
+                    'type': 'standard' if 'ASTM' in spec.upper() else 'custom'
+                })
+
     return {
         'reinforcement': reinforcement if reinforcement else 'Not Found',
-        'rings': rings if rings else 'Not Found',
+        'rings': rings_list,  # Now returning a list of ring specifications
         'reinforcement_source': 'drawing' if reinforcement else 'none'
     }
 
@@ -328,6 +340,12 @@ def process_ocr_text(text):
         # Debug: log the material text snippet + parsed result
         logging.debug("Material block (first 500 chars): %s", (material_text or "")[:500].replace("\n", "\\n"))
         logging.debug("Parsed material block: %s", parsed)
+
+        # Log rings data structure
+        if parsed.get('rings'):
+            logging.info("Found rings data: %s", json.dumps(parsed['rings'], indent=2))
+        else:
+            logging.info("No rings data found in material block")
 
         # Final decision: prefer drawing-parsed reinforcement if it's a real value
         def _is_real_value(v):
@@ -2970,6 +2988,7 @@ def analyze_drawing_with_gemini(pdf_bytes):
         "working_pressure": "Not Found",
         "coordinates": [],
         "dimensions": {},
+        "rings": [],  # Initialize rings list
         "error": None,
         "processing_method": "gemini"  # Track which method was used
     }
@@ -3040,6 +3059,11 @@ def analyze_drawing_with_gemini(pdf_bytes):
                 results["dimensions"] = {}
             if not isinstance(results.get("coordinates"), list):
                 results["coordinates"] = []
+            if not isinstance(results.get("rings"), list):
+                results["rings"] = []
+
+            # Log rings data for debugging
+            logger.info("Rings data found in analysis: %s", results.get("rings", []))
             
             # Convert numeric values
             for key in ["id1", "id2", "od1", "od2", "thickness", "centerline_length"]:
@@ -3563,6 +3587,21 @@ def upload_and_analyze():
             
             # Lookup material using the potentially updated standard
             final_results["material"] = get_material_from_standard(standard, grade)
+
+            # Process rings data
+            rings_data = final_results.get('rings', [])
+            if rings_data:
+                # Ensure rings data is in the expected format
+                if isinstance(rings_data, list):
+                    final_results['rings_raw'] = rings_data
+                    logger.info(f"Processed {len(rings_data)} rings")
+                    logger.debug("Rings data: %s", rings_data)
+                else:
+                    logger.warning("Rings data found but in unexpected format")
+                    final_results['rings_raw'] = []
+            else:
+                logger.info("No rings data found in analysis results")
+                final_results['rings_raw'] = []
 
             # Handle reinforcement: always prefer drawing details over database lookup
             try:
