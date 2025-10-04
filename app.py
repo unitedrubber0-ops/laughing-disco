@@ -3765,9 +3765,16 @@ def extract_text_from_pdf(pdf_bytes):
     Returns:
         str: Combined text from all extraction methods
     """
+    logger.info("==================== PDF TEXT EXTRACTION START ====================")
     logger.info("Starting enhanced text extraction process...")
     logger.debug(f"Input PDF size: {len(pdf_bytes)} bytes")
     texts = []
+    
+    def log_extracted_text(source, text):
+        """Helper to log extracted text chunks with clear formatting"""
+        logger.debug(f"\n{'='*20} {source} TEXT {'='*20}\n{text}\n{'='*50}")
+        if 'RING' in text.upper() or 'MATERIAL' in text.upper():
+            logger.info(f"Found relevant section in {source}:\n{text[:500]}")
     
     try:
         # Method 1: PyMuPDF with layout preservation
@@ -3788,6 +3795,7 @@ def extract_text_from_pdf(pdf_bytes):
                 texts.append(raw_text)
                 
         combined_text = "\n".join(filter(None, texts))
+        log_extracted_text("PYMUPDF", combined_text)
         logger.info(f"PyMuPDF extraction found {len(combined_text)} characters with layout preservation")
         
         # If extracted text seems insufficient, try OCR
@@ -3795,11 +3803,14 @@ def extract_text_from_pdf(pdf_bytes):
             logger.info("Initial extraction insufficient, falling back to OCR...")
             ocr_text = analyze_image_with_gemini_vision(pdf_bytes)
             if ocr_text:
+                log_extracted_text("OCR", ocr_text)
                 texts.append(ocr_text)
                 
         # Combine all extracted text, remove duplicates while preserving order
         seen = set()
         final_text = []
+        
+        logger.info("==================== EXTRACTED TEXT SECTIONS ====================")
         for text in texts:
             lines = text.split('\n')
             for line in lines:
@@ -3809,7 +3820,13 @@ def extract_text_from_pdf(pdf_bytes):
                     final_text.append(line)
         
         result = '\n'.join(final_text)
+        
+        logger.info("==================== FINAL COMBINED TEXT ====================")
+        logger.info("Complete extracted text:")
+        logger.info(f"\n{result}")
+        logger.info("==================== END OF TEXT EXTRACTION ====================")
         logger.info(f"Final extracted text length: {len(result)} characters")
+        
         return result
         
     except Exception as e:
