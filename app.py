@@ -2639,320 +2639,71 @@ def analyze_drawing_simple(pdf_bytes):
         results["error"] = f"Analysis failed: {str(e)}"
         return results
 
-def analyze_drawing(pdf_bytes):
+def analyze_drawing(pdf_path, material_df, logger):
     """
-    Analyze engineering drawing using Gemini's multimodal capabilities with OCR fallback.
-    Uses automated model discovery and robust fallback to OCR.
+    Main function to analyze a drawing PDF.
     """
-    if not pdf_bytes:
-        raise ValueError("PDF content cannot be empty")
-    
-    # Initialize default results structure
-    results = {
-        "part_number": "Not Found",
-        "description": "Not Found",
-        "standard": "Not Found",
-        "grade": "Not Found",
-        "material": "Not Found",
-        "dimensions": {
-            "id1": "Not Found",
-            "id2": "Not Found",
-            "od1": "Not Found",
-            "od2": "Not Found",
-            "thickness": "Not Found",
-            "centerline_length": "Not Found"
-        },
-        "coordinates": [],
-        "error": None
-    }
-    
-    temp_pdf_path = None
-    
     try:
-        # Convert PDF to images and process with Gemini and OCR fallback
-        logger.info("Converting PDF to images...")
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
-            temp_pdf.write(pdf_bytes)
-            temp_pdf_path = temp_pdf.name
+        logger.info(f"Analyzing drawing for part {os.path.basename(pdf_path).split('_')[0]}")
         
-        # Process pages using our helper module with required params
-        drawing_prompt = """Analyze this technical drawing and extract the following information as JSON:
-        - part_number: Look for part numbers like 7718817C1, 4582819C2, etc.
-        - description: Description of the hose or tube
-        - standard: Material standard (e.g., MPAPS F-30, MPAPS F-6032)
-        - grade: Material grade (e.g., 1B, TYPE I)
-        - dimensions: Include id1, od1, thickness, centerline_length
-        - coordinates: Any coordinate points if present
-        
-        Return ONLY valid JSON. If any value is not found, use "Not Found"."""
-        
-        all_data = process_pages_with_vision_or_ocr(
-            pages=temp_pdf_path,
-            prompt=drawing_prompt,
-            ocr_fallback_fn=process_ocr_text
-        )
-        
-        logger.info(f"Processing completed. Got {len(all_data) if isinstance(all_data, list) else 0} results")
-        
-        # Process the results
-        if not all_data or (isinstance(all_data, list) and len(all_data) == 0):
-            logger.warning("No data returned from processing pipeline")
-            results["error"] = "No data extracted from PDF"
-            return results
-        
-        # Ensure all_data is a list
-        if not isinstance(all_data, list):
-            all_data = [all_data]
-        
-        # Filter out non-dict results
-        valid_results = [item for item in all_data if isinstance(item, dict)]
-        
-        if not valid_results:
-            logger.error("No valid dictionary results found")
-            results["error"] = "No structured data could be extracted"
-            return results
-        
-        # Use the first valid result (you can enhance this to pick the best one)
-        best_result = valid_results[0]
-        
-        # Merge the best result with our default structure
-        for key in results.keys():
-            if key in best_result and best_result[key] != "Not Found":
-                results[key] = best_result[key]
-        
-        # Handle nested structures
-        if "dimensions" in best_result and isinstance(best_result["dimensions"], dict):
-            results["dimensions"].update(best_result["dimensions"])
-        
-        if "coordinates" in best_result and isinstance(best_result["coordinates"], list):
-            results["coordinates"] = best_result["coordinates"]
-        
-        logger.info("Drawing analysis completed successfully")
-        return results
-            
-        # ------------------ Robust post-processing of all_data ------------------
-        logger.info(f"Raw all_data type: {type(all_data)}; length (if list): {len(all_data) if isinstance(all_data, list) else 'N/A'}")
-
-        # Normalize all_data into a flat list
-        if isinstance(all_data, dict):
-            normalized = [all_data]
-        elif isinstance(all_data, list):
-            # flatten one level if nested lists exist
-            normalized = []
-            for item in all_data:
-                if isinstance(item, list):
-                    normalized.extend(item)
-                else:
-                    normalized.append(item)
-        else:
-            # Unexpected type (e.g., bool, str). Wrap to preserve for logging and fail gracefully.
-            logger.warning(f"process_pages_with_vision_or_ocr returned unexpected type: {type(all_data)}")
-            normalized = [all_data]
-
-        logger.info(f"Normalized results count: {len(normalized)}")
-
-        # Keep only dict items (each dict is expected to be page-level structured data)
-        dict_results = [item for item in normalized if isinstance(item, dict)]
-        non_dict_count = len(normalized) - len(dict_results)
-        if non_dict_count:
-            logger.warning(f"Ignoring {non_dict_count} non-dict entries from all_data")
-
-        if not dict_results:
-            # Nothing usable — log details and return the default results object with an error.
-            logger.error("No valid page dictionaries returned from vision/OCR pipeline.")
-            # Put some diagnostic sample into results.error for visibility
-            results["error"] = "No valid structured page results (process_pages_with_vision_or_ocr returned no dicts)."
-            # Optionally attach a compact sample for debugging
-            try:
-                sample = normalized[:5]
-                results["debug_sample"] = sample
-            except Exception:
-                pass
-            return results
-
-        # Use completeness_score to choose the best page dict
-        def completeness_score(data):
-            if not isinstance(data, dict):
-                return 0
-            score = 0
-            # top-level fields except nested ones
-            score += sum(1 for k, v in data.items() if v not in ("Not Found", None) and k not in ["dimensions", "operating_conditions", "coordinates"])
-            if isinstance(data.get("dimensions"), dict):
-                score += sum(1 for v in data["dimensions"].values() if v != "Not Found")
-            if isinstance(data.get("operating_conditions"), dict):
-                score += sum(1 for v in data["operating_conditions"].values() if v != "Not Found")
-            if isinstance(data.get("coordinates"), list):
-                score += len(data["coordinates"])
-            return score
-
-        # select best result
-        try:
-            results = max(dict_results, key=completeness_score)
-        except Exception as e:
-            logger.exception("Failed to select best result from dict_results; returning first dict as fallback.")
-            results = dict_results[0]
-
-        # Diagnostics
-        logger.info(f"Selected best result type: {type(results)}")
-        logger.debug(f"Best result keys: {list(results.keys()) if isinstance(results, dict) else 'N/A'}")
-
-        # Normalize nested fields: convert lists -> dicts when necessary
-        if isinstance(results.get("dimensions"), list):
-            logger.warning("Converting dimensions list -> dict")
-            flat_dims = {}
-            for d in results["dimensions"]:
-                if isinstance(d, dict):
-                    flat_dims.update(d)
-            results["dimensions"] = flat_dims
-
-        if isinstance(results.get("operating_conditions"), list):
-            logger.warning("Converting operating_conditions list -> dict")
-            flat_ops = {}
-            for d in results["operating_conditions"]:
-                if isinstance(d, dict):
-                    flat_ops.update(d)
-            results["operating_conditions"] = flat_ops
-
-        # Ensure required keys exist and have expected types
-        if "dimensions" not in results or not isinstance(results["dimensions"], dict):
-            results["dimensions"] = {}
-        if "operating_conditions" not in results or not isinstance(results["operating_conditions"], dict):
-            results["operating_conditions"] = {}
-        if "coordinates" not in results or not isinstance(results["coordinates"], list):
-            results["coordinates"] = []
-
-        logger.info("Normalized results ready for downstream processing")
-        # ------------------ end robust processing ------------------
-            
-        # Log the structure of results for debugging
-        logger.info(f"Type of results: {type(results)}")
-        logger.info(f"Keys in results (if dict): {results.keys() if isinstance(results, dict) else results}")
-        logger.info(f"Type of dimensions: {type(results.get('dimensions'))}")
-        
-        # Convert dimensions list to dict if needed
-        if isinstance(results.get("dimensions"), list):
-                logger.warning("Converting dimensions list to dict")
-                flat_dims = {}
-                for d in results["dimensions"]:
-                    if isinstance(d, dict):
-                        flat_dims.update(d)
-                results["dimensions"] = flat_dims
-            
-        # Convert operating_conditions list to dict if needed
-        if isinstance(results.get("operating_conditions"), list):
-            logger.warning("Converting operating_conditions list to dict")
-            flat_ops = {}
-            for d in results["operating_conditions"]:
-                if isinstance(d, dict):
-                    flat_ops.update(d)
-            results["operating_conditions"] = flat_ops
-        
-        # Ensure all required fields exist
-        if "dimensions" not in results:
-            results["dimensions"] = {}
-        if "operating_conditions" not in results:
-            results["operating_conditions"] = {}
-        if "coordinates" not in results:
-            results["coordinates"] = []
-        
-        # Convert numeric strings to floats where appropriate
-        for key in ["id1", "od1", "thickness", "centerline_length"]:
-            if results["dimensions"].get(key) and results["dimensions"][key] != "Not Found":
-                try:
-                    results["dimensions"][key] = float(str(results["dimensions"][key]).replace(",", "."))
-                except (ValueError, TypeError):
-                    results["dimensions"][key] = "Not Found"
-        
-        # Convert pressure values
-        for key in ["working_pressure", "burst_pressure"]:
-            if results["operating_conditions"].get(key) and results["operating_conditions"][key] != "Not Found":
-                try:
-                    results["operating_conditions"][key] = float(str(results["operating_conditions"][key]).replace(",", "."))
-                except (ValueError, TypeError):
-                    results["operating_conditions"][key] = "Not Found"
-        
-        # Merge coordinates from all pages
-        all_coordinates = []
-        for data in all_data:
-            if "coordinates" in data and isinstance(data["coordinates"], list):
-                all_coordinates.extend(data["coordinates"])
-        results["coordinates"] = all_coordinates
-        
-        logger.info("Drawing analysis completed successfully")
-        return results
-        
-    except (pdf2image.exceptions.PDFPageCountError, pdf2image.exceptions.PDFSyntaxError) as e:
-        logger.error(f"PDF conversion error: {str(e)}")
-        results["error"] = f"Failed to process PDF: {str(e)}"
-        return results
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing error: {str(e)}")
-        results["error"] = "Failed to parse AI response"
-        return results
-    except genai.types.generation_types.BlockedPromptException as e:
-        logger.error(f"Gemini API content policy violation: {str(e)}")
-        results["error"] = "Content policy violation"
-        return results
-    except Exception as e:
-        logger.error(f"Unexpected error in drawing analysis: {str(e)}")
-        results["error"] = f"Analysis failed: {str(e)}"
-        return results
-    logging.info("Starting data parsing with Gemini...")
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
-    
-    # --- UPDATED PROMPT ---
-    prompt = f"""
-    Analyze the following text from an engineering drawing and return the information as a clean JSON object.
-    Do not include any text before or after the JSON object.
-
-    Instructions for extraction:
-    - "child_part": Find the value explicitly labeled "PART NO". This is the primary drawing number, which often looks like a 7-digit number followed by 'C' and another digit (e.g., 4721473C1).
-    - "description": Find the main title of the part, usually starting with "HOSE,...".
-    - "standard": Find the specification document, which looks like "MPAPS F-XXXX" or "SAE JXXXX".
-    - "grade": Find the grade associated with the standard, which looks like "GRADE XX" or "TYPE X".
-    - "id": Find the value explicitly labeled "TUBING ID", "HOSE ID", or "Inside Diameter".
-    - "thickness": Find the value explicitly labeled "WALL THICKNESS".
-    - "centerline_length": Find the value explicitly labeled "APPROX CTRLINE LENGTH".
-    - "coordinates": Carefully parse the main coordinate table into an array of objects. Each object must have "point", "x", "y", and "z" keys.
-
-    If any value is not explicitly found on the drawing, use the string "Not Found".
-
-    Text to analyze:
-    ---
-    {full_text}
-    ---
-
-    Required JSON format:
-    {{
-        "child_part": "...",
-        "description": "...",
-        "standard": "...",
-        "grade": "...",
-        "id": "...",
-        "thickness": "...",
-        "centerline_length": "...",
-        "coordinates": [
-            {{"point": "P0", "x": 0.0, "y": 0.0, "z": 0.0}},
-            {{"point": "P1", "x": 1.0, "y": 2.0, "z": 3.0}}
-        ]
-    }}
-    """
-    
-    try:
-        response = model.generate_content(prompt)
-        cleaned_text = response.text.strip().replace("```json", "").replace("```", "").strip()
-        parsed_data = json.loads(cleaned_text)
-        logging.info("Successfully parsed Gemini response into JSON.")
-        return parsed_data
-    except Exception as e:
-        logging.error(f"Failed to parse text with Gemini: {e}")
-        # Return a default error structure that matches the expected output
-        return {
-            "child_part": "Error", "description": "Error", "standard": "Error",
-            "grade": "Error", "id": "Error", "thickness": "Error",
-            "centerline_length": "Error", "coordinates": [], "error": str(e)
+        final_results = {
+            'part_number': None, 'description': None, 'standard': None, 'grade': None,
+            'material': None, 'dimensions': {}, 'coordinates': [], 'error': None
         }
 
+        # ==================== TEXT EXTRACTION ====================
+        logger.info("==================== PDF TEXT EXTRACTION START ====================")
+        full_text = enhanced_text_extraction(pdf_path) # Removed logger here
+        logger.info(f"Final extracted text length: {len(full_text)} characters")
+
+        # ==================== DATA EXTRACTION ====================
+        part_number = extract_part_number(full_text)
+        final_results['part_number'] = part_number
+
+        description = extract_description(full_text)
+        final_results['description'] = description
+
+        material_spec = extract_material_spec(full_text)
+        if material_spec:
+            final_results['standard'] = material_spec.get('standard')
+            final_results['grade'] = material_spec.get('grade')
+
+        material_info = find_material(final_results.get('standard'), final_results.get('grade'), material_df, logger)
+        final_results['material'] = material_info.get('material', 'Not Found')
+        
+        # --- RINGS EXTRACTION AND ASSIGNMENT ---
+        rings_data = extract_rings_data(full_text)
+        
+        # THIS IS THE CRITICAL LINE THAT ADDS THE RINGS DATA
+        final_results['rings'] = rings_data
+        
+        # --- REINFORCEMENT EXTRACTION ---
+        reinforcement_data = find_reinforcement(
+            full_text, final_results.get('standard'), final_results.get('grade'), 
+            final_results.get('material'), material_df, logger
+        )
+        final_results.update(reinforcement_data)
+
+        # ==================== DIMENSION & LENGTH EXTRACTION ====================
+        dimensions = extract_dimensions_from_text(full_text) # Removed logger here
+        final_results['dimensions'] = dimensions
+
+        coordinates = extract_coordinates(full_text)
+        final_results['coordinates'] = coordinates
+
+        if coordinates:
+            dev_length = calculate_development_length(coordinates)
+            final_results['development_length_mm'] = round(dev_length, 2)
+        else:
+            logger.info("No coordinates found for development length calculation")
+            final_results['development_length_mm'] = "Not Found"
+
+        return final_results
+
+    except Exception as e:
+        logger.error(f"An error occurred during drawing analysis: {e}", exc_info=True)
+        return {'error': str(e)}
+    
 def analyze_drawing_with_gemini(pdf_bytes):
     """
     Analyze drawing using Google Gemini with improved prompt and image analysis.
