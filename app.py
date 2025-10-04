@@ -2662,6 +2662,105 @@ def analyze_drawing_simple(pdf_bytes):
         results["error"] = f"Analysis failed: {str(e)}"
         return results
 
+def enhanced_text_extraction(pdf_path, logger):
+    """Extract text from PDF using enhanced methods."""
+    try:
+        with fitz.open(pdf_path) as doc:
+            full_text = ""
+            for page in doc:
+                full_text += page.get_text()
+        return full_text
+    except Exception as e:
+        logger.error(f"Error in text extraction: {e}")
+        return ""
+
+def extract_part_number(text):
+    """Extract part number from text."""
+    match = re.search(r'\d{7}[A-Z]\d', text)
+    return match.group(0) if match else "Not Found"
+
+def extract_description(text):
+    """Extract description from text."""
+    pattern = r'(?:HOSE|HEATER)[,\s]+([^,]+(?:,[^,]+)*?)(?=(?:MPAPS|TYPE\s+\d|GRADE\s+\d|\bWP\b|\bID\b|\bOD\b|STANDARD|$))'
+    match = re.search(pattern, text, re.IGNORECASE)
+    return match.group(1).strip() if match else "Not Found"
+
+def extract_material_spec(text):
+    """Extract material specification from text."""
+    result = {"standard": "Not Found", "grade": "Not Found"}
+    
+    # Look for MPAPS F-30 or F-1
+    std_match = re.search(r'MPAPS\s*F[-\s]*(\d+(?:/F[-\s]*\d+)?)', text, re.IGNORECASE)
+    if std_match:
+        result["standard"] = f"MPAPS F-{std_match.group(1)}"
+    
+    # Look for grade
+    grade_match = re.search(r'(?:GRADE|TYPE)\s*([0-9][A-Z]|[A-Z][0-9]|[0-9]+[A-Z]+|[A-Z]+[0-9]+)', text, re.IGNORECASE)
+    if grade_match:
+        result["grade"] = grade_match.group(1)
+    
+    return result
+
+def find_material(standard, grade, material_df, logger):
+    """Find material based on standard and grade."""
+    try:
+        if material_df is None or standard == "Not Found" or grade == "Not Found":
+            return {"material": "Not Found"}
+        
+        matches = material_df[
+            (material_df['STANDARD'].str.upper() == standard.upper()) &
+            (material_df['GRADE'].astype(str).str.upper() == grade.upper())
+        ]
+        
+        if not matches.empty:
+            return {"material": matches.iloc[0]['MATERIAL']}
+        return {"material": "Not Found"}
+    except Exception as e:
+        logger.error(f"Error finding material: {e}")
+        return {"material": "Not Found"}
+
+def extract_rings_data(text):
+    """Extract rings data from text."""
+    rings_pattern = r'RINGS\s*[:\-]?\s*([^\n]+)'
+    match = re.search(rings_pattern, text, re.IGNORECASE)
+    return match.group(1).strip() if match else "Not Found"
+
+def find_reinforcement(text, standard, grade, material, material_df, logger):
+    """Find reinforcement information."""
+    try:
+        # First try to find it directly in the text
+        rein_pattern = r'REINFORCEMENT\s*[:\-]?\s*([^\n]+)'
+        match = re.search(rein_pattern, text, re.IGNORECASE)
+        if match:
+            return {"reinforcement": match.group(1).strip(), "reinforcement_source": "drawing"}
+        
+        # If not found in text, try to find in material database
+        if material_df is not None and standard != "Not Found" and grade != "Not Found":
+            matches = material_df[
+                (material_df['STANDARD'].str.upper() == standard.upper()) &
+                (material_df['GRADE'].astype(str).str.upper() == grade.upper())
+            ]
+            if not matches.empty and 'REINFORCEMENT' in matches.columns:
+                return {"reinforcement": matches.iloc[0]['REINFORCEMENT'], "reinforcement_source": "db"}
+        
+        return {"reinforcement": "Not Found", "reinforcement_source": "none"}
+    except Exception as e:
+        logger.error(f"Error finding reinforcement: {e}")
+        return {"reinforcement": "Not Found", "reinforcement_source": "none"}
+
+def extract_coordinates(text):
+    """Extract coordinates from text."""
+    coordinates = []
+    coord_matches = re.findall(r'P\d+\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)', text)
+    for i, (x, y, z) in enumerate(coord_matches):
+        coordinates.append({
+            "point": f"P{i+1}",
+            "x": float(x),
+            "y": float(y),
+            "z": float(z)
+        })
+    return coordinates
+
 def analyze_drawing(pdf_path, material_df, logger):
     """
     Main function to analyze a drawing PDF.
@@ -2907,6 +3006,10 @@ def analyze_drawing(pdf_path, material_df, logger):
         logger.info("Drawing analysis completed successfully")
         return results
         
+    # Handle error cases
+    try:
+        # Process drawing with gemini
+        pass
     except (pdf2image.exceptions.PDFPageCountError, pdf2image.exceptions.PDFSyntaxError) as e:
         logger.error(f"PDF conversion error: {str(e)}")
         results["error"] = f"Failed to process PDF: {str(e)}"
@@ -2985,6 +3088,62 @@ def analyze_drawing_with_gemini(pdf_bytes):
     Extracts dimensions, specifications, grades, and material properties using AI vision model.
     Falls back to OCR if Gemini processing fails.
     """
+    try:
+        # Initialize default results
+        results = {
+            "part_number": "Not Found",
+            "description": "Not Found",
+            "standard": "Not Found",
+            "grade": "Not Found",
+            "material": "Not Found",
+            "od": "Not Found",
+            "thickness": "Not Found",
+            "centerline_length": "Not Found",
+            "development_length": "Not Found",
+            "burst_pressure": "Not Found",
+            "working_temperature": "Not Found",
+            "working_pressure": "Not Found",
+            "coordinates": [],
+            "error": None
+        }
+
+        # Your existing processing code here
+        return results
+
+    except (pdf2image.exceptions.PDFPageCountError, pdf2image.exceptions.PDFSyntaxError) as e:
+        logger.error(f"PDF conversion error: {str(e)}")
+        results = {"error": f"Failed to process PDF: {str(e)}"}
+        return results
+    except json.JSONDecodeError as e:
+        logger.error(f"JSON parsing error: {str(e)}")
+        results = {"error": "Failed to parse AI response"}
+        return results
+    except genai.types.generation_types.BlockedPromptException as e:
+        logger.error(f"Gemini API content policy violation: {str(e)}")
+        results = {"error": "Content policy violation"}
+        return results
+    except Exception as e:
+        logger.error(f"Unexpected error in drawing analysis: {str(e)}")
+        results = {"error": f"Analysis failed: {str(e)}"}
+        return results
+        
+    # Initialize default results
+    results = {
+        "part_number": "Not Found",
+        "description": "Not Found",
+        "standard": "Not Found",
+            "grade": "Not Found",
+            "material": "Not Found",
+            "od": "Not Found",
+            "thickness": "Not Found",
+            "centerline_length": "Not Found",
+            "development_length": "Not Found",
+            "burst_pressure": "Not Found",
+            "working_temperature": "Not Found",
+            "working_pressure": "Not Found",
+            "coordinates": [],
+            "error": None
+        }
     results = {
         "part_number": "Not Found",
         "description": "Not Found",
