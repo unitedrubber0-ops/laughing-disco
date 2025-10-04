@@ -2662,73 +2662,76 @@ def analyze_drawing_simple(pdf_bytes):
         results["error"] = f"Analysis failed: {str(e)}"
         return results
 
-def analyze_drawing(pdf_bytes):
+def analyze_drawing(pdf_path, material_df, logger):
     """
-    Analyze engineering drawing using Gemini's multimodal capabilities with OCR fallback.
-    Uses automated model discovery and robust fallback to OCR.
+    Main function to analyze a drawing PDF.
     """
-    if not pdf_bytes:
-        raise ValueError("PDF content cannot be empty")
-    
-    # Initialize default results structure
-    results = {
-        "part_number": "Not Found",
-        "description": "Not Found",
-        "standard": "Not Found",
-        "grade": "Not Found",
-        "material": "Not Found",
-        "dimensions": {
-            "id1": "Not Found",
-            "id2": "Not Found",
-            "od1": "Not Found",
-            "od2": "Not Found",
-            "thickness": "Not Found",
-            "centerline_length": "Not Found"
-        },
-        "coordinates": [],
-        "error": None
-    }
-    
-    temp_pdf_path = None
-    
     try:
-        # Convert PDF to images and process with Gemini and OCR fallback
-        logger.info("Converting PDF to images...")
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
-            temp_pdf.write(pdf_bytes)
-            temp_pdf_path = temp_pdf.name
+        logger.info(f"Successfully analyzed drawing for part {os.path.basename(pdf_path).split('_')[0]}")
         
-        # Process pages using our helper module with required params
-        drawing_prompt = """Analyze this technical drawing and extract the following information as JSON:
-        - part_number: Look for part numbers like 7718817C1, 4582819C2, etc.
-        - description: Description of the hose or tube
-        - standard: Material standard (e.g., MPAPS F-30, MPAPS F-6032)
-        - grade: Material grade (e.g., 1B, TYPE I)
-        - dimensions: Include id1, od1, thickness, centerline_length
-        - coordinates: Any coordinate points if present
+        # Placeholder for vision model results if needed
+        # vision_results = process_pdf_with_vision(pdf_path, logger)
         
-        Return ONLY valid JSON. If any value is not found, use "Not Found"."""
+        final_results = {
+            'part_number': None, 'description': None, 'standard': None, 'grade': None,
+            'material': None, 'dimensions': {}, 'coordinates': [], 'error': None
+        }
+
+        # ==================== TEXT EXTRACTION ====================
+        logger.info("==================== PDF TEXT EXTRACTION START ====================")
+        full_text = enhanced_text_extraction(pdf_path, logger)
+        logger.info(f"Final extracted text length: {len(full_text)} characters")
+        logger.info("--- START OF FULL EXTRACTED TEXT ---")
+        logger.info(full_text)
+        logger.info("--- END OF FULL EXTRACTED TEXT ---")
+
+        # ==================== DATA EXTRACTION ====================
+        part_number = extract_part_number(full_text)
+        final_results['part_number'] = part_number
+
+        description = extract_description(full_text)
+        final_results['description'] = description
+
+        material_spec = extract_material_spec(full_text)
+        if material_spec:
+            final_results['standard'] = material_spec.get('standard')
+            final_results['grade'] = material_spec.get('grade')
+
+        material_info = find_material(final_results.get('standard'), final_results.get('grade'), material_df, logger)
+        final_results['material'] = material_info.get('material', 'Not Found')
         
-        all_data = process_pages_with_vision_or_ocr(
-            pages=temp_pdf_path,
-            prompt=drawing_prompt,
-            ocr_fallback_fn=process_ocr_text
+        # --- RINGS EXTRACTION AND ASSIGNMENT ---
+        rings_data = extract_rings_data(full_text)
+        
+        # THIS IS THE CORRECTED LINE, ADDING THE RINGS DATA TO THE DICTIONARY
+        final_results['rings'] = rings_data
+        
+        # --- REINFORCEMENT EXTRACTION ---
+        reinforcement_data = find_reinforcement(
+            full_text, final_results.get('standard'), final_results.get('grade'), 
+            final_results.get('material'), material_df, logger
         )
-        
-        logger.info(f"Processing completed. Got {len(all_data) if isinstance(all_data, list) else 0} results")
-        
-        # Process the results
-        if not all_data or (isinstance(all_data, list) and len(all_data) == 0):
-            logger.warning("No data returned from processing pipeline")
-            results["error"] = "No data extracted from PDF"
-            return results
-        
-        # Ensure all_data is a list
-        if not isinstance(all_data, list):
-            all_data = [all_data]
-        
-        # Filter out non-dict results
-        valid_results = [item for item in all_data if isinstance(item, dict)]
+        final_results.update(reinforcement_data)
+
+        # ==================== DIMENSION & LENGTH EXTRACTION ====================
+        dimensions = extract_dimensions_from_text(full_text, logger)
+        final_results['dimensions'] = dimensions
+
+        coordinates = extract_coordinates(full_text)
+        final_results['coordinates'] = coordinates
+
+        if coordinates:
+            dev_length = calculate_development_length(coordinates)
+            final_results['development_length_mm'] = round(dev_length, 2)
+        else:
+            logger.info("No coordinates found for development length calculation")
+            final_results['development_length_mm'] = "Not Found"
+
+        return final_results
+
+    except Exception as e:
+        logger.error(f"An error occurred during drawing analysis: {e}", exc_info=True)
+        return {'error': str(e)}
         
         if not valid_results:
             logger.error("No valid dictionary results found")
