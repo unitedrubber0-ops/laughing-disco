@@ -3520,6 +3520,11 @@ def upload_and_analyze():
         extracted_text = final_results.get('extracted_text') or final_results.get('combined_text') \
                         or final_results.get('ocr_text') or extract_text_from_pdf(pdf_bytes)
 
+        # Log the full extracted text for debugging
+        app.logger.info("--- START OF FULL EXTRACTED TEXT ---")
+        app.logger.info(extracted_text)
+        app.logger.info("--- END OF FULL EXTRACTED TEXT ---")
+
         # 1) Get dimensions from the AI/previous processing safely (existing fallback)
         ai_dims = final_results.get('dimensions', {}) if isinstance(final_results.get('dimensions'), dict) else {}
 
