@@ -3655,6 +3655,18 @@ def upload_and_analyze():
         
         # Generate Excel report if helper function exists
         try:
+            # Log the final data before Excel generation
+            app.logger.info("Final data being sent to Excel writer:")
+            app.logger.info("Reinforcement data:")
+            app.logger.info(f"  reinforcement: {final_results.get('reinforcement', 'Not Found')}")
+            app.logger.info(f"  reinforcement_raw: {final_results.get('reinforcement_raw', 'Not Found')}")
+            app.logger.info(f"  reinforcement_source: {final_results.get('reinforcement_source', 'Not Found')}")
+            app.logger.info(f"  rings_raw: {final_results.get('rings_raw', 'Not Found')}")
+            app.logger.info(f"  reinforcement_db: {final_results.get('reinforcement_db', 'Not Found')}")
+            
+            # Log the complete final_results for thorough debugging
+            app.logger.info(f"Complete final_results: {final_results}")
+
             if 'generate_excel_sheet' in globals():
                 excel_file = generate_corrected_excel_sheet(final_results, final_results.get("dimensions", {}), coordinates)
                 excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
