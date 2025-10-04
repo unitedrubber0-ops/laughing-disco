@@ -2526,118 +2526,129 @@ def image_to_base64(image):
     image.save(buffered, format="PNG")
     return base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-# --- Enhanced drawing analysis using Gemini multimodal capabilities ---
-def analyze_drawing_simple(pdf_bytes):
-    """
-    Simplified analysis function that uses direct PyMuPDF text extraction.
-    """
-    results = {
-        "part_number": "Not Found",
-        "description": "Not Found",
-        "standard": "Not Found", 
-        "grade": "Not Found",
-        "material": "Not Found",
-        "dimensions": {
-            "id1": "Not Found",
-            "id2": "Not Found",
-            "od1": "Not Found",
-            "od2": "Not Found",
-            "thickness": "Not Found",
-            "centerline_length": "Not Found"
-        },
-        "coordinates": [],
-        "error": None
-    }
-    
+# --- Helper Functions for Drawing Analysis ---
+def enhanced_text_extraction(pdf_path):
+    """Extract text from PDF using multiple methods for maximum coverage."""
+    text = ""
     try:
-        # Extract text using PyMuPDF (most reliable method)
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            full_text = ""
-            for page in doc:
-                full_text += page.get_text()
-        
-        logger.info(f"Extracted {len(full_text)} characters from PDF")
-        
-        # Process the text with our OCR processing function
-        processed_data = process_ocr_text(full_text)
-        
-        if processed_data:
-            # Merge the processed data with results
-            for key in ['part_number', 'description', 'standard', 'grade', 'material', 'coordinates']:
-                if key in processed_data and processed_data[key] != "Not Found":
-                    results[key] = processed_data[key]
-            
-            if 'dimensions' in processed_data and processed_data['dimensions']:
-                results['dimensions'].update(processed_data['dimensions'])
-        
-        # Also try to extract dimensions using the dedicated function
-        additional_dims = extract_dimensions_from_text(full_text)
-        if additional_dims:
-            results['dimensions'].update(additional_dims)
-            
-        logger.info("Simple analysis completed successfully")
-        return results
-        
+        with fitz.open(pdf_path) as doc:
+            text = " ".join(page.get_text() for page in doc)
     except Exception as e:
-        logger.error(f"Error in simple analysis: {str(e)}")
-        results["error"] = f"Analysis failed: {str(e)}"
-        return results
+        logger.error(f"Error extracting text from PDF: {e}")
+    return text
 
-def analyze_drawing_simple(pdf_bytes):
-    """
-    Simplified analysis function that uses direct PyMuPDF text extraction.
-    """
-    results = {
-        "part_number": "Not Found",
-        "description": "Not Found",
-        "standard": "Not Found", 
-        "grade": "Not Found",
-        "material": "Not Found",
-        "dimensions": {
-            "id1": "Not Found",
-            "id2": "Not Found",
-            "od1": "Not Found",
-            "od2": "Not Found",
-            "thickness": "Not Found",
-            "centerline_length": "Not Found"
-        },
-        "coordinates": [],
-        "error": None
-    }
+def extract_part_number(text):
+    """Extract part number from text using regex patterns."""
+    patterns = [
+        r'(?i)(?:PART|DWG|DRAWING)[-\s]*(?:NO\.?|NUM\.?|NUMBER)?[-\s.:]*?(\d{7}C\d)\b',
+        r'(?i)CHILD\s*PART[-\s.:]*?(\d{7}C\d)\b',
+        r'(?i)\b(\d{7}C\d)[-_]?(?:S\d+)?[-_]?R[-_]?[A-Z][-_]?F\d+\b',
+        r'(?:^|\s)(\d{7}C\d)(?=\s|$)'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+    return "Not Found"
+
+def extract_description(text):
+    """Extract description from text."""
+    patterns = [
+        r'DESCRIPTION[:\s]+([^\n]+)',
+        r'TITLE[:\s]+([^\n]+)'
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return "Not Found"
+
+def extract_material_spec(text):
+    """Extract material specification from text."""
+    spec = {'standard': 'Not Found', 'grade': 'Not Found'}
     
+    # Look for standard (MPAPS)
+    std_match = re.search(r'MPAPS\s+(?:F-)?(\d+)', text)
+    if std_match:
+        spec['standard'] = f"MPAPS F-{std_match.group(1)}"
+    
+    # Look for grade
+    grade_match = re.search(r'(?:TYPE|GRADE)\s+([A-Z0-9-]+)', text)
+    if grade_match:
+        spec['grade'] = grade_match.group(1)
+    
+    return spec
+
+def find_material(standard, grade, material_df, logger):
+    """Find material based on standard and grade."""
     try:
-        # Extract text using PyMuPDF (most reliable method)
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            full_text = ""
-            for page in doc:
-                full_text += page.get_text()
+        if standard == "Not Found" or grade == "Not Found":
+            return {'material': 'Not Found'}
         
-        logger.info(f"Extracted {len(full_text)} characters from PDF")
+        # Search in material database
+        mask = (material_df['Standard'] == standard) & (material_df['Grade'] == grade)
+        matches = material_df[mask]
         
-        # Process the text with our OCR processing function
-        processed_data = process_ocr_text(full_text)
-        
-        if processed_data:
-            # Merge the processed data with results
-            for key in ['part_number', 'description', 'standard', 'grade', 'material', 'coordinates']:
-                if key in processed_data and processed_data[key] != "Not Found":
-                    results[key] = processed_data[key]
-            
-            if 'dimensions' in processed_data and processed_data['dimensions']:
-                results['dimensions'].update(processed_data['dimensions'])
-        
-        # Also try to extract dimensions using the dedicated function
-        additional_dims = extract_dimensions_from_text(full_text)
-        if additional_dims:
-            results['dimensions'].update(additional_dims)
-            
-        logger.info("Simple analysis completed successfully")
-        return results
-        
+        if not matches.empty:
+            return {'material': matches.iloc[0]['Material']}
     except Exception as e:
-        logger.error(f"Error in simple analysis: {str(e)}")
-        results["error"] = f"Analysis failed: {str(e)}"
-        return results
+        logger.error(f"Error finding material: {e}")
+    
+    return {'material': 'Not Found'}
+
+def extract_rings_data(text):
+    """Extract rings specification from text."""
+    pattern = re.compile(r'^\s*RINGS:\s*(.*)', re.IGNORECASE | re.MULTILINE)
+    matches = pattern.findall(text)
+    
+    if matches:
+        return " | ".join([match.strip() for match in matches])
+    return "Not Found"
+
+def find_reinforcement(text, standard, grade, material, material_df, logger):
+    """Find reinforcement information from text and material database."""
+    result = {'reinforcement': 'Not Found', 'reinforcement_source': 'none'}
+    
+    # First try direct extraction from text
+    rein_match = re.search(r'REINFORCEMENT\s*[:\-]?\s*([^\n\r]+)', text, re.IGNORECASE)
+    if rein_match:
+        result['reinforcement'] = rein_match.group(1).strip()
+        result['reinforcement_source'] = 'drawing'
+        return result
+    
+    # Fallback to database lookup
+    try:
+        if all(x != 'Not Found' for x in [standard, grade]):
+            mask = (material_df['Standard'] == standard) & (material_df['Grade'] == grade)
+            matches = material_df[mask]
+            if not matches.empty:
+                reinf = matches.iloc[0].get('Reinforcement')
+                if pd.notna(reinf):
+                    result['reinforcement'] = str(reinf)
+                    result['reinforcement_source'] = 'database'
+    except Exception as e:
+        logger.error(f"Error finding reinforcement: {e}")
+    
+    return result
+
+def extract_coordinates(text):
+    """Extract coordinates from text."""
+    coordinates = []
+    pattern = r'P(\d+)\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)\s+(-?\d+\.?\d*)(?:\s+(-?\d+\.?\d*))?'
+    
+    matches = re.finditer(pattern, text)
+    for match in matches:
+        point = {
+            'point': f'P{match.group(1)}',
+            'x': float(match.group(2)),
+            'y': float(match.group(3)),
+            'z': float(match.group(4))
+        }
+        if match.group(5):
+            point['r'] = float(match.group(5))
+        coordinates.append(point)
+    
+    return coordinates
 
 def analyze_drawing(pdf_path, material_df, logger):
     """
@@ -2648,12 +2659,12 @@ def analyze_drawing(pdf_path, material_df, logger):
         
         final_results = {
             'part_number': None, 'description': None, 'standard': None, 'grade': None,
-            'material': None, 'dimensions': {}, 'coordinates': [], 'error': None
+            'material': None, 'rings': 'Not Found', 'dimensions': {}, 'coordinates': [], 'error': None
         }
 
         # ==================== TEXT EXTRACTION ====================
         logger.info("==================== PDF TEXT EXTRACTION START ====================")
-        full_text = enhanced_text_extraction(pdf_path) # Removed logger here
+        full_text = enhanced_text_extraction(pdf_path)
         logger.info(f"Final extracted text length: {len(full_text)} characters")
 
         # ==================== DATA EXTRACTION ====================
@@ -2673,8 +2684,6 @@ def analyze_drawing(pdf_path, material_df, logger):
         
         # --- RINGS EXTRACTION AND ASSIGNMENT ---
         rings_data = extract_rings_data(full_text)
-        
-        # THIS IS THE CRITICAL LINE THAT ADDS THE RINGS DATA
         final_results['rings'] = rings_data
         
         # --- REINFORCEMENT EXTRACTION ---
@@ -2685,7 +2694,7 @@ def analyze_drawing(pdf_path, material_df, logger):
         final_results.update(reinforcement_data)
 
         # ==================== DIMENSION & LENGTH EXTRACTION ====================
-        dimensions = extract_dimensions_from_text(full_text) # Removed logger here
+        dimensions = extract_dimensions_from_text(full_text)
         final_results['dimensions'] = dimensions
 
         coordinates = extract_coordinates(full_text)
@@ -2703,138 +2712,6 @@ def analyze_drawing(pdf_path, material_df, logger):
     except Exception as e:
         logger.error(f"An error occurred during drawing analysis: {e}", exc_info=True)
         return {'error': str(e)}
-    
-def analyze_drawing_with_gemini(pdf_bytes):
-    """
-    Analyze drawing using Google Gemini with improved prompt and image analysis.
-    Extracts dimensions, specifications, grades, and material properties using AI vision model.
-    Falls back to OCR if Gemini processing fails.
-    """
-    results = {
-        "part_number": "Not Found",
-        "description": "Not Found",
-        "standard": "Not Found",
-        "grade": "Not Found",
-        "material": "Not Found",
-        "od": "Not Found",
-        "thickness": "Not Found",
-        "centerline_length": "Not Found",
-        "development_length": "Not Found",
-        "burst_pressure": "Not Found",
-        "working_temperature": "Not Found",
-        "working_pressure": "Not Found",
-        "coordinates": [],
-        "dimensions": {},
-        "error": None,
-        "processing_method": "gemini"  # Track which method was used
-    }
-    
-    try:
-        # Process the drawing using helper module's functionality
-        logger.info("Processing drawing with Gemini and OCR fallback...")
-        
-        # Convert PDF to temporary file and process
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
-            temp_pdf.write(pdf_bytes)
-            temp_pdf_path = temp_pdf.name
-            
-        # Process the pages using our helper module with required params
-        drawing_prompt = "Analyze this technical drawing and extract part number, description, material, dimensions, operating conditions and any coordinate points."
-        all_data = process_pages_with_vision_or_ocr(
-            pages=temp_pdf_path,
-            prompt=drawing_prompt,
-            ocr_fallback_fn=process_ocr_text
-        )
-
-        # If we have data, format and return results
-        if all_data:
-            # Use the most complete data as our base
-            def completeness_score(data):
-                score = 0
-                # Check top-level fields
-                score += sum(1 for k, v in data.items() if v != "Not Found" and k not in ["dimensions", "coordinates"])
-                # Check dimensions
-                if isinstance(data.get("dimensions"), dict):
-                    score += sum(1 for v in data["dimensions"].values() if v != "Not Found")
-                # Check coordinates
-                if isinstance(data.get("coordinates"), list):
-                    score += len(data["coordinates"])
-                return score
-                
-            # Get the most complete result set
-            best_data = max(all_data, key=completeness_score)
-            
-            # Log data structure for debugging
-            logger.info(f"Type of best_data: {type(best_data)}")
-            logger.info(f"Keys in best_data (if dict): {best_data.keys() if isinstance(best_data, dict) else best_data}")
-            logger.info(f"Type of dimensions: {type(best_data.get('dimensions'))}")
-            
-            # Convert dimensions list to dict if needed
-            if isinstance(best_data.get("dimensions"), list):
-                logger.warning("Converting dimensions list to dict")
-                flat_dims = {}
-                for d in best_data["dimensions"]:
-                    if isinstance(d, dict):
-                        flat_dims.update(d)
-                best_data["dimensions"] = flat_dims
-            
-            # Convert operating_conditions list to dict if needed
-            if isinstance(best_data.get("operating_conditions"), list):
-                logger.warning("Converting operating_conditions list to dict")
-                flat_ops = {}
-                for d in best_data["operating_conditions"]:
-                    if isinstance(d, dict):
-                        flat_ops.update(d)
-                best_data["operating_conditions"] = flat_ops
-            
-            # Update results with the best data
-            results.update(best_data)
-            
-            # Ensure proper field types
-            if not isinstance(results.get("dimensions"), dict):
-                results["dimensions"] = {}
-            if not isinstance(results.get("coordinates"), list):
-                results["coordinates"] = []
-            
-            # Convert numeric values
-            for key in ["id1", "id2", "od1", "od2", "thickness", "centerline_length"]:
-                if results["dimensions"].get(key) and results["dimensions"][key] != "Not Found":
-                    try:
-                        results["dimensions"][key] = float(str(results["dimensions"][key]).replace(",", "."))
-                    except (ValueError, TypeError):
-                        results["dimensions"][key] = "Not Found"
-            
-            # Merge coordinates from all pages
-            all_coordinates = []
-            for data in all_data:
-                if isinstance(data.get("coordinates"), list):
-                    all_coordinates.extend(data["coordinates"])
-            results["coordinates"] = all_coordinates
-
-        logger.info("Drawing analysis completed successfully")
-        return results
-    
-    except Exception as e:
-        logger.error(f"Drawing analysis failed: {str(e)}")
-        results["error"] = f"Analysis failed: {str(e)}"
-        return results
-    finally:
-        # Clean up any temporary files
-        if 'temp_pdf_path' in locals() and os.path.exists(temp_pdf_path):
-            try:
-                os.unlink(temp_pdf_path)
-            except Exception as e:
-                logger.warning(f"Failed to clean up temporary PDF file: {e}")
-    
-
-    # Clean and normalize text (post-processing outside the above try/except)
-    try:
-        combined_text = clean_text_encoding(combined_text)
-        combined_text = re.sub(r'\s+', ' ', combined_text)
-        logger.info("Text cleaned and normalized")
-    except Exception:
-        # If cleaning fails, keep combined_text as-is (or empty)
-        combined_text = combined_text if 'combined_text' in locals() else ''
         
         # Extract part number (multiple patterns)
         part_patterns = [
@@ -3000,27 +2877,7 @@ Instructions:
 2. Description ('description'):
    - Find the main title or description of the part
    - Usually located in the title block or drawing header
-   - Include the full description text
 
-3. Standard/Specification ('standard'):
-   - Look specifically for "SPEC:" label
-   - The value will typically be in format "MPAPS F-XXXX"
-   - Common values: MPAPS F-6032, MPAPS F-6028, MPAPS F-6034
-   - Don't include assembly specs like F-1
-
-4. Grade ('grade'):
-   - Look specifically for "TYPE" or "GRADE" labels
-   - Common values: "TYPE I", "TYPE II", "GRADE C-AN"
-   - Report exactly as shown on drawing
-
-5. Dimensions Object:
-   Look for these specific labels and report numeric values only:
-   - "id1": Find "HOSE ID" or "INSIDE DIAMETER"
-   - "od1": Find "HOSE OD" or "OUTSIDE DIAMETER"
-   - "thickness": Find "WALL THICKNESS" or "THK"
-   - "centerline_length": Find "CTRLINE LENGTH" or "C/L LENGTH"
-
-6. Operating Conditions:
    - Find "MAX OPERATING PRESSURE" (in kPag)
    - Find "BURST PRESSURE" (in kPag)
    - Find "OPERATING TEMPERATURE" range
@@ -3120,25 +2977,6 @@ Pay special attention to distinguishing primary material specs from reference sp
             results['error'] = f'Analysis failed: {str(e)}'
             
         # --- Step 4: Look up the material in the DataFrame ---
-        if results["standard"] != "Not Found" and results["grade"] != "Not Found":
-            standard_key = results["standard"]
-            grade_key = results["grade"]
-            
-            match = material_df[
-                material_df['STANDARD'].str.contains(standard_key, na=False, case=False) &
-                (material_df['GRADE'] == grade_key)
-            ]
-            
-            if not match.empty:
-                results["material"] = match.iloc[0]['MATERIAL']
-
-    except json.JSONDecodeError:
-        results["error"] = "AI model returned a non-JSON response. Please try again."
-    except Exception as e:
-        results["error"] = f"An unexpected error occurred: {str(e)}"
-    
-    return results
-
 # --- Data Validation Function ---
 def validate_extracted_data(data):
     """
