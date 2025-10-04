@@ -2844,7 +2844,7 @@ def analyze_drawing(pdf_input, material_df, logger):
         final_results.update(reinforcement_data)
 
         # ==================== DIMENSION & LENGTH EXTRACTION ====================
-        dimensions = extract_dimensions_from_text(full_text, logger)
+        dimensions = extract_dimensions_from_text(full_text)
         final_results['dimensions'] = dimensions
 
         coordinates = extract_coordinates(full_text)
