@@ -2662,13 +2662,30 @@ def analyze_drawing_simple(pdf_bytes):
         results["error"] = f"Analysis failed: {str(e)}"
         return results
 
-def enhanced_text_extraction(pdf_path, logger):
-    """Extract text from PDF using enhanced methods."""
+def enhanced_text_extraction(pdf_input, logger):
+    """
+    Extract text from PDF using enhanced methods.
+    Args:
+        pdf_input: Either a file path (str) or PDF content (bytes)
+        logger: Logger instance for logging
+    Returns:
+        str: Extracted text from the PDF
+    """
     try:
-        with fitz.open(pdf_path) as doc:
-            full_text = ""
-            for page in doc:
-                full_text += page.get_text()
+        # Handle both file path and bytes input
+        if isinstance(pdf_input, str):
+            # Input is a file path
+            with fitz.open(pdf_input) as doc:
+                full_text = ""
+                for page in doc:
+                    full_text += page.get_text()
+        else:
+            # Input is bytes
+            with io.BytesIO(pdf_input) as pdf_stream:
+                with fitz.open(stream=pdf_stream, filetype="pdf") as doc:
+                    full_text = ""
+                    for page in doc:
+                        full_text += page.get_text()
         return full_text
     except Exception as e:
         logger.error(f"Error in text extraction: {e}")
@@ -2761,15 +2778,21 @@ def extract_coordinates(text):
         })
     return coordinates
 
-def analyze_drawing(pdf_path, material_df, logger):
+def analyze_drawing(pdf_input, material_df, logger):
     """
     Main function to analyze a drawing PDF.
+    Args:
+        pdf_input: Can be either a file path (str) or PDF content (bytes)
+        material_df: DataFrame containing material reference data
+        logger: Logger instance for logging
     """
     try:
-        logger.info(f"Successfully analyzed drawing for part {os.path.basename(pdf_path).split('_')[0]}")
+        # Determine if input is a file path or bytes
+        is_path = isinstance(pdf_input, str)
         
-        # Placeholder for vision model results if needed
-        # vision_results = process_pdf_with_vision(pdf_path, logger)
+        # Get the part number from filename if it's a path, otherwise use placeholder
+        part_info = os.path.basename(pdf_input).split('_')[0] if is_path else 'unknown'
+        logger.info(f"Analyzing drawing for part {part_info}")
         
         final_results = {
             'part_number': None, 'description': None, 'standard': None, 'grade': None,
@@ -2778,7 +2801,15 @@ def analyze_drawing(pdf_path, material_df, logger):
 
         # ==================== TEXT EXTRACTION ====================
         logger.info("==================== PDF TEXT EXTRACTION START ====================")
-        full_text = enhanced_text_extraction(pdf_path, logger)
+        if is_path:
+            full_text = enhanced_text_extraction(pdf_input, logger)
+        else:
+            # Create a temporary BytesIO object to work with bytes input
+            with io.BytesIO(pdf_input) as pdf_stream:
+                with fitz.open(stream=pdf_stream, filetype="pdf") as doc:
+                    full_text = ""
+                    for page in doc:
+                        full_text += page.get_text()
         logger.info(f"Final extracted text length: {len(full_text)} characters")
         logger.info("--- START OF FULL EXTRACTED TEXT ---")
         logger.info(full_text)
