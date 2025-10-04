@@ -3395,7 +3395,7 @@ def analyze_drawing_with_gemini(pdf_bytes):
             logger.warning("Insufficient coordinates after normalization to compute development length")
             
         # Use Gemini for advanced analysis
-        gemini_results = analyze_drawing(pdf_bytes)
+        gemini_results = analyze_drawing(pdf_bytes, material_df, logger)
         
         if gemini_results:
             # Use safe dimension processing
@@ -3687,7 +3687,7 @@ def upload_and_analyze():
             return jsonify({"error": "Uploaded file is empty"}), 400
             
         # 4. Analyze drawing
-        final_results = analyze_drawing(pdf_bytes)
+        final_results = analyze_drawing(pdf_bytes, material_df, logger)
         
         # 5. Response validation and return
         if not isinstance(final_results, dict):
