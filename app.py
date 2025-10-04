@@ -243,6 +243,7 @@ def process_ocr_text(text):
                         result["reinforcement_source"] = "none"
             except Exception as e:
                 logging.warning(f"Error when preferring drawing reinforcement: {e}")
+                result["reinforcement_source"] = "none"
         
         # If we still haven't found reinforcement, try direct search in full text
         if result["reinforcement"] == "Not Found":
@@ -334,8 +335,16 @@ def process_ocr_text(text):
 
         # Keep raw parsed outputs separate for debugging/excel/traceability
         result['reinforcement_raw'] = parsed['reinforcement']            # raw string or 'Not Found'
-        result['rings_raw'] = parsed['rings']
+        # Process rings data with detailed logging
+        result['rings'] = parsed['rings']  # Use consistent key name
+        result['rings_raw'] = parsed['rings']  # Keep for compatibility
         result['reinforcement_parsed_source'] = parsed['reinforcement_source']
+        
+        # Debug log the rings data flow
+        logger.info("Rings data flow:")
+        logger.info("- Parsed rings: %s", parsed['rings'])
+        logger.info("- Result rings: %s", result['rings'])
+        logger.info("- Result rings_raw: %s", result['rings_raw'])
 
         # Debug: log the material text snippet + parsed result
         logging.debug("Material block (first 500 chars): %s", (material_text or "")[:500].replace("\n", "\\n"))
