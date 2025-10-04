@@ -211,7 +211,8 @@ def process_ocr_text(text):
             
             # Store raw values for debugging
             result["reinforcement_raw"] = parsed["reinforcement"]
-            result["rings"] = parsed["rings"]
+            result["rings_raw"] = parsed["rings"]  # Store in rings_raw for debugging
+            result["rings"] = parsed["rings"]       # Store in rings for excel output
             logging.debug(f"Existing reinforcement_raw='{result.get('reinforcement_raw')}', rings='{result.get('rings')}'")
 
             # prefer drawing values when present
@@ -244,12 +245,14 @@ def process_ocr_text(text):
             # Direct search for rings
             direct_rings_match = re.search(r'RINGS\s*[:\-]?\s*([^\n\r]+)', text, re.IGNORECASE | re.DOTALL)
             if direct_rings_match:
-                result["rings"] = direct_rings_match.group(1).strip()
+                rings_value = direct_rings_match.group(1).strip()
+                result["rings_raw"] = rings_value  # Store in rings_raw for debugging
+                result["rings"] = rings_value       # Store in rings for excel output
                 # If we already have reinforcement, combine them
                 if result["reinforcement"] != "Not Found":
-                    result["reinforcement"] = f"{result['reinforcement']}, {result['rings']}"
+                    result["reinforcement"] = f"{result['reinforcement']}, {rings_value}"
                 else:
-                    result["reinforcement"] = result["rings"]
+                    result["reinforcement"] = rings_value
                 logging.info(f"Direct rings extraction and combination: {result['reinforcement']}")
         
         # Extract standard (MPAPS) with priority to F-30
@@ -322,7 +325,8 @@ def process_ocr_text(text):
 
         # Keep raw parsed outputs separate for debugging/excel/traceability
         result['reinforcement_raw'] = parsed['reinforcement']            # raw string or 'Not Found'
-        result['rings'] = parsed['rings']
+        result['rings_raw'] = parsed['rings']                           # Store in rings_raw for debugging
+        result['rings'] = parsed['rings']                               # Store in rings for excel output
         result['reinforcement_parsed_source'] = parsed['reinforcement_source']
 
         # Debug: log the material text snippet + parsed result
