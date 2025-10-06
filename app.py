@@ -16,9 +16,20 @@ import fitz  # PyMuPDF
 from PIL import Image, ImageFilter
 from excel_output import generate_corrected_excel_sheet
 from gemini_helper import process_with_vision_model, discover_vision_model, process_pages_with_vision_or_ocr
+import pytesseract
+from pdf2image import convert_from_bytes, convert_from_path
 
 def analyze_image_with_gemini_vision(pdf_bytes: bytes) -> str:
-    """Process the PDF with Gemini Vision API for text extraction"""
+    """
+    Process the PDF with Gemini Vision API for text extraction.
+    Falls back to local OCR if Gemini processing fails.
+    
+    Args:
+        pdf_bytes (bytes): The PDF file contents as bytes
+        
+    Returns:
+        str: Extracted text from the PDF, or empty string if extraction fails
+    """
     doc = None
     full_text = ""
     
@@ -32,12 +43,17 @@ def analyze_image_with_gemini_vision(pdf_bytes: bytes) -> str:
         # Create a model instance
         model = genai.GenerativeModel(model_name)
         
-        # Process PDF directly from bytes
         try:
+            # Process PDF directly from bytes
             doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            page_count = len(doc)
+            
+            logger.info(f"Processing {page_count} pages with Gemini Vision")
             
             # Process each page
-            for page_num in range(len(doc)):
+            for page_num in range(page_count):
+                logger.debug(f"Processing page {page_num + 1}/{page_count}")
+                
                 page = doc[page_num]
                 pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
                 img_bytes = pix.pil_tobytes("PNG")
@@ -51,57 +67,42 @@ def analyze_image_with_gemini_vision(pdf_bytes: bytes) -> str:
                 ]
                 
                 # Process with Gemini
-                response = model.generate_content(["Extract all text from this engineering drawing.", *image_parts])
+                response = model.generate_content([
+                    "Extract all text from this engineering drawing.", 
+                    *image_parts
+                ])
+                
                 if response and response.text:
-                    full_text += response.text + "\n"
-        finally:
-            if doc is not None:
-                doc.close()
-        
-        return full_text
-        
-    except Exception as e:
-        logger.error(f"Error in Gemini Vision processing: {e}")
-        return ""
-        if not model_name:
-            logger.error("No suitable vision model found")
+                    page_text = response.text.strip()
+                    if page_text:
+                        full_text += page_text + "\n"
+                        logger.debug(f"Extracted {len(page_text)} chars from page {page_num + 1}")
+                    else:
+                        logger.warning(f"Empty response from Gemini for page {page_num + 1}")
+                else:
+                    logger.warning(f"No response from Gemini for page {page_num + 1}")
+            
+            if full_text:
+                logger.info(f"Successfully extracted {len(full_text)} total characters")
+            else:
+                logger.warning("No text was extracted from any page")
+                
+            return full_text
+            
+        except Exception as inner_e:
+            logger.error(f"Error during PDF processing: {inner_e}")
             return ""
             
-        # Create a model instance
-        model = genai.GenerativeModel(model_name)
-        
-        # Convert PDF pages to images
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-        full_text = ""
-        
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
-            img_bytes = pix.pil_tobytes("PNG")
-            
-            # Prepare image parts
-            image_parts = [
-                {
-                    "mime_type": "image/png",
-                    "data": base64.b64encode(img_bytes).decode()
-                }
-            ]
-            
-            # Process with Gemini
-            response = model.generate_content(["Extract all text from this engineering drawing.", *image_parts])
-            if response and response.text:
-                full_text += response.text + "\n"
-        
-        logger.info(f"OCR complete. Total characters extracted: {len(full_text)}")
-        return full_text
-        
-    except Exception as e:
-        logger.error(f"Error in Gemini Vision processing: {e}")
+    except Exception as outer_e:
+        logger.error(f"Error in Gemini Vision processing: {outer_e}")
         return ""
         
     finally:
-        if 'doc' in locals():
-            doc.close()
+        if doc is not None:
+            try:
+                doc.close()
+            except Exception as close_e:
+                logger.warning(f"Error closing PDF document: {close_e}")
 
 try:
     import cv2
@@ -515,7 +516,41 @@ def load_material_database():
     
     try:
         # Clean and standardize the material data
-        material_df.columns = material_df.columns.str.strip()
+        material_df.columns = material_df.columns.str.strip().str.upper()
+        
+        # Validate required columns
+        required_columns = ['STANDARD', 'GRADE', 'MATERIAL', 'REINFORCEMENT']
+        missing_columns = [col for col in required_columns if col not in material_df.columns]
+        
+        if missing_columns:
+            # Check for alternate column names
+            column_variants = {
+                'STANDARD': ['Standard', 'STD', 'SPEC'],
+                'GRADE': ['Grade', 'GRD'],
+                'MATERIAL': ['Material', 'MAT'],
+                'REINFORCEMENT': ['Reinforcement', 'REINF']
+            }
+            
+            for missing in missing_columns:
+                for variant in column_variants.get(missing, []):
+                    if variant in material_df.columns:
+                        material_df.rename(columns={variant: missing}, inplace=True)
+                        logging.info(f"Renamed column '{variant}' to '{missing}'")
+                        break
+            
+            # Check again after attempting fixes
+            still_missing = [col for col in required_columns if col not in material_df.columns]
+            if still_missing:
+                logging.error(f"Required columns missing from material database: {still_missing}")
+                logging.error(f"Available columns: {material_df.columns.tolist()}")
+                return None, None
+                
+        # Fill missing values with 'Not Found'
+        material_df = material_df.fillna('Not Found')
+        
+        # Initialize normalized columns for faster lookups
+        material_df['STANDARD_NORM'] = material_df['STANDARD'].astype(str).apply(normalize_standard_for_lookup)
+        material_df['GRADE_NORM'] = material_df['GRADE'].astype(str).str.upper().str.replace(r'[\s\-_]', '', regex=True)
         material_df['STANDARD'] = material_df['STANDARD'].str.strip()
         material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
         
@@ -805,6 +840,20 @@ def normalize_for_comparison(text):
     
     return text
 
+def normalize_standard_for_lookup(std):
+    """
+    Normalize standard strings for consistent lookup.
+    Handles common variants like spaces around hyphens and F-series numbers.
+    """
+    if not std:
+        return ""
+    s = str(std).upper()
+    # fix common typos and spacing for "MPAPS F-6034" style
+    s = s.replace('MPAPS', 'MPAPS')
+    s = re.sub(r'F[\s\-_]*([0-9]+)', r'F-\1', s)   # F6034, F 6034, F_6034 -> F-6034
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
     """
@@ -813,32 +862,57 @@ def get_material_from_standard(standard, grade):
     if material_df is None:
         logging.error("Material database not loaded")
         return "Not Found"
+        
+    # Validate required columns are present
+    required_cols = ['STANDARD_NORM', 'GRADE_NORM', 'MATERIAL']
+    if not all(col in material_df.columns for col in required_cols):
+        missing = [col for col in required_cols if col not in material_df.columns]
+        logging.error(f"Material lookup failed: missing required columns {missing}")
+        logging.error(f"Available columns: {material_df.columns.tolist()}")
+        return "Not Found"
     
     if standard == "Not Found" or grade == "Not Found":
         logging.warning("Standard or grade not provided")
         return "Not Found"
     
     try:
-        # Clean inputs
+        # Helper function for standard normalization
+        def normalize_standard(std):
+            if not std:
+                return ""
+            s = str(std).upper()
+            # Handle F-series standards
+            s = re.sub(r'MPAPS\s*F\s*[-_]?\s*(\d+)', r'MPAPS F-\1', s)
+            s = re.sub(r'\s+', ' ', s).strip()
+            return s
+            
+        # Clean and normalize inputs
         clean_standard = clean_text_encoding(str(standard))
         clean_grade = clean_text_encoding(str(grade))
+        norm_standard = normalize_standard_for_lookup(clean_standard)
+        norm_grade = re.sub(r'[\s\-_]', '', clean_grade.upper())
         
         logging.info(f"Material lookup initiated: Standard='{standard}', Grade='{grade}'")
         logging.info(f"Cleaned: Standard='{clean_standard}', Grade='{clean_grade}'")
+        logging.info(f"Normalized: Standard='{norm_standard}', Grade='{norm_grade}'")
+        
+        # Initialize normalized columns if not already done
+        if 'STANDARD_NORM' not in material_df.columns:
+            material_df['STANDARD_NORM'] = material_df['STANDARD'].astype(str).apply(normalize_standard_for_lookup)
+            material_df['GRADE_NORM'] = material_df['GRADE'].astype(str).str.upper().str.replace(r'[\s\-_]', '', regex=True)
         
         # Special handling for MPAPS F-1 -> MPAPS F-30 mapping
-        if 'MPAPS F-1' in clean_standard.upper() or 'MPAPSF1' in clean_standard.upper():
-            clean_standard = 'MPAPS F-30'
-            logging.info(f"Mapping MPAPS F-1 to {clean_standard}")
+        if 'MPAPS F-1' in norm_standard or 'MPAPSF1' in norm_standard:
+            norm_standard = normalize_standard_for_lookup('MPAPS F-30')
+            logging.info(f"Mapping MPAPS F-1 to {norm_standard}")
         
-        # Enhanced normalization for comparison
-        def normalize_standard(std):
-            std = str(std).upper().strip()
-            # Handle MPAPS F-series variations
-            std = re.sub(r'MPAPS\s*F\s*[-_]?\s*(\d+)', r'MPAPS F-\1', std)
-            std = re.sub(r'\s+', ' ', std).strip()
-            return std
+        # First try exact match on normalized values
+        exact_matches = material_df[
+            (material_df['STANDARD_NORM'] == norm_standard) &
+            (material_df['GRADE_NORM'] == norm_grade)
+        ]
         
+        # Helper function for grade normalization
         def normalize_grade(grd):
             grd = str(grd).upper().strip()
             # Handle grade variations (1B, I-B, etc.)
@@ -851,7 +925,10 @@ def get_material_from_standard(standard, grade):
                 if grd == roman:
                     grd = num + 'B'  # Assume B type if not specified
             return grd
-        
+
+        # Now use the helper functions
+        clean_standard = clean_text_encoding(str(standard))
+        clean_grade = clean_text_encoding(str(grade))
         norm_standard = normalize_standard(clean_standard)
         norm_grade = normalize_grade(clean_grade)
         
@@ -928,8 +1005,6 @@ def get_material_from_standard(standard, grade):
     except Exception as e:
         logging.error(f"Error during material lookup: {str(e)}", exc_info=True)
         return "Not Found"
-    
-    if best_score >= 0.6:
         logging.info(f"Best match found: '{best_match}' (score: {best_score:.2f})")
         return best_match
     
@@ -3401,6 +3476,7 @@ def extract_text_from_pdf(pdf_bytes):
     logger.info("Starting enhanced text extraction process...")
     logger.debug(f"Input PDF size: {len(pdf_bytes)} bytes")
     texts = []
+    doc = None
     
     def log_extracted_text(source, text):
         """Helper to log extracted text chunks with clear formatting"""
@@ -3410,7 +3486,14 @@ def extract_text_from_pdf(pdf_bytes):
     
     try:
         # Method 1: PyMuPDF with layout preservation
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            if not doc:
+                logger.error("Failed to open PDF from bytes")
+                return ""
+        except Exception as e:
+            logger.error(f"Error opening PDF with PyMuPDF: {str(e)}")
+            return ""
             # Try different text extraction modes
             for page in doc:
                 # Get text with layout preservation
@@ -3465,6 +3548,13 @@ def extract_text_from_pdf(pdf_bytes):
         logger.error(f"Error in enhanced text extraction: {e}")
         # Fall back to OCR as last resort
         return analyze_image_with_gemini_vision(pdf_bytes)
+    finally:
+        # Clean up resources
+        try:
+            if doc and hasattr(doc, 'close'):
+                doc.close()
+        except Exception as e:
+            logger.warning(f"Error closing document: {e}")
 
 if __name__ == '__main__':
     app.run(debug=True)
