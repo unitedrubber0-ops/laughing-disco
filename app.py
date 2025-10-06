@@ -8,12 +8,36 @@ import gc
 import json
 import logging
 import tempfile
+import os
+import re
+import json
+import base64
+import logging
+import os
+import re
+import json
+import base64
+import logging
+from typing import Dict, List, Optional, Any, Tuple
+
+# Third-party imports
+import cv2
+import numpy as np
+import pandas as pd
+import openpyxl
+import fitz  # PyMuPDF
+from PIL import Image, ImageFilter
+import pytesseract
+from pdf2image import convert_from_bytes, convert_from_path
+from flask import Flask, request, jsonify, render_template, send_file
+from flask_cors import CORS
+import google.generativeai as genai
+
+# Local imports
 from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
 import numpy as np
 import unicodedata
 import openpyxl
-import fitz  # PyMuPDF
-from PIL import Image, ImageFilter
 from excel_output import generate_corrected_excel_sheet
 from gemini_helper import process_with_vision_model, discover_vision_model, process_pages_with_vision_or_ocr
 import pytesseract
@@ -112,8 +136,10 @@ except Exception as e:
     HAS_OPENCV = False
     logging.warning(f"OpenCV (cv2) not available: {e}")
 import pytesseract
+import cv2
 from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
+import google.generativeai as genai
 import fitz  # PyMuPDF
 import pdf2image
 from pdf2image import convert_from_path, convert_from_bytes
@@ -496,7 +522,7 @@ except Exception as e:
     logging.error(f"Failed to configure Gemini API key: {str(e)}")
     raise RuntimeError(f"Failed to initialize Gemini AI: {str(e)}")
 
-def normalize_standard_for_lookup(std):
+def normalize_standard_for_lookup(std: Optional[str]) -> str:
     """
     Normalize standard strings for consistent lookup.
     Handles common variants like spaces around hyphens and F-series numbers.
@@ -511,19 +537,6 @@ def normalize_standard_for_lookup(std):
     return s
 
 # --- Load and Clean Material and Reinforcement Database on Startup with Enhanced Debugging ---
-def normalize_standard_for_lookup(std):
-    """
-    Normalize standard strings for consistent lookup.
-    Handles common variants like spaces around hyphens and F-series numbers.
-    """
-    if not std:
-        return ""
-    s = str(std).upper()
-    # fix common typos and spacing for "MPAPS F-6034" style
-    s = s.replace('MPAPS', 'MPAPS')
-    s = re.sub(r'F[\s\-_]*([0-9]+)', r'F-\1', s)   # F6034, F 6034, F_6034 -> F-6034
-    s = re.sub(r'\s+', ' ', s).strip()
-    return s
 
 def load_material_database():
     """Load and clean the material and reinforcement database from Excel file."""
@@ -588,7 +601,10 @@ def load_material_database():
         logging.info(f"Unique GRADE values:\n{material_df['GRADE'].unique().tolist()}")
         
         # Since reinforcement is in the same DataFrame, log confirmation
-        logging.info(f"Reinforcement database set to material_df with {len(reinforcement_df)} entries.")
+        if reinforcement_df is not None:
+            logging.info(f"Reinforcement database set to material_df with {len(reinforcement_df)} entries.")
+        else:
+            logging.info("No reinforcement database was loaded")
         
         return material_df, reinforcement_df
     except Exception as e:
@@ -2529,9 +2545,13 @@ def extract_text_from_image(image):
                 # Color image processing
                 if len(img_array.shape) == 3:
                     # Try different color channels
-                    channels = cv2.split(img_array)
+                    if cv2 is not None:
+                        channels = cv2.split(img_array)
+                    else:
+                        logger.error("OpenCV (cv2) not available")
+                        return None
                     gray_versions = [
-                        cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY),  # Standard grayscale
+                        cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY) if cv2 is not None else None,  # Standard grayscale
                         channels[0],  # Red channel
                         channels[1],  # Green channel
                         channels[2]   # Blue channel
@@ -2546,7 +2566,7 @@ def extract_text_from_image(image):
                     # 1. Basic preprocessing
                     preprocessed_images.extend([
                         gray,  # Original
-                        cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1],  # Otsu's method
+                        cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1] if cv2 is not None else None,  # Otsu's method
                         cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)  # Adaptive
                     ])
                     
@@ -3297,26 +3317,17 @@ def upload_and_analyze():
                 logging.error(f"Analysis error: {error_msg}")
                 return jsonify({"error": error_msg}), 500
 
-        try:
-            # Enhanced dimension extraction and merging
-            # Get cleaned extracted text from multiple sources
-            extracted_text = final_results.get('extracted_text') or final_results.get('combined_text') \
-                            or final_results.get('ocr_text') or extract_text_from_pdf(temp_pdf_path)
-            
-            # Process the results further
-            part_number = final_results.get('part_number', 'Unknown')
-            logging.info(f"Successfully analyzed drawing for part {part_number}")
-            
-            # Create a copy of results for the response
-            response_data = final_results.copy()
-            
-            # Return the analysis results
-            return jsonify(response_data)
-            
-        except Exception as process_error:
-            error_msg = f"Error processing results: {str(process_error)}"
-            logging.error(error_msg)
-            return jsonify({"error": error_msg}), 500
+        # Process the results further
+        part_number = final_results.get('part_number', 'Unknown')
+        logging.info(f"Successfully analyzed drawing for part {part_number}")
+        
+        # Return the analysis results
+        return jsonify(final_results)
+
+        # Enhanced dimension extraction and merging
+        # Get cleaned extracted text from multiple sources
+        extracted_text = final_results.get('extracted_text') or final_results.get('combined_text') \
+                        or final_results.get('ocr_text') or extract_text_from_pdf(temp_pdf_path)
 
         # Log the full extracted text for debugging
         app.logger.info("--- START OF FULL EXTRACTED TEXT ---")
@@ -3407,7 +3418,7 @@ def upload_and_analyze():
         try:
             validation_issues = validate_extracted_data(final_results)
             if validation_issues:
-                final_results["validation_warnings"] = validation_issues
+                final_results["validation_warnings"] = "; ".join(str(issue) for issue in validation_issues)
                 logging.warning(f"Validation issues found: {validation_issues}")
         except Exception as e:
             logging.error(f"Error in data validation: {e}")
@@ -3476,9 +3487,6 @@ def upload_and_analyze():
                 os.unlink(temp_pdf_path)
             except Exception as e:
                 app.logger.warning(f"Failed to clean up temporary PDF file: {e}")
-    
-    # Final fallback return in case all other returns are missed
-    return jsonify({"error": "An unexpected error occurred during analysis"}), 500
 
 # --- Route for the main webpage ---
 @app.route('/')
