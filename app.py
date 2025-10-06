@@ -496,7 +496,35 @@ except Exception as e:
     logging.error(f"Failed to configure Gemini API key: {str(e)}")
     raise RuntimeError(f"Failed to initialize Gemini AI: {str(e)}")
 
+def normalize_standard_for_lookup(std):
+    """
+    Normalize standard strings for consistent lookup.
+    Handles common variants like spaces around hyphens and F-series numbers.
+    """
+    if not std:
+        return ""
+    s = str(std).upper()
+    # fix common typos and spacing for "MPAPS F-6034" style
+    s = s.replace('MPAPS', 'MPAPS')
+    s = re.sub(r'F[\s\-_]*([0-9]+)', r'F-\1', s)   # F6034, F 6034, F_6034 -> F-6034
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
 # --- Load and Clean Material and Reinforcement Database on Startup with Enhanced Debugging ---
+def normalize_standard_for_lookup(std):
+    """
+    Normalize standard strings for consistent lookup.
+    Handles common variants like spaces around hyphens and F-series numbers.
+    """
+    if not std:
+        return ""
+    s = str(std).upper()
+    # fix common typos and spacing for "MPAPS F-6034" style
+    s = s.replace('MPAPS', 'MPAPS')
+    s = re.sub(r'F[\s\-_]*([0-9]+)', r'F-\1', s)   # F6034, F 6034, F_6034 -> F-6034
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
 def load_material_database():
     """Load and clean the material and reinforcement database from Excel file."""
     try:
@@ -3398,6 +3426,9 @@ def upload_and_analyze():
         except Exception as e:
             final_results["development_length_mm"] = "Not Found"
             logger.exception("Error in development length calculation: %s", e)
+            
+        # Prepare successful response before Excel generation
+        successful_response = final_results.copy()
         
         # Generate Excel report if helper function exists
         try:
@@ -3416,12 +3447,12 @@ def upload_and_analyze():
             if 'generate_excel_sheet' in globals():
                 excel_file = generate_corrected_excel_sheet(final_results, final_results.get("dimensions", {}), coordinates)
                 excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
-                final_results["excel_data"] = excel_b64
+                successful_response["excel_data"] = excel_b64
         except Exception as e:
             logging.warning(f"Excel generation skipped: {e}")
 
         logging.info(f"Successfully analyzed drawing: {final_results.get('part_number', 'Unknown')}")
-        return jsonify(final_results)
+        return jsonify(successful_response)
 
     except Exception as e:
         logging.error(f"Error analyzing drawing: {str(e)}")
