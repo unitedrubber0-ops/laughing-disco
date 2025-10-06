@@ -367,17 +367,6 @@ def get_reinforcement_from_material(standard, grade, material):
     except Exception as e:
         logging.error(f"Error during reinforcement lookup: {str(e)}", exc_info=True)
         return "Not Found"
-            (reinforcement_df['MATERIAL'].str.upper() == clean_material.upper())
-        ]
-        
-        if not matches.empty:
-            reinforcement = matches.iloc[0]['REINFORCEMENT']
-            logging.info(f"Exact reinforcement match found: {reinforcement}")
-            return reinforcement
-        
-        # Try matching with normalized values
-        norm_standard = normalize_for_comparison(clean_standard)
-        norm_grade = normalize_for_comparison(clean_grade)
         norm_material = normalize_for_comparison(clean_material)
         
         matches = reinforcement_df[
