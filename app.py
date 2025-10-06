@@ -3283,8 +3283,8 @@ def upload_and_analyze():
         # 5. Response validation and return
         if not isinstance(final_results, dict):
             logging.error(f"Invalid analyzer response type: {type(final_results)}")
-            return jsonify({"error": "Internal error: Invalid response format"}), 500
-            
+            return jsonify({"error": "Invalid analyzer response"}), 500
+        
         if final_results.get("error"):
             error_msg = final_results["error"]
             if "PDF conversion error" in error_msg:
@@ -3296,15 +3296,27 @@ def upload_and_analyze():
             else:
                 logging.error(f"Analysis error: {error_msg}")
                 return jsonify({"error": error_msg}), 500
-        
-        # Process the results further
-        part_number = final_results.get('part_number', 'Unknown')
-        logging.info(f"Successfully analyzed drawing for part {part_number}")
 
-        # Enhanced dimension extraction and merging
-        # Get cleaned extracted text from multiple sources
-        extracted_text = final_results.get('extracted_text') or final_results.get('combined_text') \
-                        or final_results.get('ocr_text') or extract_text_from_pdf(temp_pdf_path)
+        try:
+            # Enhanced dimension extraction and merging
+            # Get cleaned extracted text from multiple sources
+            extracted_text = final_results.get('extracted_text') or final_results.get('combined_text') \
+                            or final_results.get('ocr_text') or extract_text_from_pdf(temp_pdf_path)
+            
+            # Process the results further
+            part_number = final_results.get('part_number', 'Unknown')
+            logging.info(f"Successfully analyzed drawing for part {part_number}")
+            
+            # Create a copy of results for the response
+            response_data = final_results.copy()
+            
+            # Return the analysis results
+            return jsonify(response_data)
+            
+        except Exception as process_error:
+            error_msg = f"Error processing results: {str(process_error)}"
+            logging.error(error_msg)
+            return jsonify({"error": error_msg}), 500
 
         # Log the full extracted text for debugging
         app.logger.info("--- START OF FULL EXTRACTED TEXT ---")
@@ -3464,6 +3476,9 @@ def upload_and_analyze():
                 os.unlink(temp_pdf_path)
             except Exception as e:
                 app.logger.warning(f"Failed to clean up temporary PDF file: {e}")
+    
+    # Final fallback return in case all other returns are missed
+    return jsonify({"error": "An unexpected error occurred during analysis"}), 500
 
 # --- Route for the main webpage ---
 @app.route('/')
