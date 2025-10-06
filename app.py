@@ -15,6 +15,93 @@ import openpyxl
 import fitz  # PyMuPDF
 from PIL import Image, ImageFilter
 from excel_output import generate_corrected_excel_sheet
+from gemini_helper import process_with_vision_model, discover_vision_model, process_pages_with_vision_or_ocr
+
+def analyze_image_with_gemini_vision(pdf_bytes: bytes) -> str:
+    """Process the PDF with Gemini Vision API for text extraction"""
+    doc = None
+    full_text = ""
+    
+    try:
+        # Discover and setup Gemini model
+        model_name = discover_vision_model()
+        if not model_name:
+            logger.error("No suitable vision model found")
+            return ""
+            
+        # Create a model instance
+        model = genai.GenerativeModel(model_name)
+        
+        # Process PDF directly from bytes
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            
+            # Process each page
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+                img_bytes = pix.pil_tobytes("PNG")
+                
+                # Create Gemini-compatible image part
+                image_parts = [
+                    {
+                        'mime_type': 'image/png',
+                        'data': base64.b64encode(img_bytes).decode('utf-8')
+                    }
+                ]
+                
+                # Process with Gemini
+                response = model.generate_content(["Extract all text from this engineering drawing.", *image_parts])
+                if response and response.text:
+                    full_text += response.text + "\n"
+        finally:
+            if doc is not None:
+                doc.close()
+        
+        return full_text
+        
+    except Exception as e:
+        logger.error(f"Error in Gemini Vision processing: {e}")
+        return ""
+        if not model_name:
+            logger.error("No suitable vision model found")
+            return ""
+            
+        # Create a model instance
+        model = genai.GenerativeModel(model_name)
+        
+        # Convert PDF pages to images
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        full_text = ""
+        
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
+            img_bytes = pix.pil_tobytes("PNG")
+            
+            # Prepare image parts
+            image_parts = [
+                {
+                    "mime_type": "image/png",
+                    "data": base64.b64encode(img_bytes).decode()
+                }
+            ]
+            
+            # Process with Gemini
+            response = model.generate_content(["Extract all text from this engineering drawing.", *image_parts])
+            if response and response.text:
+                full_text += response.text + "\n"
+        
+        logger.info(f"OCR complete. Total characters extracted: {len(full_text)}")
+        return full_text
+        
+    except Exception as e:
+        logger.error(f"Error in Gemini Vision processing: {e}")
+        return ""
+        
+    finally:
+        if 'doc' in locals():
+            doc.close()
 
 try:
     import cv2
@@ -3078,14 +3165,17 @@ def upload_and_analyze():
     logging.info(f"Processing analysis request for file: {file.filename}")
     
     try:
-        # 3. Read file contents
-        pdf_bytes = file.read()
-        if not pdf_bytes:
+        # 3. Save file to temp path
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
+            file.save(temp_pdf.name)
+            temp_pdf_path = temp_pdf.name
+
+        if not os.path.getsize(temp_pdf_path):
             logging.warning("Uploaded file is empty")
             return jsonify({"error": "Uploaded file is empty"}), 400
             
-        # 4. Analyze drawing
-        final_results = analyze_drawing(pdf_bytes)
+        # 4. Analyze drawing with material_df and logger
+        final_results = analyze_drawing(temp_pdf_path, material_df, app.logger)
         
         # 5. Response validation and return
         if not isinstance(final_results, dict):
@@ -3111,7 +3201,7 @@ def upload_and_analyze():
         # Enhanced dimension extraction and merging
         # Get cleaned extracted text from multiple sources
         extracted_text = final_results.get('extracted_text') or final_results.get('combined_text') \
-                        or final_results.get('ocr_text') or extract_text_from_pdf(pdf_bytes)
+                        or final_results.get('ocr_text') or extract_text_from_pdf(temp_pdf_path)
 
         # Log the full extracted text for debugging
         app.logger.info("--- START OF FULL EXTRACTED TEXT ---")
@@ -3144,71 +3234,59 @@ def upload_and_analyze():
         logger.debug("dimensions after merge: %s", final_results.get('dimensions'))
 
         # Look up material based on standard and grade
-        try:
-            standard = final_results.get("standard", "Not Found")
-            grade = final_results.get("grade", "Not Found")
-            ocr_text = extract_text_from_pdf(pdf_bytes) if pdf_bytes else ""
-            # Handle standards and remarks
-            remark, suggested_standard = get_standards_remark(ocr_text, standard)
-            if remark:
-                final_results['remark'] = remark
-                standard = suggested_standard
-            
-            # Lookup material using the potentially updated standard
-            final_results["material"] = get_material_from_standard(standard, grade)
+        standard = final_results.get("standard", "Not Found")
+        grade = final_results.get("grade", "Not Found")
+        ocr_text = extract_text_from_pdf(temp_pdf_path)
+        # Handle standards and remarks
+        remark, suggested_standard = get_standards_remark(ocr_text, standard)
+        if remark:
+            final_results['remark'] = remark
+            standard = suggested_standard
+        
+        # Lookup material using the potentially updated standard
+        final_results["material"] = get_material_from_standard(standard, grade)
 
-            # Handle reinforcement: always prefer drawing details over database lookup
-            try:
-                # Store raw extracted reinforcement data for reference
-                raw_reinforcement = final_results.get("reinforcement")
-                raw_source = final_results.get("reinforcement_source", "unknown")
-                
-                logger.debug("Raw reinforcement data - Value: %s, Source: %s", raw_reinforcement, raw_source)
-                
-                # Look up DB reinforcement for comparison and fallback
-                db_rein = get_reinforcement_from_material(standard, grade, final_results.get("material", "Not Found"))
-                if db_rein and db_rein != "Not Found":
-                    final_results["reinforcement_db"] = db_rein
-                    logger.debug("Found DB reinforcement: %s", db_rein)
-                
-                # Decision logic for final reinforcement value
-                if raw_reinforcement and raw_reinforcement != "Not Found" and raw_source != "none":
-                    # Keep the drawing-extracted value
-                    final_results["reinforcement"] = raw_reinforcement
-                    final_results["reinforcement_source"] = raw_source
-                    logger.info("Using reinforcement from drawing: %s (source: %s)", raw_reinforcement, raw_source)
-                elif db_rein and db_rein != "Not Found":
-                    # Fallback to DB value
-                    final_results["reinforcement"] = db_rein
-                    final_results["reinforcement_source"] = "db"
-                    logger.info("Using reinforcement from DB: %s", db_rein)
-                else:
-                    # No valid value found
-                    final_results["reinforcement"] = "Not Found"
-                    final_results["reinforcement_source"] = "none"
-                    logger.warning("No valid reinforcement found in drawing or DB")
-                
-                # Always log the final decision
-                logger.info("Final reinforcement decision - Value: '%s', Source: %s", 
-                          final_results.get("reinforcement"), 
-                          final_results.get("reinforcement_source"))
-                
-                # Clean up raw extraction fields
-                final_results.pop("reinforcement_raw", None)
-                final_results.pop("rings", None)
-                
-            except Exception as e:
-                logger.exception("Reinforcement processing failed")
-                final_results["reinforcement"] = final_results.get("reinforcement", "Not Found")
-                final_results["reinforcement_source"] = "error"
-            except Exception as e:
-                logging.warning(f"Reinforcement lookup failed: {e}", exc_info=True)
-                # Keep a deterministic key for downstream code
-                final_results["reinforcement"] = final_results.get("reinforcement", "Not Found")
-        except Exception as e:
-            logging.error(f"Error in material lookup: {e}")
-            final_results["material"] = "Not Found"
+        # Handle reinforcement: always prefer drawing details over database lookup
+        raw_reinforcement = final_results.get("reinforcement")
+        raw_source = final_results.get("reinforcement_source", "unknown")
+        
+        logger.debug("Raw reinforcement data - Value: %s, Source: %s", raw_reinforcement, raw_source)
+            
+            # Look up DB reinforcement for comparison and fallback
+        db_rein = get_reinforcement_from_material(standard, grade, final_results.get("material", "Not Found"))
+        if db_rein and db_rein != "Not Found":
+            final_results["reinforcement_db"] = db_rein
+            logger.debug("Found DB reinforcement: %s", db_rein)
+            
+        # Decision logic for final reinforcement value
+        if raw_reinforcement and raw_reinforcement != "Not Found" and raw_source != "none":
+            # Keep the drawing-extracted value
+            final_results["reinforcement"] = raw_reinforcement
+            final_results["reinforcement_source"] = raw_source
+            logger.info("Using reinforcement from drawing: %s (source: %s)", raw_reinforcement, raw_source)
+        elif db_rein and db_rein != "Not Found":
+            # Fallback to DB value
+            final_results["reinforcement"] = db_rein
+            final_results["reinforcement_source"] = "db"
+            logger.info("Using reinforcement from DB: %s", db_rein)
+        else:
+            # No valid value found
             final_results["reinforcement"] = "Not Found"
+            final_results["reinforcement_source"] = "none"
+            logger.warning("No valid reinforcement found in drawing or DB")
+                
+        # Always log the final decision
+        logger.info("Final reinforcement decision - Value: '%s', Source: %s", 
+                  final_results.get("reinforcement"), 
+                  final_results.get("reinforcement_source"))
+        
+        # Clean up raw extraction fields
+        final_results.pop("reinforcement_raw", None)
+        final_results.pop("rings", None)
+    except Exception as e:
+        logging.error(f"Error in material lookup: {e}")
+        final_results["material"] = "Not Found"
+        final_results["reinforcement"] = "Not Found"
 
         # Validate the extracted data
         try:
@@ -3273,77 +3351,21 @@ def upload_and_analyze():
     except Exception as e:
         logging.error(f"Error analyzing drawing: {str(e)}")
         return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+    finally:
+        # Clean up temporary file
+        if 'temp_pdf_path' in locals() and os.path.exists(temp_pdf_path):
+            try:
+                os.unlink(temp_pdf_path)
+            except Exception as e:
+                app.logger.warning(f"Failed to clean up temporary PDF file: {e}")
 
-    except Exception as e:
-        logging.error(f"Error analyzing drawing: {str(e)}")
-        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
-
-# --- Route for the main webpage (no change) ---
+# --- Route for the main webpage ---
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# --- Run the application (no change) ---
-def analyze_image_with_gemini_vision(pdf_bytes):
-    """Process PDF using Gemini Vision API for OCR"""
-    logger.info("Starting Gemini Vision OCR analysis...")
-    full_text = ""
-    temp_pdf_path = None
-
-    try:
-        # Save PDF to temporary file
-        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
-            temp_pdf.write(pdf_bytes)
-            temp_pdf_path = temp_pdf.name
-
-        # Convert PDF to images
-        page_images = convert_from_path(temp_pdf_path, dpi=150)
-        logger.info(f"Converted PDF to {len(page_images)} images at 150 DPI")
-
-        # Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-pro-vision')
-        for i, page in enumerate(page_images):
-            logger.info(f"Processing page {i+1} with Gemini Vision...")
-            
-            # Convert PIL Image to bytes
-            img_byte_arr = io.BytesIO()
-            page.save(img_byte_arr, format='PNG')
-            img_byte_arr = img_byte_arr.getvalue()
-            
-            # Convert to base64
-            img_base64 = base64.b64encode(img_byte_arr).decode('utf-8')
-            
-            # Create Gemini-compatible image object
-            image_parts = [
-                {
-                    'mime_type': 'image/png',
-                    'data': img_base64
-                }
-            ]
-            
-            # Process with Gemini
-            response = model.generate_content(["Extract all text from this engineering drawing.", *image_parts])
-            if response and response.text:
-                full_text += response.text + "\n"
-
-        logger.info(f"OCR complete. Total characters extracted: {len(full_text)}")
-        return full_text
-
-    except Exception as e:
-        logger.error(f"Error in Gemini Vision processing: {e}")
-        return ""
-
-    finally:
-        # Clean up temporary file
-        if temp_pdf_path and os.path.exists(temp_pdf_path):
-            # Try unlink first, then fallback to remove if necessary
-            try:
-                os.unlink(temp_pdf_path)
-            except Exception:
-                try:
-                    os.remove(temp_pdf_path)
-                except Exception as e:
-                    logger.warning(f"Failed to remove temporary file: {e}")
+if __name__ == '__main__':
+    app.run(debug=True)
 
 def format_description(text):
     """
