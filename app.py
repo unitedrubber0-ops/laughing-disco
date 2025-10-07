@@ -45,6 +45,52 @@ from gemini_helper import process_pages_with_vision_or_ocr, extract_text_from_im
 import fitz  # PyMuPDF for PDF handling
 from development_length import calculate_development_length as calculate_development_length_safe
 
+# Hardcoded material database to replace Excel file reading
+MATERIAL_DATABASE = [
+    # Standard, Grade, Material, Reinforcement
+    {"standard": "MPAPS F-30/F-1", "grade": "1B", "material": "P-EPDM", "reinforcement": "KEVLAR"},
+    {"standard": "MPAPS F-30/F-1", "grade": "1BF", "material": "P-EPDM", "reinforcement": "KEVLAR"},
+    {"standard": "MPAPS F-30/F-1", "grade": "1BFD", "material": "P-EPDM WITH SPRING INSERT", "reinforcement": "KEVLAR"},
+    {"standard": "MPAPS F-30/F-1", "grade": "2B", "material": "SILICONE", "reinforcement": "NOMEX 4 PLY"},
+    {"standard": "MPAPS F-30/F-1", "grade": "2C", "material": "SILICONE", "reinforcement": "NOMEX 4 PLY"},
+    {"standard": "MPAPS F-6032", "grade": "Type I", "material": "INNER NBR OUTER:ECO", "reinforcement": "KEVLAR"},
+    {"standard": "MPAPS F-6028", "grade": "--", "material": "INNER:NBR OUTER:CR", "reinforcement": "KEVLAR"},
+    {"standard": "MPAPS F-6034", "grade": "H-AN", "material": "HIGH TEMP. SILICONE", "reinforcement": "NOMEX 4 PLY"},
+    {"standard": "MPAPS F-6034", "grade": "H-ANR", "material": "INNER:FKN OUTER:HIGH TEMP. SILICONE", "reinforcement": "NOMEX 4 PLY"},
+    {"standard": "MPAPS F-6034", "grade": "C-AN", "material": "HIGH TEAR SILICONE", "reinforcement": "NOMEX 4 PLY"},
+    {"standard": "MPAPS F-6034", "grade": "GRADE C-BNR", "material": "CSM", "reinforcement": "KEVLAR"},
+    {"standard": "MPAPS F-1058 TYPE 1", "grade": "--", "material": "M.S. WITH HRAL(MILD STEEL WITH HEAT RESISTANT ALUMINUM)", "reinforcement": "---"},
+    {"standard": "MPAPS F-1058 TYPE 2", "grade": "--", "material": "ACMS(ALUMINIUM COATED MILD STEEL)", "reinforcement": "---"},
+    {"standard": "M3055-5", "grade": "--", "material": "AEM", "reinforcement": "KEVLAR"},
+    {"standard": "M3055-5L", "grade": "--", "material": "AEM", "reinforcement": "KEVLAR"},
+    {"standard": "M3055-6L", "grade": "--", "material": "VMQ", "reinforcement": ""},
+    {"standard": "M3055-7", "grade": "--", "material": "INNER:FKM OUTER:VMQ", "reinforcement": "NOMEX 4 PLY"},
+    {"standard": "M3055-7L", "grade": "--", "material": "INNER:FKM OUTER:VMQ", "reinforcement": "NOMEX 4 PLY"},
+    {"standard": "M3177", "grade": "--", "material": "MVQ", "reinforcement": "NOMEX 4 PLY"},
+    {"standard": "MAN 303", "grade": "--", "material": "ECO", "reinforcement": "KEVLAR"},
+    {"standard": "MAN 308", "grade": "--", "material": "FKM", "reinforcement": "NOMEX 4 PLY"},
+    {"standard": "TL 52361", "grade": "--", "material": "P-EPDM", "reinforcement": "KEVLAR"},
+    {"standard": "M3342", "grade": "--", "material": "Material is mentioned as per type", "reinforcement": ""},
+    {"standard": "man 333-N1", "grade": "--", "material": "INNER:NBR OUTER:CR", "reinforcement": "KEVLAR"},
+    {"standard": "man 333-N1W", "grade": "--", "material": "INNER:NBR OUTER:CR (with wire)", "reinforcement": "KEVLAR"},
+    {"standard": "MAN 305", "grade": "--", "material": "EPDM", "reinforcement": "KEVLAR"},
+    {"standard": "4496", "grade": "--", "material": "SILICONE", "reinforcement": "NOMEX 4 PLY"},
+    {"standard": "4498", "grade": "--", "material": "AEM OR ACM", "reinforcement": "KEVLAR"},
+    {"standard": "4542", "grade": "--", "material": "PEPDM", "reinforcement": "KEVLAR"},
+    {"standard": "J20", "grade": "CLASS A", "material": "SILICONE", "reinforcement": "NOMEX 4 PLY"},
+    {"standard": "J20", "grade": "CLASS B", "material": "NBR", "reinforcement": "KEVLAR"},
+    {"standard": "J20", "grade": "CLASS C", "material": "CR", "reinforcement": "KEVLAR"},
+    {"standard": "J20", "grade": "CLASS R (OLD STANDARD )", "material": "EPDM", "reinforcement": "KEVLAR"},
+    {"standard": "J20", "grade": "CLASS D1,D2,D3", "material": "EPDM", "reinforcement": "KEVLAR"},
+    {"standard": "J30", "grade": "R6,R7,R8", "material": "INNER:NBR OUTER:CR", "reinforcement": "KEVLAR"},
+    {"standard": "J30", "grade": "R11", "material": "TUBE & COVER - POLYACRYLIC", "reinforcement": ""},
+    {"standard": "J30", "grade": "R12", "material": "INNER:VITON OUTER:ECO", "reinforcement": "KEVLAR"}
+]
+
+# Global variables for material and reinforcement DataFrames
+material_df = None
+reinforcement_df = None
+
 # Define custom exceptions
 class BlockedPromptException(Exception):
     """Custom exception for blocked prompts"""
@@ -314,24 +360,21 @@ if api_key:
 
 # --- Load and Clean Material and Reinforcement Database on Startup with Enhanced Debugging ---
 def load_material_database():
-    """Load and clean the material and reinforcement database from Excel file."""
+    """
+    Load the hardcoded material and reinforcement database.
+    """
     try:
-        # Load from Sheet1 (contains both material and reinforcement)
-        material_df = pd.read_excel("MATERIAL WITH STANDARD.xlsx", sheet_name="Sheet1")
-        reinforcement_df = material_df  # Use the same DataFrame for reinforcement lookups
-        source = "Excel"
-    except FileNotFoundError:
-        try:
-            material_df = pd.read_csv('material_data.csv')
-            source = "CSV"
-            reinforcement_df = None
-            logging.warning("Reinforcement data not available in CSV format")
-        except FileNotFoundError:
-            logging.error("Neither MATERIAL WITH STANDARD.xlsx nor material_data.csv found. Material lookup will not work.")
-            return None, None
-    
-    try:
-        # Clean and standardize the material data
+        # Convert the hardcoded list to DataFrames for compatibility
+        global material_df, reinforcement_df
+        material_df = pd.DataFrame(MATERIAL_DATABASE)
+        reinforcement_df = material_df  # Same data for reinforcement lookups
+        
+        logging.info(f"Successfully loaded hardcoded material database with {len(material_df)} entries.")
+        logging.info(f"Material database head (first 5 rows):\n{material_df.head().to_string()}")
+        logging.info(f"Unique STANDARD values:\n{material_df['standard'].unique().tolist()}")
+        logging.info(f"Unique GRADE values:\n{material_df['grade'].unique().tolist()}")
+        
+        return material_df, reinforcement_df
         material_df.columns = material_df.columns.str.strip()
         material_df['STANDARD'] = material_df['STANDARD'].str.strip()
         material_df['GRADE'] = material_df['GRADE'].astype(str).str.strip()
@@ -369,9 +412,96 @@ def get_reinforcement_from_material(standard, grade, material):
         # Clean inputs
         clean_standard = clean_text_encoding(str(standard))
         clean_grade = clean_text_encoding(str(grade))
-        clean_material = clean_text_encoding(str(material))
         
-        logging.info(f"Reinforcement lookup initiated: Standard='{standard}', Grade='{grade}', Material='{material}'")
+        logging.info(f"Reinforcement lookup initiated: Standard='{standard}', Grade='{grade}'")
+        
+        # Enhanced normalization for comparison
+        def normalize_standard(std):
+            std = str(std).upper().strip()
+            # Handle MPAPS F-series variations
+            std = re.sub(r'MPAPS\s*F\s*[-_]?\s*(\d+)', r'MPAPS F-\1', std)
+            std = re.sub(r'\s+', ' ', std).strip()
+            return std
+        
+        def normalize_grade(grd):
+            grd = str(grd).upper().strip()
+            # Handle grade variations
+            grd = re.sub(r'GRADE\s*', '', grd)
+            grd = re.sub(r'TYPE\s*', '', grd)
+            grd = re.sub(r'[_\-\s]', '', grd)
+            # Convert Roman numerals
+            roman_map = {'I': '1', 'II': '2', 'III': '3'}
+            for roman, num in roman_map.items():
+                if grd == roman:
+                    grd = num + 'B'
+            return grd
+        
+        norm_standard = normalize_standard(clean_standard)
+        norm_grade = normalize_grade(clean_grade)
+        
+        logging.info(f"Normalized: Standard='{norm_standard}', Grade='{norm_grade}'")
+        
+        # Exact match on normalized values
+        exact_matches = reinforcement_df[
+            (reinforcement_df['standard'].str.upper().str.strip() == norm_standard) &
+            (reinforcement_df['grade'].astype(str).str.upper().str.strip() == norm_grade)
+        ]
+        
+        if not exact_matches.empty:
+            reinforcement = exact_matches.iloc[0]['reinforcement']
+            logging.info(f"Exact match found: {reinforcement}")
+            return reinforcement
+        
+        # Flexible matching for common variations
+        if norm_standard == 'MPAPS F-30' and norm_grade in ['1B', '1']:
+            matches = reinforcement_df[
+                (reinforcement_df['standard'].str.upper().str.contains('MPAPS F-30')) &
+                (reinforcement_df['grade'].astype(str).str.upper().str.contains('1B'))
+            ]
+            if not matches.empty:
+                reinforcement = matches.iloc[0]['reinforcement']
+                logging.info(f"Found reinforcement for MPAPS F-30/1B: {reinforcement}")
+                return reinforcement
+        
+        # Partial matching with scoring
+        best_match = None
+        best_score = 0
+        
+        for idx, row in reinforcement_df.iterrows():
+            db_standard = normalize_standard(str(row['standard']))
+            db_grade = normalize_grade(str(row['grade']))
+            
+            # Standard matching score
+            standard_score = 0
+            if norm_standard == db_standard:
+                standard_score = 1.0
+            elif 'F-30' in norm_standard and 'F-30' in db_standard:
+                standard_score = 0.9
+            elif any(term in db_standard for term in norm_standard.split()):
+                standard_score = 0.7
+            
+            # Grade matching score
+            grade_score = 0
+            if norm_grade == db_grade:
+                grade_score = 1.0
+            elif norm_grade in db_grade or db_grade in norm_grade:
+                grade_score = 0.8
+            
+            # Combined score with weighted standard matching
+            total_score = (standard_score * 0.7) + (grade_score * 0.3)
+            
+            if total_score > best_score:
+                best_score = total_score
+                best_match = row['reinforcement']
+                logging.info(f"New best match found: '{best_match}' (score: {best_score:.2f})")
+        
+        # Return best match if score is high enough
+        if best_score >= 0.6:
+            logging.info(f"Best match accepted: '{best_match}' (score: {best_score:.2f})")
+            return best_match
+        
+        logging.warning(f"No reinforcement match found for Standard: '{standard}', Grade: '{grade}'")
+        return "Not Found"
         
         # Enhanced normalization for comparison
         def normalize_standard(std):
@@ -612,7 +742,7 @@ def normalize_for_comparison(text):
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
     """
-    Enhanced material lookup with improved F-series standard matching
+    Enhanced material lookup with improved matching using hardcoded database.
     """
     if material_df is None:
         logging.error("Material database not loaded")
@@ -620,6 +750,105 @@ def get_material_from_standard(standard, grade):
     
     if standard == "Not Found" or grade == "Not Found":
         logging.warning("Standard or grade not provided")
+        return "Not Found"
+    
+    try:
+        # Clean inputs
+        clean_standard = clean_text_encoding(str(standard))
+        clean_grade = clean_text_encoding(str(grade))
+        
+        logging.info(f"Material lookup initiated: Standard='{standard}', Grade='{grade}'")
+        
+        # Enhanced normalization for comparison
+        def normalize_standard(std):
+            std = str(std).upper().strip()
+            # Handle MPAPS F-series variations
+            std = re.sub(r'MPAPS\s*F\s*[-_]?\s*(\d+)', r'MPAPS F-\1', std)
+            std = re.sub(r'\s+', ' ', std).strip()
+            return std
+        
+        def normalize_grade(grd):
+            grd = str(grd).upper().strip()
+            # Handle grade variations
+            grd = re.sub(r'GRADE\s*', '', grd)
+            grd = re.sub(r'TYPE\s*', '', grd)
+            grd = re.sub(r'[_\-\s]', '', grd)
+            # Convert Roman numerals
+            roman_map = {'I': '1', 'II': '2', 'III': '3'}
+            for roman, num in roman_map.items():
+                if grd == roman:
+                    grd = num + 'B'
+            return grd
+        
+        norm_standard = normalize_standard(clean_standard)
+        norm_grade = normalize_grade(clean_grade)
+        
+        logging.info(f"Normalized: Standard='{norm_standard}', Grade='{norm_grade}'")
+        
+        # Exact match on normalized values
+        exact_matches = material_df[
+            (material_df['standard'].str.upper().str.strip() == norm_standard) &
+            (material_df['grade'].astype(str).str.upper().str.strip() == norm_grade)
+        ]
+        
+        if not exact_matches.empty:
+            material = exact_matches.iloc[0]['material']
+            logging.info(f"Exact match found: {material}")
+            return material
+        
+        # Flexible matching for common variations
+        if norm_standard == 'MPAPS F-30' and norm_grade in ['1B', '1']:
+            matches = material_df[
+                (material_df['standard'].str.upper().str.contains('MPAPS F-30')) &
+                (material_df['grade'].astype(str).str.upper().str.contains('1B'))
+            ]
+            if not matches.empty:
+                material = matches.iloc[0]['material']
+                logging.info(f"Found material for MPAPS F-30/1B: {material}")
+                return material
+        
+        # Partial matching with scoring
+        best_match = None
+        best_score = 0
+        
+        for idx, row in material_df.iterrows():
+            db_standard = normalize_standard(str(row['standard']))
+            db_grade = normalize_grade(str(row['grade']))
+            
+            # Standard matching score
+            standard_score = 0
+            if norm_standard == db_standard:
+                standard_score = 1.0
+            elif 'F-30' in norm_standard and 'F-30' in db_standard:
+                standard_score = 0.9
+            elif any(term in db_standard for term in norm_standard.split()):
+                standard_score = 0.7
+            
+            # Grade matching score
+            grade_score = 0
+            if norm_grade == db_grade:
+                grade_score = 1.0
+            elif norm_grade in db_grade or db_grade in norm_grade:
+                grade_score = 0.8
+            
+            # Combined score with weighted standard matching
+            total_score = (standard_score * 0.7) + (grade_score * 0.3)
+            
+            if total_score > best_score:
+                best_score = total_score
+                best_match = row['material']
+                logging.info(f"New best match found: '{best_match}' (score: {best_score:.2f})")
+        
+        # Return best match if score is high enough
+        if best_score >= 0.6:
+            logging.info(f"Best match accepted: '{best_match}' (score: {best_score:.2f})")
+            return best_match
+        
+        logging.warning(f"No material match found for Standard: '{standard}', Grade: '{grade}'")
+        return "Not Found"
+    
+    except Exception as e:
+        logging.error(f"Error during material lookup: {str(e)}", exc_info=True)
         return "Not Found"
     
     try:
