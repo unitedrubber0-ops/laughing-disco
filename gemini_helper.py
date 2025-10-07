@@ -1,6 +1,6 @@
 import logging
 import google.generativeai as genai
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Callable
 from functools import lru_cache
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,8 @@ def discover_vision_model() -> Optional[str]:
         str: Model name to use, or None if no suitable model found
     """
     try:
-        models = genai.list_models()
+        # Use public API methods only
+        models = list(genai.get_models())
         for model in models:
             # Check if model supports generateContent and has vision/image capabilities
             methods = getattr(model, "supported_generation_methods", [])
@@ -93,7 +94,7 @@ def extract_text_from_image_wrapper(image):
 def process_pages_with_vision_or_ocr(
     pages: Union[str, List[Any]],
     prompt: str,
-    ocr_fallback_fn: callable,
+    ocr_fallback_fn: Callable[..., Any],
     mime_type: str = "image/png"
 ) -> List[Dict[Any, Any]]:
     """
@@ -140,12 +141,15 @@ def process_pages_with_vision_or_ocr(
                 page.save(img_byte_arr, format='PNG')
                 img_base64 = base64.b64encode(img_byte_arr.getvalue()).decode('utf-8')
                 
-                result = process_with_vision_model(model_name, prompt, img_base64, mime_type)
-                if result:
-                    results.append(result)
-                    logger.info(f"Successfully processed page {i+1} with vision model")
+                if model_name:
+                    result = process_with_vision_model(model_name, prompt, img_base64, mime_type)
+                    if result:
+                        results.append(result)
+                        logger.info(f"Successfully processed page {i+1} with vision model")
+                    else:
+                        logger.warning(f"Vision model failed on page {i+1}, switching to OCR")
                 else:
-                    logger.warning(f"Vision model failed on page {i+1}, switching to OCR")
+                    logger.warning(f"No vision model specified for page {i+1}, using OCR")
                     gemini_failed = True
                     break
                     

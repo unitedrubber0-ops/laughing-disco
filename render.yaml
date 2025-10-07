@@ -4,9 +4,12 @@ services:
     runtime: python
     buildCommand: |
       sudo apt-get update
-      sudo apt-get install -y tesseract-ocr tesseract-ocr-eng libleptonica-dev pkg-config
+      sudo apt-get install -y tesseract-ocr tesseract-ocr-eng libleptonica-dev pkg-config poppler-utils
+      python -m pip install --upgrade pip
       pip install -r requirements.txt
-    startCommand: gunicorn app:app
+      # Verify installation
+      python -c "import rings_extraction"
+    startCommand: gunicorn app:app --log-level debug
     envVars:
       - key: PYTHON_VERSION
         value: 3.10.0
