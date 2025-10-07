@@ -15,6 +15,7 @@ import openpyxl
 import openpyxl.utils
 import fitz  # PyMuPDF
 from rings_extraction import RingsExtractor
+from rings_detection import detect_rings_info
 from PIL import Image, ImageFilter
 from excel_output import generate_corrected_excel_sheet
 
@@ -206,6 +207,8 @@ def process_ocr_text(text):
         "grade": "Not Found",
         "material": "Not Found",
         "reinforcement": "Not Found",
+        "rings": "Not Found",  # This will be the main rings field
+        "rings_info": {},      # New: Detailed rings information
         "rings": "Not Found",  # Added: Rings field
         "dimensions": {},
         "operating_conditions": {},
@@ -225,6 +228,20 @@ def process_ocr_text(text):
         part_match = re.search(r'\d{7}[A-Z]\d', text)
         if part_match:
             result["part_number"] = part_match.group(0)
+            
+        # Extract rings information using detailed detection
+        rings_info = detect_rings_info(text)
+        result["rings_info"] = rings_info
+        
+        # Set the main rings field based on detection
+        if rings_info["has_rings"]:
+            if rings_info["ring_description"] != "Not Found":
+                result["rings"] = rings_info["ring_description"]
+            else:
+                result["rings"] = "Rings Present"
+        else:
+            # Fallback to RingsExtractor if no rings detected
+            result["rings"] = RingsExtractor.extract_rings(text)
 
         # Extract rings using RingsExtractor with fallback patterns
         result["rings"] = RingsExtractor.extract_rings(text)
@@ -1460,8 +1477,10 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
             'CHILD PART QTY',                                    # Quantity
             'SPECIFICATION',                                     # Combined standard+grade
             'MATERIAL',                                         # From database lookup
-            'REINFORCEMENT', 
-            'RINGS',                                    # Additional info
+            'REINFORCEMENT',                                     # Reinforcement material
+            'RINGS',                                            # Rings information
+            'RING COUNT',                                       # Number of rings
+            'RINGS SPECIFICATION',                              # Rings specification
             'VOLUME AS PER 2D',                                 # Volume calculation
             'ID1 AS PER 2D (MM)',                              # First ID measurement
             'ID2 AS PER 2D (MM)',                              # Second ID measurement
@@ -1549,7 +1568,9 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
             'SPECIFICATION': specification,
             'MATERIAL': analysis_results.get('material', 'Not Found'),
             'REINFORCEMENT': reinforcement_to_write,
-            'RINGS': analysis_results.get('rings', 'Not Found'),  # NEW: Rings data
+            'RINGS': analysis_results.get('rings', 'Not Found'),
+            'RING COUNT': analysis_results.get('ring_count', 'Not Found'),
+            'RINGS SPECIFICATION': analysis_results.get('rings_specification', 'Not Found'),
             'VOLUME AS PER 2D': analysis_results.get('volume', 'Not Found'),
         }
         
