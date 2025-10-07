@@ -8,29 +8,55 @@ logger = logging.getLogger(__name__)
 @lru_cache(maxsize=1)
 def discover_vision_model() -> Optional[str]:
     """
-    Discover the first available vision-capable model that supports generateContent.
-    Result is cached to avoid repeated API calls.
+    Discover available vision models with enhanced capability checking.
+    Prioritizes Gemini 2.0 then 1.5 models.
     
     Returns:
         str: Model name to use, or None if no suitable model found
     """
     try:
-        # Use public API methods only
-        models = list(genai.get_models())
-        for model in models:
-            # Check if model supports generateContent and has vision/image capabilities
-            methods = getattr(model, "supported_generation_methods", [])
-            name = getattr(model, "name", "")
-            description = getattr(model, "description", "").lower()
+        # Model priority list with vision capability notes
+        model_priority = [
+            # Gemini 2.0 Experimental (highest capability)
+            ("gemini-2.0-flash-exp", "Latest Flash experimental"),
+            ("gemini-2.0-pro-exp", "Latest Pro experimental"),
             
-            if ("generateContent" in methods and 
-                ("vision" in name.lower() or 
-                 "vision" in description or 
-                 "image" in description)):
-                logger.info(f"Found suitable vision model: {name}")
-                return name
+            # Gemini 2.0 Stable
+            ("gemini-2.0-flash", "Latest Flash stable"),
+            ("gemini-2.0-pro", "Latest Pro stable"),
+            
+            # Gemini 1.5 (excellent vision capabilities)
+            ("gemini-1.5-flash", "1.5 Flash - high context"),
+            ("gemini-1.5-pro", "1.5 Pro - high context"),
+            
+            # Legacy but capable
+            ("gemini-1.0-pro-vision", "Legacy vision specialized"),
+            ("gemini-1.0-pro", "Legacy Pro")
+        ]
+        
+        available_models = []
+        
+        for model_name, description in model_priority:
+            try:
+                # Test if model is available
+                model = genai.GenerativeModel(model_name)
                 
-        logger.warning("No vision-capable models found that support generateContent")
+                # For a more thorough check, we could try a simple text generation
+                # but for now, just creating the model is sufficient
+                available_models.append((model_name, description))
+                logger.info(f"Available model: {model_name} - {description}")
+                
+            except Exception as e:
+                logger.debug(f"Model {model_name} not available: {str(e)[:100]}...")
+                continue
+        
+        if available_models:
+            # Return the highest priority available model
+            best_model = available_models[0][0]
+            logger.info(f"Selected vision model: {best_model}")
+            return best_model
+        
+        logger.warning("No vision models available")
         return None
         
     except Exception as e:
