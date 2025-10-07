@@ -36,6 +36,7 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             'SPECIFICATION',                                     # Combined standard+grade
             'MATERIAL',                                         # From database lookup
             'REINFORCEMENT',                                     # Additional info
+            'RINGS',                                            # Rings information
             'VOLUME AS PER 2D',                                 # Volume calculation
             'ID1 AS PER 2D (MM)',                              # First ID measurement
             'ID2 AS PER 2D (MM)',                              # Second ID measurement
@@ -111,6 +112,7 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             'SPECIFICATION': specification,
             'MATERIAL': analysis_results.get('material', 'Not Found'),
             'REINFORCEMENT': analysis_results.get('reinforcement', 'Not Found'),
+            'RINGS': analysis_results.get('rings', 'Not Found'),
             'VOLUME AS PER 2D': analysis_results.get('volume', 'Not Found'),
             'ID1 AS PER 2D (MM)': dimensions.get('id1', 'Not Found'),
             'ID2 AS PER 2D (MM)': dimensions.get('id2', 'Not Found'),

@@ -180,8 +180,27 @@ def process_ocr_text(text):
         if part_match:
             result["part_number"] = part_match.group(0)
 
-        # Extract rings using RingsExtractor
+        # Extract rings using RingsExtractor with fallback patterns
         result["rings"] = RingsExtractor.extract_rings(text)
+        
+        # If RingsExtractor didn't find anything, try direct pattern matching
+        if result["rings"] == "Not Found":
+            rings_patterns = [
+                r'RINGS:\s*([^\n]+?(?:ASTM[^,\n]*)(?:[^,\n]*TYPE[^,\n]*)?)',
+                r'RINGS[:\s]+([^\n]+?ASTM[^,\n]*(?:TYPE[^,\n]*)?)',
+                r'RINGS\s*-\s*([^\n]+?ASTM[^,\n]*)',
+                r'STEEL\s+RINGS\s*[\(\[]?\s*([^\)\]]+?ASTM[^\)\]]*)',
+            ]
+            
+            for pattern in rings_patterns:
+                rings_match = re.search(pattern, text, re.IGNORECASE)
+                if rings_match:
+                    rings_text = rings_match.group(1).strip()
+                    rings_text = re.sub(r'\s+', ' ', rings_text)  # Normalize spaces
+                    rings_text = rings_text.strip(' ,.-')
+                    if len(rings_text) > 5:  # Only use if we have meaningful content
+                        result["rings"] = rings_text
+                        break
         
         # Extract description with improved pattern matching
         desc_patterns = [
