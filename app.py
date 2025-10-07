@@ -12,17 +12,28 @@ from development_length import calculate_vector_magnitude, calculate_dot_product
 import numpy as np
 import unicodedata
 import openpyxl
+import openpyxl.utils
 import fitz  # PyMuPDF
+from rings_extraction import RingsExtractor
 from PIL import Image, ImageFilter
 from excel_output import generate_corrected_excel_sheet
 
+# Initialize OpenCV availability
+cv2 = None
+cv2_available = False
+
 try:
     import cv2
-    HAS_OPENCV = True
-except Exception as e:
-    cv2 = None
-    HAS_OPENCV = False
-    logging.warning(f"OpenCV (cv2) not available: {e}")
+    if cv2 is not None:
+        cv2_available = True
+        logging.info("OpenCV (cv2) initialized successfully")
+    else:
+        logging.warning("OpenCV (cv2) imported but not initialized")
+except ImportError:
+    logging.warning("OpenCV (cv2) import failed")
+except Exception:
+    logging.warning("OpenCV (cv2) initialization error")
+    logging.warning("OpenCV (cv2) not available")
 import pytesseract
 from flask import Flask, request, jsonify, render_template, send_file
 from flask_cors import CORS
@@ -31,8 +42,69 @@ import pdf2image
 from pdf2image import convert_from_path, convert_from_bytes
 import google.generativeai as genai
 from gemini_helper import process_pages_with_vision_or_ocr, extract_text_from_image_wrapper
+import fitz  # PyMuPDF for PDF handling
+from development_length import calculate_development_length as calculate_development_length_safe
+
+# Define custom exceptions
+class BlockedPromptException(Exception):
+    """Custom exception for blocked prompts"""
+
+class PDFPageCountError(Exception):
+    """Error when PDF page count is invalid"""
+
+class PDFSyntaxError(Exception):
+    """Error when PDF syntax is invalid"""
+
 
 # --- Helper Functions ---
+
+def safe_extract_text(page, method=None, **kwargs):
+    """Safely extract text from a page object"""
+    try:
+        if method:
+            return page.get_text(method, **kwargs)
+        return page.get_text()
+    except (AttributeError, TypeError):
+        return str(page)
+
+def extract_page_text(page, method=None, **kwargs):
+    """Safely extract text from a page object."""
+    try:
+        # Check if it's a PyMuPDF page
+        if hasattr(page, 'get_text'):
+            if method:
+                return page.get_text(method, **kwargs)
+            return page.get_text()
+        # Fallback for other page types
+        text = str(page)
+        return [] if method == "blocks" else text
+    except Exception as e:
+        logging.warning(f"Error extracting text: {e}")
+        return [] if method == "blocks" else str(page)
+
+def clean_rings_text(rings_text):
+    """Clean and normalize rings text"""
+    if not rings_text or rings_text == "Not Found":
+        return "Not Found"
+    
+    # Remove extra whitespace
+    rings_text = re.sub(r'\s+', ' ', rings_text).strip()
+    
+    # Remove common trailing phrases that might be part of next specification
+    rings_text = re.sub(r'\s*(?:,|\.|;|:).*$', '', rings_text)
+    rings_text = re.sub(r'\s*SEE\s+.*$', '', rings_text, flags=re.IGNORECASE)
+    rings_text = re.sub(r'\s*REFER\s+.*$', '', rings_text, flags=re.IGNORECASE)
+    
+    # Ensure meaningful content
+    if len(rings_text.strip()) < 3:
+        return "Not Found"
+    
+    return rings_text.strip()
+
+
+
+
+
 def process_with_gemini(image_path):
     """
     Process an image with Google's Gemini Vision model.
@@ -88,6 +160,7 @@ def process_ocr_text(text):
         "grade": "Not Found",
         "material": "Not Found",
         "reinforcement": "Not Found",
+        "rings": "Not Found",  # Added: Rings field
         "dimensions": {},
         "operating_conditions": {},
         "coordinates": []
@@ -106,6 +179,9 @@ def process_ocr_text(text):
         part_match = re.search(r'\d{7}[A-Z]\d', text)
         if part_match:
             result["part_number"] = part_match.group(0)
+
+        # Extract rings using RingsExtractor
+        result["rings"] = RingsExtractor.extract_rings(text)
         
         # Extract description with improved pattern matching
         desc_patterns = [
@@ -200,16 +276,22 @@ logger = logging.getLogger(__name__)
 
 # --- API Key Configuration ---
 api_key = os.environ.get("GEMINI_API_KEY")
-if not api_key:
-    logging.error("GEMINI_API_KEY environment variable not set")
+is_test_mode = os.environ.get("TEST_MODE", "").lower() == "true"
+
+if not api_key and not is_test_mode:
+    logging.error("GEMINI_API_KEY environment variable not set and not in test mode")
     raise ValueError("GEMINI_API_KEY environment variable must be set to use Gemini AI features")
 
-try:
-    genai.configure(api_key=api_key)
-    logging.info("Gemini API key configured successfully")
-except Exception as e:
-    logging.error(f"Failed to configure Gemini API key: {str(e)}")
-    raise RuntimeError(f"Failed to initialize Gemini AI: {str(e)}")
+if api_key:
+    try:
+        genai.configure(api_key=api_key)
+        logging.info("Gemini API key configured successfully")
+    except Exception as e:
+        if not is_test_mode:
+            logging.error(f"Failed to configure Gemini API key: {str(e)}")
+            raise RuntimeError(f"Failed to initialize Gemini AI: {str(e)}")
+        else:
+            logging.warning("Failed to configure Gemini AI, but continuing in test mode")
 
 # --- Load and Clean Material and Reinforcement Database on Startup with Enhanced Debugging ---
 def load_material_database():
@@ -241,7 +323,7 @@ def load_material_database():
         logging.info(f"Unique GRADE values:\n{material_df['GRADE'].unique().tolist()}")
         
         # Since reinforcement is in the same DataFrame, log confirmation
-        logging.info(f"Reinforcement database set to material_df with {len(reinforcement_df)} entries.")
+        logging.info(f"Reinforcement database set to material_df with {len(reinforcement_df) if reinforcement_df is not None else 0} entries.")
         
         return material_df, reinforcement_df
     except Exception as e:
@@ -377,17 +459,17 @@ def get_reinforcement_from_material(standard, grade, material):
             ), axis=1)
         ]
         
-        if not matches.empty:
+        if matches.empty:
+            logging.warning(f"No reinforcement match found for Standard: '{standard}', Grade: '{grade}', Material: '{material}'")
+            return "Not Found"
+            
+        try:
             reinforcement = matches.iloc[0]['REINFORCEMENT']
             logging.info(f"Normalized reinforcement match found: {reinforcement}")
             return reinforcement
-        
-        logging.warning(f"No reinforcement match found for Standard: '{standard}', Grade: '{grade}', Material: '{material}'")
-        return "Not Found"
-    
-    except Exception as e:
-        logging.error(f"Error during reinforcement lookup: {str(e)}", exc_info=True)
-        return "Not Found"
+        except (KeyError, IndexError) as e:
+            logging.error(f"Error accessing reinforcement data: {str(e)}", exc_info=True)
+            return "Not Found"
 
 # --- String Normalization Helper ---
 def get_standards_remark(text, standard):
@@ -990,288 +1072,42 @@ def _to_float(val):
 # --- Helper: try many common shapes and extract first three numeric coords ---
 _num_re = re.compile(r'[-+]?\d*\.\d+|\d+')
 
-def point_to_xyz(p):
+def extract_rings_from_text(text):
     """
-    Convert a point in many possible forms to (x, y, z) (floats).
-    Accepts:
-      - dict with keys like 'x','X','x_coord','X_COORD', etc.
-      - list/tuple like [x, y, z, ...]
-      - string like "P0 0.0 0.0 0.0" or "0.0, 0.0, 0.0"
-      - other objects: will inspect .values() if dict-like
-    Returns:
-      (x, y, z) as floats if at least 3 numeric values found, else None
-    """
-    # dict-like path
-    if isinstance(p, dict):
-        # try common keys first
-        candidates = []
-        for k in p.keys():
-            candidates.append((str(k).lower(), p[k]))
-        # gather numeric values among values (ordered)
-        vals = []
-        for k, v in candidates:
-            nf = _to_float(v)
-            if nf is not None:
-                vals.append(nf)
-        if len(vals) >= 3:
-            return vals[0], vals[1], vals[2]
-        # attempt specifically by common key names
-        x = _to_float(p.get('x') or p.get('X') or p.get('x_coord') or p.get('X_COORD'))
-        y = _to_float(p.get('y') or p.get('Y') or p.get('y_coord') or p.get('Y_COORD'))
-        z = _to_float(p.get('z') or p.get('Z') or p.get('z_coord') or p.get('Z_COORD'))
-        if x is not None and y is not None and z is not None:
-            return x, y, z
-        return None
-
-    # list/tuple path
-    if isinstance(p, (list, tuple)):
-        nums = []
-        for item in p:
-            nf = _to_float(item)
-            if nf is not None:
-                nums.append(nf)
-            if len(nums) >= 3:
-                return nums[0], nums[1], nums[2]
-        return None
-
-    # string path
-    if isinstance(p, str):
-        found = _num_re.findall(p)
-        if len(found) >= 3:
-            return float(found[0]), float(found[1]), float(found[2])
-        return None
-
-    # last resort: try iterating attributes / values
-    try:
-        values = list(getattr(p, '__dict__', {}).values()) or list(getattr(p, 'values', lambda: [])())
-        nums = []
-        for v in values:
-            nf = _to_float(v)
-            if nf is not None:
-                nums.append(nf)
-            if len(nums) >= 3:
-                return nums[0], nums[1], nums[2]
-    except Exception:
-        pass
-
-    return None
-
-def normalize_coordinates(points):
-    """
-    Canonicalize 'points' into a list of dicts: [{'point':'P0','x':float,'y':float,'z':float,'r':float}, ...]
-    Accepts:
-      - list of dicts {'x','y','z', optional 'r'}
-      - list/tuple of numeric tuples (x,y,z) or (x,y,z,r)
-      - string containing coordinate text (regex extraction)
-      - None or unexpected types -> return []
-    """
-    coords = []
-
-    if not points:
-        return coords
-
-    # If already a list-like collection
-    if isinstance(points, list):
-        for idx, p in enumerate(points):
-            try:
-                if isinstance(p, dict):
-                    # Require numeric x,y,z
-                    x = p.get('x')
-                    y = p.get('y')
-                    z = p.get('z')
-                    if x is None or y is None or z is None:
-                        logging.warning(f"normalize_coordinates: missing x/y/z in dict at index {idx}, skipping")
-                        continue
-                    coords.append({
-                        'point': p.get('point', f'P{idx}'),
-                        'x': float(x),
-                        'y': float(y),
-                        'z': float(z),
-                        'r': float(p.get('r', 0)) if p.get('r') is not None else 0.0
-                    })
-                elif isinstance(p, (tuple, list)) and len(p) >= 3:
-                    # tuple/list form -> (x,y,z) or (x,y,z,r)
-                    try:
-                        x = float(p[0])
-                        y = float(p[1])
-                        z = float(p[2])
-                        r = float(p[3]) if len(p) > 3 else 0.0
-                        coords.append({
-                            'point': f'P{idx}',
-                            'x': x, 'y': y, 'z': z, 'r': r
-                        })
-                    except Exception:
-                        logging.warning(f"normalize_coordinates: invalid numeric tuple at index {idx}, skipping")
-                        continue
-                else:
-                    # unexpected element type; try to coerce if it's a string
-                    if isinstance(p, str):
-                        # attempt regex extraction from this element
-                        txt_coords = re.findall(r'P?(\d+)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)', p)
-                        if txt_coords:
-                            for m in txt_coords:
-                                pn = int(m[0])
-                                coords.append({
-                                    'point': f'P{pn}',
-                                    'x': float(m[1]),
-                                    'y': float(m[2]),
-                                    'z': float(m[3]),
-                                    'r': 0.0
-                                })
-                    else:
-                        logging.debug(f"normalize_coordinates: skipping unsupported point type {type(p)} at index {idx}")
-            except Exception as e:
-                logging.warning(f"normalize_coordinates: error processing element index {idx}: {e}")
-        return coords
-
-    # If points is a tuple-like of coordinates
-    if isinstance(points, (tuple,)):
-        try:
-            if len(points) >= 3:
-                x = float(points[0]); y = float(points[1]); z = float(points[2])
-                r = float(points[3]) if len(points) > 3 else 0.0
-                return [{'point': 'P0', 'x': x, 'y': y, 'z': z, 'r': r}]
-        except Exception:
-            return []
-
-    # If it's a string, attempt regex extraction for coordinate table lines
-    if isinstance(points, str):
-        found = re.finditer(r'P(\d+)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)\s+(-?\d+(?:\.\d+)?)(?:\s+(-?\d+(?:\.\d+)?))?', points)
-        seen = set()
-        for m in found:
-            try:
-                pn = int(m.group(1))
-                if pn in seen:
-                    continue
-                x = float(m.group(2)); y = float(m.group(3)); z = float(m.group(4))
-                r = float(m.group(5)) if m.group(5) else 0.0
-                coords.append({'point': f'P{pn}', 'x': x, 'y': y, 'z': z, 'r': r})
-                seen.add(pn)
-            except Exception as e:
-                logging.warning(f"normalize_coordinates: skipping regex match due to: {e}")
-        # sort by point number if available
-        coords.sort(key=lambda p: int(re.sub(r'[^0-9]', '', p.get('point','0')) or 0))
-        return coords
-
-    # Fallback: unknown type
-    logging.debug(f"normalize_coordinates: unknown points type {type(points)}")
-    return []
-
-def calculate_development_length_safe(coords, *args, **kwargs):
-    """
-    coords: iterable of points in mixed forms.
-    Returns development length (float) or raises ValueError if not enough valid coords.
-    This wraps the existing calculate_development_length logic but first normalizes points.
-    """
-    normalized = []
-    for i, p in enumerate(coords or []):
-        xyz = point_to_xyz(p)
-        if xyz is None:
-            logger.warning("Invalid coordinates: Missing numeric coords in point %s, skipping. Raw: %s", i, p)
-            continue
-        x, y, z = xyz
-        normalized.append({'x': float(x), 'y': float(y), 'z': float(z)})
-
-    if len(normalized) < 2:
-        # preserve old behavior (warning + None) but avoid KeyError
-        logger.warning("Insufficient valid coordinates after normalization (%d points).", len(normalized))
-        raise ValueError("Insufficient valid coordinates to compute development length")
-
-    # Call the original function with normalized coordinates
-    try:
-        return calculate_development_length(normalized, *args, **kwargs)
-    except Exception as e:
-        logger.exception("Development length calculation failed on normalized coords: %s", e)
-        raise
-
-def calculate_development_length(points):
-    """
-    Robust development-length calculator.
-    Accepts coordinates in multiple forms (list-of-dicts, list-of-tuples, or text).
-    Returns rounded length in mm (float). Returns 0 if insufficient valid coords.
+    Extract rings information from PDF text.
+    Returns the rings specification or "Not Found".
     """
     try:
-        # Known explicit centerline fallback check (string)
-        if isinstance(points, str) and ('APPROX CTRLINE LENGTH = 489.67' in points or '489.67' in points):
-            logging.info("calculate_development_length: found explicit centerline length in text -> using 489.67")
-            return 489.67
-
-        # Canonicalize coordinates
-        norm = normalize_coordinates(points)
-
-        if not norm or len(norm) < 2:
-            logging.warning("calculate_development_length: insufficient valid coordinates after normalization")
-            return 0
-
-        # Build tuple list and radii list for existing path-length functions
-        coords_tuples = []
-        radii = []
-        for c in norm:
-            try:
-                coords_tuples.append((float(c['x']), float(c['y']), float(c['z'])))
-                radii.append(float(c.get('r', 0.0)))
-            except Exception as e:
-                logging.warning(f"calculate_development_length: skipping invalid coord {c}: {e}")
-                continue
-
-        if len(coords_tuples) < 2:
-            logging.warning("calculate_development_length: not enough numeric coordinate tuples")
-            return 0
-
-        total_length = 0.0
-        points_count = len(coords_tuples)
+        # Clean the text
+        text = clean_text_encoding(text)
         
-        for i in range(points_count - 1):
-            current = coords_tuples[i]
-            next_point = coords_tuples[i + 1]
-            
-            # Calculate vector for segment
-            segment_vector = tuple(b - a for a, b in zip(current, next_point))
-            
-            # Calculate segment length using imported vector magnitude function
-            segment_length = calculate_vector_magnitude(segment_vector)
-            total_length += segment_length
-            
-            # If this is a bend point (not first or last) with radius
-            if i > 0 and i < points_count - 1 and radii[i] > 0:
-                try:
-                    # Get previous point for bend calculation
-                    prev = coords_tuples[i-1]
-                    
-                    # Calculate vectors for incoming and outgoing segments
-                    v1 = tuple(b-a for a, b in zip(prev, current))
-                    v2 = tuple(b-a for a, b in zip(current, next_point))
-                    
-                    # Calculate angle between vectors using utility function
-                    theta = calculate_angle(v1, v2)
-                    
-                    if theta > 0:
-                        R = radii[i]
-                        tangent_length = R * math.tan(theta / 2)
-                        arc_length = R * theta
-                        
-                        # Subtract the overlap of tangent lines and add the arc length
-                        total_length -= 2 * tangent_length
-                        total_length += arc_length
-                        
-                        logger.info(f"Bend at point {i}: angle={math.degrees(theta):.1f}°, "
-                                  f"radius={R:.1f}mm, arc_length={arc_length:.1f}mm")
-                    
-                except Exception as e:
-                    logger.warning(f"Error processing bend at point {i}: {e}")
-                    continue
+        # Pattern for rings information
+        rings_patterns = [
+            r'RINGS:\s*([^\n]+?(?:ASTM[^,\n]*)(?:[^,\n]*TYPE[^,\n]*)?)',
+            r'RINGS[:\s]+([^\n]+?ASTM[^,\n]*(?:TYPE[^,\n]*)?)',
+            r'RINGS\s*-\s*([^\n]+?ASTM[^,\n]*)',
+        ]
         
-        total_length = round(total_length, 2)
-        if total_length <= 0:
-            logger.warning("Invalid total length calculated")
-            return 0
-            
-        logger.info(f"calculate_development_length: calculated length = {total_length:.2f} mm")
-        return total_length
-
+        for pattern in rings_patterns:
+            rings_match = re.search(pattern, text, re.IGNORECASE)
+            if rings_match:
+                rings = rings_match.group(1).strip()
+                # Clean up the rings text
+                rings = re.sub(r'\s+', ' ', rings)  # Normalize spaces
+                rings = rings.strip(' ,.-')
+                logger.info(f"Rings found: {rings}")
+                return rings
+        
+        logger.warning("No rings information found in text")
+        return "Not Found"
+        
     except Exception as e:
-        logger.error(f"Error calculating development length: {e}", exc_info=True)
-        return 0
+        logger.error(f"Error extracting rings: {e}")
+        return "Not Found"
+
+
+
+
 
 # Removed duplicate function - using enhanced version below
     try:
@@ -1327,63 +1163,7 @@ def calculate_development_length(points):
         logging.error(f"Error calculating path length: {e}")
         return 0
 
-def calculate_path_length(points, radii):
-    """
-    Calculate the total path length considering both straight segments and bends.
-    
-    Args:
-        points: List of (x,y,z) tuples representing path points
-        radii: List of bend radii (0 or None means no bend at that point)
-    
-    Returns:
-        float: Total path length in mm
-    """
-    n = len(points)
-    if n < 2:
-        return 0
-    
-    # For just two points, return straight distance
-    if n == 2:
-        return math.dist(points[0], points[1])
-    
-    total_length = 0
-    
-    for i in range(n-1):
-        # Calculate straight segment length
-        straight_length = math.dist(points[i], points[i+1])
-        total_length += straight_length
-        
-        # If this is a bend point (not first or last point)
-        if i > 0 and i < n-1 and radii[i] and radii[i] > 0:
-            # Calculate vectors for incoming and outgoing segments
-            v1 = tuple(b-a for a, b in zip(points[i-1], points[i]))
-            v2 = tuple(b-a for a, b in zip(points[i], points[i+1]))
-            
-            # Calculate magnitudes
-            mag1 = math.sqrt(sum(x*x for x in v1))
-            mag2 = math.sqrt(sum(x*x for x in v2))
-            
-            if mag1 == 0 or mag2 == 0:
-                continue
-                
-            # Calculate dot product and angle
-            dot_product = sum(a*b for a,b in zip(v1, v2))
-            cos_theta = max(min(dot_product / (mag1 * mag2), 1.0), -1.0)
-            theta = math.acos(cos_theta)
-            
-            if theta == 0:
-                continue
-                
-            # Calculate bend adjustments
-            R = radii[i]
-            tangent_length = R * math.tan(theta / 2)
-            arc_length = R * theta
-            
-            # Subtract the overlap of tangent lines and add the arc length
-            total_length -= 2 * tangent_length
-            total_length += arc_length
-    
-    return round(total_length, 2)
+
 
 # --- Safe Dimension Processing ---
 def safe_dimension_processing(ai_results):
@@ -1432,7 +1212,8 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
             'CHILD PART QTY',                                    # Quantity
             'SPECIFICATION',                                     # Combined standard+grade
             'MATERIAL',                                         # From database lookup
-            'REINFORCEMENT',                                     # Additional info
+            'REINFORCEMENT', 
+            'RINGS',                                    # Additional info
             'VOLUME AS PER 2D',                                 # Volume calculation
             'ID1 AS PER 2D (MM)',                              # First ID measurement
             'ID2 AS PER 2D (MM)',                              # Second ID measurement
@@ -1520,6 +1301,7 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
             'SPECIFICATION': specification,
             'MATERIAL': analysis_results.get('material', 'Not Found'),
             'REINFORCEMENT': reinforcement_to_write,
+            'RINGS': analysis_results.get('rings', 'Not Found'),  # NEW: Rings data
             'VOLUME AS PER 2D': analysis_results.get('volume', 'Not Found'),
         }
         
@@ -1625,7 +1407,8 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
                     df[col].astype(str).apply(len).max(),
                     len(str(col))
                 )
-                worksheet.column_dimensions[openpyxl.utils.get_column_letter(idx + 1)].width = max_length + 2
+                col_letter = openpyxl.utils.get_column_letter(idx + 1)
+                worksheet.column_dimensions[col_letter].width = max_length + 2
 
         output.seek(0)
         return output
@@ -1744,36 +1527,31 @@ def calculate_burst_pressure(working_pressure):
     except (ValueError, TypeError):
         return None
 
-def calculate_arc_length(point1, point2, radius):
-    """
-    Calculate the arc length between two points given a radius
-    """
-    if radius is None or radius == 0:
-        dx = point2['x'] - point1['x']
-        dy = point2['y'] - point1['y']
-        dz = point2['z'] - point1['z']
-        return math.sqrt(dx*dx + dy*dy + dz*dz)
+
+
+def calculate_arc_length(current: dict, next_point: dict, radius: float | None) -> float:
+    """Calculate arc length between two points considering radius if present."""
+    # Get points as tuples for vector calculation
+    p1 = (float(current['x']), float(current['y']), float(current['z']))
+    p2 = (float(next_point['x']), float(next_point['y']), float(next_point['z']))
     
-    # Calculate vectors
-    v1 = np.array([point2['x'] - point1['x'], 
-                   point2['y'] - point1['y'], 
-                   point2['z'] - point1['z']])
+    # Calculate straight distance
+    straight_length = math.dist(p1, p2)
     
-    length = np.linalg.norm(v1)
-    if length == 0:
-        return 0
+    # If no radius or invalid, return straight length
+    if not radius or radius <= 0:
+        return straight_length
     
-    # Calculate angle using cosine law
-    angle = 2 * math.asin(length / (2 * radius))
+    # Otherwise calculate arc length
+    # Using distance as chord length to find arc length
+    chord_length = straight_length
+    theta = 2 * math.asin(chord_length / (2 * radius))  # Central angle
+    arc_length = radius * theta
     
-    # Calculate arc length
-    arc_length = radius * angle
     return arc_length
 
 def calculate_development_length(coordinates):
-    """
-    Calculate development length considering radii at bends
-    """
+    """Calculate development length considering radii at bends"""
     if not coordinates or len(coordinates) < 2:
         return 0
     
@@ -1894,7 +1672,39 @@ def convert_pdf_to_images(pdf_content):
     except Exception as e:
         logger.error(f"PDF to image conversion failed: {str(e)}")
         raise
-
+def extract_rings_info_from_text(text):
+    """
+    Extract rings information from PDF text.
+    Returns the rings specification or "Not Found".
+    """
+    try:
+        # Clean the text
+        text = clean_text_encoding(text)
+        
+        # Pattern for rings information
+        rings_patterns = [
+            r'RINGS:\s*([^\n]+?(?:ASTM[^,\n]*)(?:[^,\n]*TYPE[^,\n]*)?)',
+            r'RINGS[:\s]+([^\n]+?ASTM[^,\n]*(?:TYPE[^,\n]*)?)',
+            r'RINGS\s*-\s*([^\n]+?ASTM[^,\n]*)',
+        ]
+        
+        for pattern in rings_patterns:
+            rings_match = re.search(pattern, text, re.IGNORECASE)
+            if rings_match:
+                rings = rings_match.group(1).strip()
+                # Clean up the rings text
+                rings = re.sub(r'\s+', ' ', rings)  # Normalize spaces
+                rings = rings.strip(' ,.-')
+                logger.info(f"Rings found: {rings}")
+                return rings
+        
+        logger.warning("No rings information found in text")
+        return "Not Found"
+        
+    except Exception as e:
+        logger.error(f"Error extracting rings: {e}")
+        return "Not Found"
+        
 def extract_text_from_image(image):
     """
     Extract text from an image using OCR with advanced preprocessing and adaptive techniques.
@@ -1917,15 +1727,13 @@ def extract_text_from_image(image):
         best_score = quality_score
         
         # Try OpenCV preprocessing if available
-        if HAS_OPENCV:
+        if cv2_available and cv2 is not None:
             logging.info("Using OpenCV for advanced preprocessing...")
+            # Convert to numpy array for OpenCV processing
             try:
-                if not HAS_OPENCV:
-                    raise ImportError("OpenCV is not available")
-                    
-                # Convert to numpy array for OpenCV processing
                 img_array = np.array(image)
-                
+                preprocessed_images = []
+
                 # Color image processing
                 if len(img_array.shape) == 3:
                     # Try different color channels
@@ -1940,8 +1748,6 @@ def extract_text_from_image(image):
                     gray_versions = [img_array]  # Already grayscale
             
                 # Enhanced preprocessing pipeline
-                preprocessed_images = []
-                
                 for gray in gray_versions:
                     # 1. Basic preprocessing
                     preprocessed_images.extend([
@@ -1970,37 +1776,24 @@ def extract_text_from_image(image):
                 
                 # Try OCR on each preprocessed image
                 for processed in preprocessed_images:
-                    # Convert back to PIL Image for OCR
-                    pil_image = Image.fromarray(processed)
-                    new_text = pytesseract.image_to_string(pil_image, config='--psm 1')
-                    new_text = clean_text_encoding(new_text)
-                    new_score = assess_text_quality(new_text)
-                    
-                    if new_score > best_score:
-                        best_text = new_text
-                        best_score = new_score
-                
+                    try:
+                        # Convert back to PIL Image for OCR
+                        pil_image = Image.fromarray(processed)
+                        new_text = pytesseract.image_to_string(pil_image, config='--psm 1')
+                        new_text = clean_text_encoding(new_text)
+                        new_score = assess_text_quality(new_text)
+                        
+                        if new_score > best_score:
+                            best_text = new_text
+                            best_score = new_score
+                    except Exception as ocr_error:
+                        logging.warning(f"OCR failed for preprocessed image: {ocr_error}")
+                        continue
+                        
                 logging.info(f"Best score after OpenCV preprocessing: {best_score}")
                 
             except Exception as e:
                 logging.warning(f"OpenCV preprocessing failed: {e}")
-                # Continue to PIL fallback
-                
-                for processed in preprocessed_images:
-                    # Convert back to PIL Image for OCR
-                    pil_image = Image.fromarray(processed)
-                    new_text = pytesseract.image_to_string(pil_image, config='--psm 1')
-                    new_text = clean_text_encoding(new_text)
-                    new_score = assess_text_quality(new_text)
-                    
-                    if new_score > best_score:
-                        best_text = new_text
-                        best_score = new_score
-                        
-                logging.info(f"Best score after OpenCV preprocessing: {best_score}")
-                
-            except Exception as cv_error:
-                logging.warning(f"OpenCV preprocessing failed: {cv_error}")
                 # Continue to PIL fallback
         else:
             logging.info("OpenCV not available, using PIL-based preprocessing")
@@ -2144,63 +1937,12 @@ def analyze_drawing_simple(pdf_bytes):
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
             full_text = ""
             for page in doc:
-                full_text += page.get_text()
-        
-        logger.info(f"Extracted {len(full_text)} characters from PDF")
-        
-        # Process the text with our OCR processing function
-        processed_data = process_ocr_text(full_text)
-        
-        if processed_data:
-            # Merge the processed data with results
-            for key in ['part_number', 'description', 'standard', 'grade', 'material', 'coordinates']:
-                if key in processed_data and processed_data[key] != "Not Found":
-                    results[key] = processed_data[key]
-            
-            if 'dimensions' in processed_data and processed_data['dimensions']:
-                results['dimensions'].update(processed_data['dimensions'])
-        
-        # Also try to extract dimensions using the dedicated function
-        additional_dims = extract_dimensions_from_text(full_text)
-        if additional_dims:
-            results['dimensions'].update(additional_dims)
-            
-        logger.info("Simple analysis completed successfully")
-        return results
-        
-    except Exception as e:
-        logger.error(f"Error in simple analysis: {str(e)}")
-        results["error"] = f"Analysis failed: {str(e)}"
-        return results
-
-def analyze_drawing_simple(pdf_bytes):
-    """
-    Simplified analysis function that uses direct PyMuPDF text extraction.
-    """
-    results = {
-        "part_number": "Not Found",
-        "description": "Not Found",
-        "standard": "Not Found", 
-        "grade": "Not Found",
-        "material": "Not Found",
-        "dimensions": {
-            "id1": "Not Found",
-            "id2": "Not Found",
-            "od1": "Not Found",
-            "od2": "Not Found",
-            "thickness": "Not Found",
-            "centerline_length": "Not Found"
-        },
-        "coordinates": [],
-        "error": None
-    }
-    
-    try:
-        # Extract text using PyMuPDF (most reliable method)
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            full_text = ""
-            for page in doc:
-                full_text += page.get_text()
+                # Extract text based on page type
+                if isinstance(page, fitz.Page):
+                    # Add text to full_text using safe text extraction
+                    full_text += safe_extract_text(page)
+                else:
+                    full_text += page.extractText()
         
         logger.info(f"Extracted {len(full_text)} characters from PDF")
         
@@ -2471,7 +2213,7 @@ def analyze_drawing(pdf_bytes):
         logger.info("Drawing analysis completed successfully")
         return results
         
-    except (pdf2image.exceptions.PDFPageCountError, pdf2image.exceptions.PDFSyntaxError) as e:
+    except (PDFPageCountError, PDFSyntaxError) as e:
         logger.error(f"PDF conversion error: {str(e)}")
         results["error"] = f"Failed to process PDF: {str(e)}"
         return results
@@ -2479,7 +2221,7 @@ def analyze_drawing(pdf_bytes):
         logger.error(f"JSON parsing error: {str(e)}")
         results["error"] = "Failed to parse AI response"
         return results
-    except genai.types.generation_types.BlockedPromptException as e:
+    except BlockedPromptException as e:
         logger.error(f"Gemini API content policy violation: {str(e)}")
         results["error"] = "Content policy violation"
         return results
@@ -3036,10 +2778,12 @@ def validate_extracted_data(data):
                 if abs(calculated_thickness - thickness_val) > 0.1:  # Allow 0.1mm tolerance
                     issues.append(f"Thickness inconsistency: Specified {thickness_val}mm vs calculated {calculated_thickness}mm")
                     
-    except Exception as e:
-        logging.error(f"Error during data validation: {str(e)}")
-        issues.append(f"Validation error: {str(e)}")
     except ValueError as e:
+        logging.warning(f"Value error during validation: {str(e)}")
+        issues.append(f"Value error: {str(e)}")
+    except Exception as e:
+        logging.error(f"Unexpected error during validation: {str(e)}")
+        issues.append(f"Validation error: {str(e)}")
         issues.append(f"Error validating dimensions: {str(e)}")
     
     # Validate coordinates if present
@@ -3171,6 +2915,16 @@ def upload_and_analyze():
             final_results["material"] = "Not Found"
             final_results["reinforcement"] = "Not Found"
 
+            # In the /api/analyze route, after reinforcement extraction:
+
+# Extract rings information
+        rings_info = extract_rings_from_text(extracted_text)
+        if rings_info != "Not Found":
+            final_results["rings"] = rings_info
+            logger.info(f"Rings information extracted: {rings_info}")
+        else:
+            final_results["rings"] = "Not Found"
+            
         # Validate the extracted data
         try:
             validation_issues = validate_extracted_data(final_results)
@@ -3194,12 +2948,12 @@ def upload_and_analyze():
                     dev_length = calculate_development_length_safe(coordinates)
                     final_results["development_length_mm"] = f"{dev_length:.2f}"
                     logger.debug("Development length computed: %s", final_results["development_length_mm"])
-                except ValueError:
+                except ValueError as ve:
                     final_results["development_length_mm"] = "Not Found"
-                    logger.warning("Could not compute development length due to insufficient valid coordinates")
+                    logger.warning(f"Could not compute development length: {ve}")
                 except Exception as exc:
                     final_results["development_length_mm"] = "Not Found"
-                    logger.exception("Unexpected error computing development length: %s", exc)
+                    logger.exception("Error computing development length: %s", exc)
             else:
                 final_results["development_length_mm"] = "Not Found"
                 logger.info("No coordinates found for development length calculation")
@@ -3218,10 +2972,6 @@ def upload_and_analyze():
 
         logging.info(f"Successfully analyzed drawing: {final_results.get('part_number', 'Unknown')}")
         return jsonify(final_results)
-
-    except Exception as e:
-        logging.error(f"Error analyzing drawing: {str(e)}")
-        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
 
     except Exception as e:
         logging.error(f"Error analyzing drawing: {str(e)}")
@@ -3334,16 +3084,27 @@ def extract_text_from_pdf(pdf_bytes):
             # Try different text extraction modes
             for page in doc:
                 # Get text with layout preservation
-                layout_text = page.get_text("text", sort=True)
+                # Extract text from page
+                # Extract text in different formats
+                layout_text = extract_page_text(page)
+                blocks = extract_page_text(page, "blocks")
+                raw_text = extract_page_text(page, "text", sort=False)
                 texts.append(layout_text)
                 
                 # Get text blocks with position information
-                blocks = page.get_text("blocks")
+                # Extract text blocks
+                # Get blocks safely
+                try:
+                    blocks = extract_page_text(page, "blocks")
+                except AttributeError:
+                    blocks = []
                 structured_text = "\n".join([block[4] for block in blocks])
                 texts.append(structured_text)
                 
                 # Get raw text as fallback
-                raw_text = page.get_text("text", sort=False)
+                # Extract raw text
+                # Extract raw text safely
+                raw_text = extract_page_text(page, "text", sort=False)
                 texts.append(raw_text)
                 
         combined_text = "\n".join(filter(None, texts))
