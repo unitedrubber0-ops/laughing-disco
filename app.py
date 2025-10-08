@@ -111,7 +111,7 @@ def process_with_gemini(image_path):
     Returns structured data extracted from the image.
     """
     try:
-        model = genai.GenerativeModel('gemini-pro-2.5-vision')
+        model = genai.GenerativeModel('gemini-pro-2.0-vision')
         image = Image.open(image_path)
         content = [
             "Here is a technical drawing of a tube or hose component. Please analyze it and extract the following information:",
@@ -2672,7 +2672,7 @@ Important: Report numeric values WITHOUT units. Example: for "HOSE ID = 19.05 MM
 For any value not found in drawing, use "Not Found" (not null or empty string).
 Pay special attention to distinguishing primary material specs from reference specs.
 """
-        model = genai.GenerativeModel('gemini-pro-2.5-vision') # Use vision-capable model
+        model = genai.GenerativeModel('gemini-pro-2.0-vision') # Use vision-capable model
         
         prompt = f"""
         Analyze the following text extracted from a technical engineering drawing. Your task is to find three specific pieces of information: the part number, the material standard, and the grade.
@@ -2693,7 +2693,7 @@ Pay special attention to distinguishing primary material specs from reference sp
 
         # --- Step 3: Call Gemini API with vision model ---
         try:
-            model = genai.GenerativeModel('gemini-2.5-pro')
+            model = genai.GenerativeModel('gemini-pro-2.0-vision')
             response = model.generate_content([prompt, full_text])
             
             if response and response.text:
@@ -3024,7 +3024,7 @@ def analyze_image_with_gemini_vision(pdf_bytes):
         logger.info(f"Converted PDF to {len(page_images)} images at 150 DPI")
 
         # Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-pro-2.5-vision')
+        model = genai.GenerativeModel('gemini-pro-2.0-vision')
         for i, page in enumerate(page_images):
             logger.info(f"Processing page {i+1} with Gemini Vision...")
             
