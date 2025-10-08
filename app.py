@@ -174,6 +174,7 @@ def process_ocr_text(text):
     try:
         # Clean and normalize text for better pattern matching
         text = clean_text_encoding(text)
+        text = re.sub(r',(\d)', r'.\1', text)  # Convert decimal commas to points
         
         # Extract part number
         part_match = re.search(r'\d{7}[A-Z]\d', text)
@@ -186,10 +187,14 @@ def process_ocr_text(text):
         # If RingsExtractor didn't find anything, try direct pattern matching
         if result["rings"] == "Not Found":
             rings_patterns = [
+                r'RING\s+REINFORCEMENT.*?(\d+)\s+PLACES?',  # For "RING REINFORCEMENT ... 2 PLACES"
+                r'(\d+)\s+(?:PC|PCS|EA|NOS).*?RING',  # For "2 PCS RING"
+                r'RINGS?.*?(\d+)\s+(?:PC|PCS|EA|NOS|PLACES?)',  # For "RINGS 2 PCS"
                 r'RINGS:\s*([^\n]+?(?:ASTM[^,\n]*)(?:[^,\n]*TYPE[^,\n]*)?)',
                 r'RINGS[:\s]+([^\n]+?ASTM[^,\n]*(?:TYPE[^,\n]*)?)',
                 r'RINGS\s*-\s*([^\n]+?ASTM[^,\n]*)',
                 r'STEEL\s+RINGS\s*[\(\[]?\s*([^\)\]]+?ASTM[^\)\]]*)',
+                r'RING.*?STAINLESS\s+WIRE\s+(\d+(?:\.\d+)?)\s*MM\s*DIA',  # For "RING ... STAINLESS WIRE 2MM DIA"
             ]
             
             for pattern in rings_patterns:
@@ -244,8 +249,8 @@ def process_ocr_text(text):
         
         # Extract dimensions
         dim_patterns = {
-            "id1": r'HOSE\s+ID\s*[=:]?\s*(\d+(?:\.\d+)?)',
-            "od1": r'OD\s*[=:]?\s*(\d+(?:\.\d+)?)',
+            "id1": r'(?:TUBING ID|HOSE ID|ID)\s*[=:]?\s*(\d+[.,]?\d*)',
+            "od1": r'OD\s*[=:]?\s*(\d+[.,]?\d*)',
             "thickness": r'THICKNESS[:\s]+([\d.]+)',
             "length": r'LENGTH[:\s]+([\d.]+)'
         }
