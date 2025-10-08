@@ -32,25 +32,63 @@ def test_specific_drawing(pdf_path):
             print(f"{key}: {value}")
         
         # 3. Test dimension extraction
-        dims = extract_dimensions_from_text(text)
+        dimensions = extract_dimensions_from_text(text)
         print("\n=== DIMENSIONS ===")
-        for key, value in dims.items():
+        for key, value in dimensions.items():
             print(f"{key}: {value}")
         
         # 4. Test full analysis
         analysis_results = process_ocr_text(text)
-        print("\n=== FULL ANALYSIS RESULTS ===")
-        for key, value in analysis_results.items():
-            if isinstance(value, dict):
-                print(f"\n{key}:")
-                for subkey, subvalue in value.items():
-                    print(f"  {subkey}: {subvalue}")
-            else:
-                print(f"{key}: {value}")
+        if analysis_results:
+            print("\n=== FULL ANALYSIS RESULTS ===")
+            for key, value in analysis_results.items():
+                if isinstance(value, dict):
+                    print(f"\n{key}:")
+                    for subkey, subvalue in value.items():
+                        print(f"  {subkey}: {subvalue}")
+                else:
+                    print(f"{key}: {value}")
+        
+        return {
+            "rings_info": rings_info,
+            "dimensions": dimensions,
+            "analysis_results": analysis_results
+        }
                 
     except Exception as e:
         logger.error(f"Error testing drawing: {e}")
         raise
+
+def validate_test_results(results):
+    """Validate test results against expected values"""
+    expected = {
+        "rings_spec": "STAINLESS WIRE 2MM DIA",
+        "id1": "65",
+        "od1": "88.9",
+        "id2": "82",
+        "centerline_length": "152.0"
+    }
+    
+    print("\n=== VALIDATION RESULTS ===")
+    
+    # Check rings
+    rings_info = results.get("rings_info", {})
+    if rings_info.get("rings_specification") == expected["rings_spec"]:
+        print("✓ Rings specification matches expected value")
+    else:
+        print(f"✗ Rings specification mismatch:")
+        print(f"  Expected: {expected['rings_spec']}")
+        print(f"  Got: {rings_info.get('rings_specification')}")
+    
+    # Check dimensions
+    dimensions = results.get("dimensions", {})
+    for dim_key in ["id1", "od1", "id2", "centerline_length"]:
+        if dimensions.get(dim_key) == expected[dim_key]:
+            print(f"✓ {dim_key.upper()} matches expected value")
+        else:
+            print(f"✗ {dim_key.upper()} mismatch:")
+            print(f"  Expected: {expected[dim_key]}")
+            print(f"  Got: {dimensions.get(dim_key)}")
 
 def main():
     """Main test function"""
@@ -64,7 +102,9 @@ def main():
     
     print(f"\nTesting drawing: {test_pdf}")
     print("=" * 80)
-    test_specific_drawing(pdf_path)
+    
+    results = test_specific_drawing(str(pdf_path))
+    validate_test_results(results)
 
 if __name__ == "__main__":
     main()

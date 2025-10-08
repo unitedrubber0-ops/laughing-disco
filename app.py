@@ -1174,21 +1174,27 @@ def extract_dimensions_from_text(text):
             diameters.extend([float(m) for m in matches if m])
         
         if diameters:
-            # Sort diameters and assign smallest to ID, largest to OD
+            # Sort diameters and assign
             diameters.sort()
             logger.info(f"Found diameters: {diameters}")
             
-            # Assign ID (smallest diameter)
-            if diameters[0] < 100:  # Basic sanity check for ID
+            # Smart diameter assignment based on size
+            if len(diameters) >= 2:
+                # Smallest diameter is usually ID1
                 dimensions["id1"] = f"{diameters[0]}"
-                dimensions["id2"] = f"{diameters[0]}"
-                logger.info(f"ID assigned: {diameters[0]}")
-            
-            # Assign OD (largest diameter)
-            if len(diameters) > 1 and diameters[-1] > diameters[0]:
+                # Largest diameter is usually OD1
                 dimensions["od1"] = f"{diameters[-1]}"
-                dimensions["od2"] = f"{diameters[-1]}"
-                logger.info(f"OD assigned: {diameters[-1]}")
+                
+                # If we have a middle diameter, it might be ID2
+                if len(diameters) >= 3:
+                    dimensions["id2"] = f"{diameters[1]}"
+                    dimensions["od2"] = dimensions["od1"]  # Usually the same as OD1
+                
+                # Log assignments
+                logger.info(f"ID1 assigned: {dimensions['id1']}")
+                logger.info(f"OD1 assigned: {dimensions['od1']}")
+                if dimensions['id2'] != "Not Found":
+                    logger.info(f"ID2 assigned: {dimensions['id2']}")
         
         # 2. Thickness extraction
         thickness_match = re.search(r'WALL\s+THICKNESS\s+([\d.]+)', text, re.IGNORECASE)
@@ -1208,20 +1214,24 @@ def extract_dimensions_from_text(text):
             except (ValueError, TypeError) as e:
                 logger.warning(f"Error calculating ID: {e}")
         
-        # 4. Centerline length patterns
+        # 4. Centerline length patterns - prioritize specific formats
         length_patterns = [
             r'(?:LENGTH|CL\s+LENGTH)\s*[=:]?\s*(\d+\.?\d*)',  # Explicit length markers
-            r'(?:^|\s)(\d+\.?\d*)\s*(?:MM|LENGTH)',  # Standalone numbers with MM or LENGTH
+            r'(?:^|\s)(\d+\.?\d*)\s*(?:MM|LENGTH)',  # Numbers with MM or LENGTH
+            r'^\s*(\d+\.\d+)\s*$',  # Standalone decimal numbers (like "152.0")
+            r'\n\s*(\d+\.\d+)\s*\n',  # Numbers between newlines
             r'(\d+\.?\d*)\s*\n\s*Ø',  # Number before diameter symbol
-            r'(?:^|\s)(\d+\.?\d*)\s*$'  # Standalone numbers at line start or end
         ]
         
         for pattern in length_patterns:
             length_match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
             if length_match:
-                dimensions["centerline_length"] = length_match.group(1)
-                logger.info(f"Centerline length found: {length_match.group(1)}mm")
-                break
+                length_val = float(length_match.group(1))
+                # Only accept reasonable lengths (not diameters)
+                if 50 <= length_val <= 500:  # Typical hose lengths
+                    dimensions["centerline_length"] = f"{length_val}"
+                    logger.info(f"Centerline length found: {length_val}mm")
+                    break
         
         # 5. Pressure extraction
         # Burst pressure
