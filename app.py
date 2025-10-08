@@ -112,8 +112,8 @@ def process_with_gemini(image_path):
     Returns structured data extracted from the image.
     """
     try:
-        # Get the best available vision model
-        model = get_vision_model()
+        # Use the working model
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
         image = Image.open(image_path)
         content = [
             "Here is a technical drawing of a tube or hose component. Please analyze it and extract the following information:",
@@ -148,6 +148,7 @@ def process_with_gemini(image_path):
                 return None
     except Exception as e:
         logger.error(f"Error in process_with_gemini: {str(e)}")
+        return None
         return None
 
 def process_ocr_text(text):
@@ -3025,32 +3026,40 @@ def analyze_image_with_gemini_vision(pdf_bytes):
         page_images = convert_from_path(temp_pdf_path, dpi=150)
         logger.info(f"Converted PDF to {len(page_images)} images at 150 DPI")
 
-        # Get the best available vision model
-        model = get_vision_model()
+        # Use the working model from gemini_helper
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        logger.info("Using gemini-2.0-flash-exp for vision processing")
         
         for i, page in enumerate(page_images):
             logger.info(f"Processing page {i+1} with Gemini Vision...")
             
-            # Convert PIL Image to bytes
-            img_byte_arr = io.BytesIO()
-            page.save(img_byte_arr, format='PNG')
-            img_byte_arr = img_byte_arr.getvalue()
+            try:
+                # Convert PIL Image to bytes
+                img_byte_arr = io.BytesIO()
+                page.save(img_byte_arr, format='PNG')
+                img_data = img_byte_arr.getvalue()
             
-            # Convert to base64
-            img_base64 = base64.b64encode(img_byte_arr).decode('utf-8')
-            
-            # Create Gemini-compatible image object
-            image_parts = [
-                {
-                    'mime_type': 'image/png',
-                    'data': img_base64
-                }
-            ]
-            
-            # Process with Gemini
-            response = model.generate_content(["Extract all text from this engineering drawing.", *image_parts])
-            if response and response.text:
-                full_text += response.text + "\n"
+                # Create content parts
+                content_parts = [
+                    "Extract all text from this engineering drawing with high accuracy. Include: part numbers, dimensions, specifications, materials, grades, standards, and any coordinate data. Return the raw text exactly as it appears in the drawing.",
+                    {
+                        'mime_type': 'image/png',
+                        'data': img_data
+                    }
+                ]
+                
+                # Process with Gemini
+                response = model.generate_content(content_parts)
+                
+                if response and response.text:
+                    full_text += response.text + "\n"
+                    logger.info(f"Page {i+1} processed successfully, extracted {len(response.text)} characters")
+                else:
+                    logger.warning(f"No text extracted from page {i+1}")
+                    
+            except Exception as page_error:
+                logger.error(f"Error processing page {i+1}: {page_error}")
+                continue
 
         logger.info(f"OCR complete. Total characters extracted: {len(full_text)}")
         return full_text
@@ -3062,14 +3071,10 @@ def analyze_image_with_gemini_vision(pdf_bytes):
     finally:
         # Clean up temporary file
         if temp_pdf_path and os.path.exists(temp_pdf_path):
-            # Try unlink first, then fallback to remove if necessary
             try:
                 os.unlink(temp_pdf_path)
-            except Exception:
-                try:
-                    os.remove(temp_pdf_path)
-                except Exception as e:
-                    logger.warning(f"Failed to remove temporary file: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to remove temporary file: {e}")
 
 def format_description(text):
     """
@@ -3093,56 +3098,44 @@ def format_description(text):
 def extract_text_from_pdf(pdf_bytes):
     """
     Enhanced text extraction from PDF using multiple methods and layout preservation.
-    Tries different extraction techniques and combines results for best output.
-    
-    Args:
-        pdf_bytes: Raw PDF file content in bytes
-        
-    Returns:
-        str: Combined text from all extraction methods
     """
     logger.info("Starting enhanced text extraction process...")
-    logger.debug(f"Input PDF size: {len(pdf_bytes)} bytes")
     texts = []
     
     try:
-        # Method 1: PyMuPDF with layout preservation
+        # Method 1: PyMuPDF - try harder to extract text
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            # Try different text extraction modes
-            for page in doc:
-                # Get text with layout preservation
-                # Extract text from page
-                # Extract text in different formats
-                layout_text = extract_page_text(page)
-                blocks = extract_page_text(page, "blocks")
-                raw_text = extract_page_text(page, "text", sort=False)
-                texts.append(layout_text)
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                # Try multiple extraction methods with PyMuPDF
+                extraction_methods = [
+                    ("text", lambda p: p.get_text()),
+                    ("words", lambda p: p.get_text("words")),
+                    ("blocks", lambda p: p.get_text("blocks")),
+                    ("raw", lambda p: p.get_text("raw")),
+                ]
                 
-                # Get text blocks with position information
-                # Extract text blocks
-                # Get blocks safely
-                try:
-                    blocks = extract_page_text(page, "blocks")
-                except AttributeError:
-                    blocks = []
-                structured_text = "\n".join([block[4] for block in blocks])
-                texts.append(structured_text)
-                
-                # Get raw text as fallback
-                # Extract raw text
-                # Extract raw text safely
-                raw_text = extract_page_text(page, "text", sort=False)
-                texts.append(raw_text)
-                
-        combined_text = "\n".join(filter(None, texts))
-        logger.info(f"PyMuPDF extraction found {len(combined_text)} characters with layout preservation")
+                for method_name, method in extraction_methods:
+                    try:
+                        text = method(page)
+                        if text and len(str(text).strip()) > 10:
+                            texts.append(f"--- Page {page_num+1} ({method_name}) ---\n{text}")
+                            logger.info(f"Extracted {len(str(text))} chars from page {page_num+1} using {method_name}")
+                    except Exception as e:
+                        logger.debug(f"Method {method_name} failed for page {page_num+1}: {e}")
         
-        # If extracted text seems insufficient, try OCR
-        if len(combined_text.strip()) < 100 or not any(char.isdigit() for char in combined_text):
-            logger.info("Initial extraction insufficient, falling back to OCR...")
-            ocr_text = analyze_image_with_gemini_vision(pdf_bytes)
-            if ocr_text:
-                texts.append(ocr_text)
+        combined_text = "\n".join(filter(None, texts))
+        logger.info(f"PyMuPDF extraction found {len(combined_text)} characters")
+        
+        # If still no meaningful text, try the working Gemini model
+        if len(combined_text.strip()) < 100:
+            logger.info("Text extraction insufficient, trying Gemini Vision with working model...")
+            gemini_text = analyze_image_with_gemini_vision(pdf_bytes)
+            if gemini_text and len(gemini_text.strip()) > 50:
+                texts.append(f"--- Gemini Vision OCR ---\n{gemini_text}")
+                logger.info(f"Gemini Vision extracted {len(gemini_text)} characters")
+            else:
+                logger.warning("Gemini Vision also failed to extract meaningful text")
                 
         # Combine all extracted text, remove duplicates while preserving order
         seen = set()
@@ -3155,14 +3148,18 @@ def extract_text_from_pdf(pdf_bytes):
                     seen.add(line)
                     final_text.append(line)
         
-        result = '\n'.join(final_text)
-        logger.info(f"Final extracted text length: {len(result)} characters")
-        return result
+        # Combine all extracted text
+        final_text = "\n".join(filter(None, texts))
+        logger.info(f"Final extracted text length: {len(final_text)} characters")
+        return final_text if final_text.strip() else ""
         
     except Exception as e:
         logger.error(f"Error in enhanced text extraction: {e}")
-        # Fall back to OCR as last resort
-        return analyze_image_with_gemini_vision(pdf_bytes)
+        # Last resort: try basic Gemini Vision
+        try:
+            return analyze_image_with_gemini_vision(pdf_bytes)
+        except:
+            return ""
 
 if __name__ == '__main__':
     app.run(debug=True)
