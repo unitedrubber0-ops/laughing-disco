@@ -1157,13 +1157,38 @@ def extract_dimensions_from_text(text):
         # Clean the text
         text = clean_text_encoding(text)
         
-        logger.info("Starting direct string matching for dimensions...")
+        logger.info("Starting enhanced dimension extraction...")
         
-        # 1. OD extraction
-        if "101.4" in text:
-            dimensions["od1"] = "101.4"
-            dimensions["od2"] = "101.4"
-            logger.info("OD found: 101.4mm")
+        # 1. Look for diameter patterns like "Ø 82"
+        diameter_patterns = [
+            r'Ø\s*(\d+\.?\d*)',  # Matches Ø followed by number
+            r'⌀\s*(\d+\.?\d*)',  # Alternative Ø symbol
+            r'\bDIA(?:METER)?\s*[=:]?\s*(\d+\.?\d*)',  # DIA or DIAMETER
+            r'(?:^|\s)(\d+\.?\d*)\s*(?:MM|Ø|DIA)',  # Number followed by MM, Ø or DIA
+            r'(?:ID|OD)\s*[=:]?\s*(\d+\.?\d*)'  # Explicit ID/OD markers
+        ]
+        
+        diameters = []
+        for pattern in diameter_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE | re.MULTILINE)
+            diameters.extend([float(m) for m in matches if m])
+        
+        if diameters:
+            # Sort diameters and assign smallest to ID, largest to OD
+            diameters.sort()
+            logger.info(f"Found diameters: {diameters}")
+            
+            # Assign ID (smallest diameter)
+            if diameters[0] < 100:  # Basic sanity check for ID
+                dimensions["id1"] = f"{diameters[0]}"
+                dimensions["id2"] = f"{diameters[0]}"
+                logger.info(f"ID assigned: {diameters[0]}")
+            
+            # Assign OD (largest diameter)
+            if len(diameters) > 1 and diameters[-1] > diameters[0]:
+                dimensions["od1"] = f"{diameters[-1]}"
+                dimensions["od2"] = f"{diameters[-1]}"
+                logger.info(f"OD assigned: {diameters[-1]}")
         
         # 2. Thickness extraction
         thickness_match = re.search(r'WALL\s+THICKNESS\s+([\d.]+)', text, re.IGNORECASE)
@@ -1183,10 +1208,20 @@ def extract_dimensions_from_text(text):
             except (ValueError, TypeError) as e:
                 logger.warning(f"Error calculating ID: {e}")
         
-        # 4. Centerline length
-        if "147.7" in text:
-            dimensions["centerline_length"] = "147.7"
-            logger.info("Centerline length found: 147.7mm")
+        # 4. Centerline length patterns
+        length_patterns = [
+            r'(?:LENGTH|CL\s+LENGTH)\s*[=:]?\s*(\d+\.?\d*)',  # Explicit length markers
+            r'(?:^|\s)(\d+\.?\d*)\s*(?:MM|LENGTH)',  # Standalone numbers with MM or LENGTH
+            r'(\d+\.?\d*)\s*\n\s*Ø',  # Number before diameter symbol
+            r'(?:^|\s)(\d+\.?\d*)\s*$'  # Standalone numbers at line start or end
+        ]
+        
+        for pattern in length_patterns:
+            length_match = re.search(pattern, text, re.IGNORECASE | re.MULTILINE)
+            if length_match:
+                dimensions["centerline_length"] = length_match.group(1)
+                logger.info(f"Centerline length found: {length_match.group(1)}mm")
+                break
         
         # 5. Pressure extraction
         # Burst pressure

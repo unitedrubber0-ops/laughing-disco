@@ -26,7 +26,10 @@ def detect_rings_info(text: str) -> Dict[str, Any]:
             r'RINGS?[:\s]',
             r'STAINLESS\s+(?:WIRE|RING)',
             r'\d+\s*PLACES.*RING',
-            r'RING.*\d+\s*PLACES'
+            r'RING.*\d+\s*PLACES',
+            r'STAINLESS\s+WIRE\s+\d+(?:\.\d+)?\s*MM\s*DIA',  # New pattern for your specific case
+            r'WIRE\s+\d+(?:\.\d+)?\s*MM\s*DIA',  # Simplified wire pattern
+            r'REINFORCEMENT.*STAINLESS'  # Pattern for reinforcement mentioning stainless
         ]
         
         has_rings = False
@@ -82,7 +85,9 @@ def detect_rings_info(text: str) -> Dict[str, Any]:
             spec_patterns = [
                 r'STAINLESS\s+WIRE\s+([\d.]+)\s*MM\s*DIA',
                 r'(\d+(?:\.\d+)?\s*MM\s*DIA\s*(?:STAINLESS|WIRE|RING))',
-                r'(STAINLESS[^,\n]*(?:\d+(?:\.\d+)?[^,\n]*))'
+                r'(STAINLESS[^,\n]*(?:\d+(?:\.\d+)?[^,\n]*))',
+                r'RING\s+REINFORCEMENT\s+([^\n]+?(?:STAINLESS[^,\n]*)(?:[^,\n]*WIRE[^,\n]*)?)',
+                r'REINFORCEMENT.*?(STAINLESS\s+WIRE[^,\n]*)'
             ]
             
             for pattern in spec_patterns:
