@@ -8,6 +8,7 @@ import gc
 import json
 import logging
 import tempfile
+from model_selection import get_vision_model
 from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
 import numpy as np
 import unicodedata
@@ -111,7 +112,8 @@ def process_with_gemini(image_path):
     Returns structured data extracted from the image.
     """
     try:
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        # Get the best available vision model
+        model = get_vision_model()
         image = Image.open(image_path)
         content = [
             "Here is a technical drawing of a tube or hose component. Please analyze it and extract the following information:",
@@ -3023,8 +3025,9 @@ def analyze_image_with_gemini_vision(pdf_bytes):
         page_images = convert_from_path(temp_pdf_path, dpi=150)
         logger.info(f"Converted PDF to {len(page_images)} images at 150 DPI")
 
-        # Process each page with Gemini Vision
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        # Get the best available vision model
+        model = get_vision_model()
+        
         for i, page in enumerate(page_images):
             logger.info(f"Processing page {i+1} with Gemini Vision...")
             
