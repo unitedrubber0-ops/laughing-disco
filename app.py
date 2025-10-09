@@ -8,6 +8,9 @@ import gc
 import json
 import logging
 import tempfile
+import requests
+from typing import Dict, List, Optional, Union, Any
+from roboflow import Roboflow
 from model_selection import get_vision_model
 from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
 import numpy as np
@@ -16,6 +19,7 @@ import openpyxl
 import openpyxl.utils
 import fitz  # PyMuPDF
 from rings_extraction import RingsExtractor
+from PIL import Image, ImageFilter
 from PIL import Image, ImageFilter
 from excel_output import generate_corrected_excel_sheet
 
@@ -490,6 +494,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 # --- API Key Configuration ---
+# Gemini API Configuration
 api_key = os.environ.get("GEMINI_API_KEY")
 is_test_mode = os.environ.get("TEST_MODE", "").lower() == "true"
 
@@ -507,6 +512,216 @@ if api_key:
             raise RuntimeError(f"Failed to initialize Gemini AI: {str(e)}")
         else:
             logging.warning("Failed to configure Gemini AI, but continuing in test mode")
+
+# Roboflow API Configuration
+ROBOFLOW_API_KEY = os.environ.get("ROBOFLOW_API_KEY")
+roboflow_available = False
+rf = None
+
+if ROBOFLOW_API_KEY:
+    try:
+        rf = Roboflow(api_key=ROBOFLOW_API_KEY)
+        roboflow_available = True
+        logging.info("Roboflow initialized successfully")
+    except Exception as e:
+        logging.warning(f"Roboflow initialization failed: {e}")
+else:
+    logging.warning("ROBOFLOW_API_KEY not set, Roboflow OCR not available")
+
+# --- Roboflow OCR Functions ---
+def extract_text_with_roboflow_ocr(image_path):
+    """
+    Extract text from image using Roboflow OCR API
+    """
+    if not roboflow_available or not rf:
+        logger.warning("Roboflow not available for OCR")
+        return None
+    
+    try:
+        # Load and prepare image
+        with open(image_path, "rb") as image_file:
+            image_data = base64.b64encode(image_file.read()).decode("utf-8")
+        
+        # Get OCR project
+        workspace = rf.workspace()
+        if not workspace:
+            logger.error("Failed to access Roboflow workspace")
+            return None
+            
+        project = workspace.project("text-recognition")
+        if not project:
+            logger.error("Failed to access text-recognition project")
+            return None
+            
+        model = project.version(1).model
+        if not model:
+            logger.error("Failed to access model")
+            return None
+        
+        # Perform OCR
+        result = model.predict(image_path, confidence=40, overlap=30)
+        
+        # Extract and combine text
+        extracted_text = ""
+        if result and hasattr(result, 'predictions'):
+            for prediction in result.predictions:
+                if hasattr(prediction, 'text') and prediction.text:
+                    extracted_text += prediction.text + " "
+        
+        logger.info(f"Roboflow OCR extracted {len(extracted_text)} characters")
+        return extracted_text.strip() if extracted_text else None
+        
+    except Exception as e:
+        logger.error(f"Roboflow OCR failed: {e}")
+        return None
+
+def extract_text_with_roboflow_inference(image_path):
+    """
+    Alternative method using Roboflow Inference API
+    """
+    if not ROBOFLOW_API_KEY:
+        return None
+    
+    try:
+        # Read image as base64
+        with open(image_path, "rb") as image_file:
+            image_data = base64.b64encode(image_file.read()).decode("utf-8")
+        
+        # Roboflow OCR API endpoint
+        url = "https://infer.roboflow.com/ocr/ocr"
+        
+        payload = {
+            "api_key": ROBOFLOW_API_KEY,
+            "image": image_data
+        }
+        
+        response = requests.post(url, json=payload)
+        
+        if response.status_code == 200:
+            result = response.json()
+            text_blocks = result.get('predictions', [])
+            
+            # Sort text blocks by position (top to bottom, left to right)
+            sorted_blocks = sorted(text_blocks, 
+                                 key=lambda x: (x.get('y', 0), x.get('x', 0)))
+            
+            extracted_text = " ".join([block.get('text', '') for block in sorted_blocks])
+            logger.info(f"Roboflow Inference OCR extracted {len(extracted_text)} characters")
+            return extracted_text.strip()
+        else:
+            logger.error(f"Roboflow API error: {response.status_code} - {response.text}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Roboflow Inference OCR failed: {e}")
+        return None
+
+# --- Advanced Text Extraction ---
+def extract_text_advanced(image_path: str, use_roboflow: bool = True) -> dict:
+    """
+    Advanced text extraction using multiple OCR engines with quality assessment
+    """
+    results: dict[str, str | None] = {
+        'tesseract': None,
+        'roboflow': None,
+        'best_result': None
+    }
+    
+    # 1. Tesseract OCR (existing method)
+    try:
+        with Image.open(image_path) as img:
+            tesseract_text = extract_text_from_image_wrapper(img)
+            if tesseract_text:
+                results['tesseract'] = clean_text_encoding(str(tesseract_text))
+                tesseract_score = assess_text_quality(str(results['tesseract']))
+                logger.info(f"Tesseract quality score: {tesseract_score}")
+    except Exception as e:
+        logger.error(f"Tesseract extraction failed: {e}")
+    
+    # 2. Roboflow OCR (if available and requested)
+    if use_roboflow and roboflow_available:
+        try:
+            roboflow_text = extract_text_with_roboflow_ocr(image_path)
+            if roboflow_text:
+                results['roboflow'] = clean_text_encoding(roboflow_text)
+                roboflow_score = assess_text_quality(results['roboflow'])
+                logger.info(f"Roboflow quality score: {roboflow_score}")
+                
+                # Alternative Roboflow method if primary fails
+                if not roboflow_text or roboflow_score < 0.5:
+                    roboflow_text_alt = extract_text_with_roboflow_inference(image_path)
+                    if roboflow_text_alt:
+                        results['roboflow_alt'] = clean_text_encoding(roboflow_text_alt)
+                        alt_score = assess_text_quality(results['roboflow_alt'])
+                        logger.info(f"Roboflow alternative score: {alt_score}")
+                        if alt_score > roboflow_score:
+                            results['roboflow'] = results['roboflow_alt']
+        except Exception as e:
+            logger.error(f"Roboflow extraction failed: {e}")
+    
+    # 3. Select best result based on quality score
+    best_score = 0
+    best_text = ""
+    
+    for method, text in results.items():
+        if method != 'best_result' and text:
+            score = assess_text_quality(text)
+            if score > best_score:
+                best_score = score
+                best_text = text
+                logger.info(f"New best: {method} with score {score}")
+    
+    results['best_result'] = best_text
+    logger.info(f"Selected best text with score: {best_score}")
+    
+    return results
+
+def assess_text_quality(text: str) -> float:
+    """
+    Evaluate the quality of extracted text
+    Returns a score between 0 and 1
+    """
+    if not text:
+        return 0.0
+    
+    score = 0.0
+    
+    # Check for key technical indicators
+    indicators = {
+        'part_number': r'\d{7}[A-Z]\d',
+        'mpaps': r'MPAPS\s*F[-\s]*\d+',
+        'dimensions': r'(?:ID|OD|LENGTH)\s*[=:]\s*\d+(?:\.\d+)?',
+        'pressure': r'(?:PRESSURE|WP|BP)\s*[=:]\s*\d+(?:\.\d+)?\s*(?:KPAG|KPA|BAR)',
+        'grade': r'(?:GRADE|TYPE)\s*[A-Z0-9]+',
+        'material': r'(?:MATERIAL|MAT\.?)\s*[:=]'
+    }
+    
+    # Weight for each indicator
+    weights = {
+        'part_number': 0.3,
+        'mpaps': 0.2,
+        'dimensions': 0.2,
+        'pressure': 0.1,
+        'grade': 0.1,
+        'material': 0.1
+    }
+    
+    # Check each indicator
+    for key, pattern in indicators.items():
+        if re.search(pattern, text, re.IGNORECASE):
+            score += weights[key]
+    
+    # Additional quality checks
+    words = text.split()
+    if len(words) > 10:  # Reasonable amount of text
+        score += 0.1
+    
+    # Check for excessive special characters or garbage text
+    special_char_ratio = len(re.findall(r'[^a-zA-Z0-9\s\.,\-]', text)) / (len(text) or 1)
+    if special_char_ratio < 0.3:  # Not too many special characters
+        score += 0.1
+    
+    return min(1.0, score)  # Cap score at 1.0
 
 # --- Load and Clean Material and Reinforcement Database on Startup with Enhanced Debugging ---
 def load_material_database():
@@ -804,6 +1019,126 @@ def normalize_for_comparison(text):
     text = re.sub(r'[^A-Z0-9\.]', '', text)
     
     return text
+
+# --- PDF Processing Functions ---
+def process_pdf_with_enhanced_ocr(pdf_bytes):
+    """
+    Process PDF with enhanced OCR capabilities including Roboflow
+    """
+    temp_pdf_path = None
+    all_text_results = []
+    
+    try:
+        # Save PDF to temporary file
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
+            temp_pdf.write(pdf_bytes)
+            temp_pdf_path = temp_pdf.name
+        
+        # Convert PDF to images
+        images = convert_from_path(temp_pdf_path)
+        
+        for i, image in enumerate(images):
+            logger.info(f"Processing page {i+1} with enhanced OCR...")
+            
+            # Save image to temporary file for Roboflow
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_img:
+                image_path = temp_img.name
+                image.save(image_path, 'PNG')
+            
+            try:
+                # Use enhanced OCR with multiple engines
+                ocr_results = extract_text_advanced(image_path)
+                best_text = ocr_results['best_result']
+                
+                if best_text:
+                    # Process the text with your existing function
+                    processed_data = process_ocr_text(best_text)
+                    if processed_data:
+                        all_text_results.append(processed_data)
+                        logger.info(f"Page {i+1} processed successfully")
+                    
+                    # Log OCR method comparison for debugging
+                    logger.info(f"Page {i+1} OCR comparison:")
+                    for method, text in ocr_results.items():
+                        if method != 'best_result' and text:
+                            score = assess_text_quality(text)
+                            sample = text[:100] + "..." if len(text) > 100 else text
+                            logger.info(f"  {method}: score={score:.2f}, sample='{sample}'")
+                
+            except Exception as page_error:
+                logger.error(f"Error processing page {i+1}: {page_error}")
+            finally:
+                # Clean up temporary image file
+                if os.path.exists(image_path):
+                    os.unlink(image_path)
+    
+    except Exception as e:
+        logger.error(f"Enhanced PDF processing failed: {e}")
+        return []
+    
+    finally:
+        # Clean up temporary PDF file
+        if temp_pdf_path and os.path.exists(temp_pdf_path):
+            try:
+                os.unlink(temp_pdf_path)
+            except Exception as e:
+                logger.warning(f"Failed to remove temporary PDF: {e}")
+    
+    return all_text_results
+
+# --- Utility Functions ---
+def merge_ocr_results(ocr_results):
+    """
+    Merge multiple OCR results into a single comprehensive result
+    """
+    if not ocr_results:
+        return {}
+    
+    merged = {}
+    
+    for result in ocr_results:
+        if not isinstance(result, dict):
+            continue
+            
+        for key, value in result.items():
+            if value and value != "Not Found":
+                if key not in merged:
+                    merged[key] = value
+                elif key == 'coordinates' and isinstance(value, list):
+                    # Merge coordinates
+                    if 'coordinates' not in merged:
+                        merged['coordinates'] = []
+                    merged['coordinates'].extend(value)
+                elif key == 'dimensions' and isinstance(value, dict):
+                    # Merge dimensions
+                    if 'dimensions' not in merged:
+                        merged['dimensions'] = {}
+                    merged['dimensions'].update(value)
+    
+    return merged
+
+def enhance_with_material_lookup(results):
+    """
+    Enhance results with material and reinforcement lookup
+    """
+    try:
+        standard = results.get("standard", "Not Found")
+        grade = results.get("grade", "Not Found")
+        
+        if standard != "Not Found" and grade != "Not Found":
+            # Material lookup
+            results["material"] = get_material_from_standard(standard, grade)
+            
+            # Reinforcement lookup
+            reinforcement = get_reinforcement_from_material(
+                standard, grade, results["material"]
+            )
+            results["reinforcement"] = reinforcement if reinforcement else "Not Found"
+    
+    except Exception as e:
+        logger.error(f"Material enhancement failed: {e}")
+    
+    return results
 
 # --- Material Lookup Function ---
 def get_material_from_standard(standard, grade):
@@ -1657,22 +1992,6 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
         return error_output
 
 # --- Text Cleanup Functions ---
-def assess_text_quality(text):
-    """
-    Assess the quality of extracted text using multiple metrics.
-    Returns a score between 0 (poor) and 1 (excellent).
-    """
-    if not text or len(text.strip()) == 0:
-        return 0.0
-        
-    try:
-        # Initialize score components
-        metrics = {
-            'length_score': 0.0,
-            'ascii_score': 0.0,
-            'word_score': 0.0,
-            'whitespace_score': 0.0,
-            'special_char_score': 0.0,
             'technical_score': 0.0  # For engineering-specific content
         }
         
