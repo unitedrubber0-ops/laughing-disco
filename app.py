@@ -1108,24 +1108,44 @@ def extract_rings_from_text(text):
         # Clean the text
         text = clean_text_encoding(text)
         
-        # Pattern for rings information
+        # Enhanced patterns including specific formats and variations
         rings_patterns = [
+            # New pattern for "RING REINFORCEMENT / MATERIAL / N PLACES" format
+            r'RING\s+REINFORCEMENT\s*/([^/]+?)\s*/\s*(\d+)\s+PLACES?',
+            # Alternative format for reinforcement details
+            r'RING\s+REINFORCEMENT\s*(.*?)(?:\d+\s+PLACES|$)',
+            # Legacy patterns for ASTM specifications
             r'RINGS:\s*([^\n]+?(?:ASTM[^,\n]*)(?:[^,\n]*TYPE[^,\n]*)?)',
             r'RINGS[:\s]+([^\n]+?ASTM[^,\n]*(?:TYPE[^,\n]*)?)',
             r'RINGS\s*-\s*([^\n]+?ASTM[^,\n]*)',
+            # Simpler fallback patterns
+            r'RINGS?(?:\s+INFO(?:RMATION)?)?[:;\s]+([^\n]+)',
         ]
         
         for pattern in rings_patterns:
             rings_match = re.search(pattern, text, re.IGNORECASE)
             if rings_match:
-                rings = rings_match.group(1).strip()
+                # For patterns with multiple groups (material and places), combine them
+                if len(rings_match.groups()) > 1:
+                    material = rings_match.group(1).strip()
+                    places = rings_match.group(2).strip()
+                    rings = f"{material} / {places} PLACES"
+                else:
+                    rings = rings_match.group(1).strip()
+                
                 # Clean up the rings text
                 rings = re.sub(r'\s+', ' ', rings)  # Normalize spaces
-                rings = rings.strip(' ,.-')
-                logger.info(f"Rings found: {rings}")
-                return rings
+                rings = rings.strip(' ,.-/')  # Strip common separators
+                
+                if len(rings.strip()) > 3:  # Ensure meaningful content
+                    logger.info(f"Rings found: {rings}")
+                    return rings
         
         logger.warning("No rings information found in text")
+        return "Not Found"
+        
+    except Exception as e:
+        logger.error(f"Error extracting rings: {e}")
         return "Not Found"
         
     except Exception as e:
