@@ -1147,10 +1147,6 @@ def extract_rings_from_text(text):
     except Exception as e:
         logger.error(f"Error extracting rings: {e}")
         return "Not Found"
-        
-    except Exception as e:
-        logger.error(f"Error extracting rings: {e}")
-        return "Not Found"
 
 
 
