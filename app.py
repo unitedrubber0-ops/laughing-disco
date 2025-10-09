@@ -1,27 +1,47 @@
+# Standard library imports
 import os
 import re
 import math
+import time
+import uuid
 import base64
-import pandas as pd
 import io
 import gc
 import json
 import logging
 import tempfile
-import requests
-from typing import Dict, List, Optional, Union, Any
-from roboflow import Roboflow
-from model_selection import get_vision_model
-from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
-import numpy as np
+import shutil
 import unicodedata
+from typing import Dict, List, Optional, Union, Any
+
+# Third party imports
+import numpy as np
+import pandas as pd
 import openpyxl
 import openpyxl.utils
 import fitz  # PyMuPDF
+from fitz import Page as FitzPage  # For type hints
+from PIL import Image, ImageFilter
+import pytesseract
+import requests
+from flask import Flask, request, jsonify, render_template, send_file
+from flask_cors import CORS
+import pdf2image
+from pdf2image import convert_from_path, convert_from_bytes
+import google.generativeai as genai
+from roboflow import Roboflow
+
+# Local application imports
+from model_selection import get_vision_model
+from development_length import (
+    calculate_vector_magnitude, 
+    calculate_dot_product, 
+    calculate_angle,
+    calculate_development_length as calculate_development_length_safe
+)
 from rings_extraction import RingsExtractor
-from PIL import Image, ImageFilter
-from PIL import Image, ImageFilter
 from excel_output import generate_corrected_excel_sheet
+from gemini_helper import process_pages_with_vision_or_ocr, extract_text_from_image_wrapper
 
 # Initialize OpenCV availability
 cv2 = None
@@ -39,16 +59,25 @@ except ImportError:
 except Exception:
     logging.warning("OpenCV (cv2) initialization error")
     logging.warning("OpenCV (cv2) not available")
-import pytesseract
-from flask import Flask, request, jsonify, render_template, send_file
-from flask_cors import CORS
-import fitz  # PyMuPDF
-import pdf2image
-from pdf2image import convert_from_path, convert_from_bytes
-import google.generativeai as genai
-from gemini_helper import process_pages_with_vision_or_ocr, extract_text_from_image_wrapper
-import fitz  # PyMuPDF for PDF handling
-from development_length import calculate_development_length as calculate_development_length_safe
+
+# Check OCR dependencies
+tesseract_path = shutil.which("tesseract")
+if not tesseract_path:
+    logging.warning("tesseract binary not found in PATH. OCR functionality may be limited. Install tesseract-ocr or set pytesseract.pytesseract.tesseract_cmd")
+else:
+    logging.info(f"tesseract found at {tesseract_path}")
+    # Try to set tesseract path explicitly
+    try:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
+    except Exception as e:
+        logging.warning(f"Failed to set tesseract path: {e}")
+
+# Check poppler (required for pdf2image)
+pdftoppm_path = shutil.which("pdftoppm")  # Part of poppler-utils
+if not pdftoppm_path:
+    logging.warning("poppler-utils (pdftoppm) not found in PATH. PDF to image conversion may fail. Install poppler-utils package.")
+else:
+    logging.info(f"poppler-utils found at {pdftoppm_path}")
 
 # Define custom exceptions
 class BlockedPromptException(Exception):
@@ -493,7 +522,78 @@ CORS(app)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# --- API Key Configuration ---
+# --- Model and API Configuration ---
+
+def get_available_models():
+    """Get list of actually available models"""
+    available_models = []
+    try:
+        models = genai.list_models()
+        for model in models:
+            if 'generateContent' in model.supported_generation_methods:
+                available_models.append(model.name)
+        logger.info(f"Found {len(available_models)} available models")
+    except Exception as e:
+        logger.error(f"Error listing models: {e}")
+        # Fallback to known working models
+        available_models = [
+            'models/gemini-1.0-pro',
+            'models/gemini-1.0-pro-vision', 
+            'models/gemini-1.5-flash',
+            'models/gemini-1.5-pro',
+        ]
+        logger.info("Using fallback model list")
+    return available_models
+
+def get_safe_model():
+    """Get a model that definitely exists and supports content generation"""
+    try:
+        # Get models from API
+        available = get_available_models()
+        if not available:
+            logger.error("No models available from API")
+            return None
+
+        # Log available models for debugging
+        logger.info(f"Available models from API: {available}")
+
+        # Filter models that support generateContent
+        supported_models = []
+        for model_name in available:
+            try:
+                model = genai.GenerativeModel(model_name)
+                # Check if model has generateContent method
+                if hasattr(model, 'generate_content'):
+                    supported_models.append(model_name)
+            except Exception as e:
+                logger.warning(f"Failed to check model {model_name}: {e}")
+
+        if not supported_models:
+            logger.error("No models found that support content generation")
+            return None
+
+        # Return first supported model
+        selected_model = supported_models[0]
+        logger.info(f"Selected model: {selected_model}")
+        return selected_model
+
+    except Exception as e:
+        logger.error(f"Error in get_safe_model: {e}")
+        return None
+    
+    for model in preferred_models:
+        if model in available:
+            logger.info(f"Selected model: {model}")
+            return model
+    
+    # Fallback to first available model
+    if available:
+        logger.info(f"Using fallback model: {available[0]}")
+        return available[0]
+    
+    logger.error("No available models found")
+    return None
+
 # Gemini API Configuration
 api_key = os.environ.get("GEMINI_API_KEY")
 is_test_mode = os.environ.get("TEST_MODE", "").lower() == "true"
@@ -505,13 +605,28 @@ if not api_key and not is_test_mode:
 if api_key:
     try:
         genai.configure(api_key=api_key)
-        logging.info("Gemini API key configured successfully")
+        logger.info("Gemini API key configured successfully")
+
+        # Log available models and their capabilities
+        try:
+            models = genai.list_models()
+            logger.info("Available Gemini models (names & methods):")
+            for m in models:
+                logger.info(f"  name={m.name}  methods={getattr(m, 'supported_generation_methods', None)}")
+        except Exception as e:
+            logger.error("Failed to list Gemini models: %s", e)
+
+        # Test model availability immediately
+        if get_safe_model():
+            logger.info("Successfully verified model availability")
+        else:
+            logger.warning("No models available despite successful configuration")
     except Exception as e:
         if not is_test_mode:
-            logging.error(f"Failed to configure Gemini API key: {str(e)}")
+            logger.error(f"Failed to configure Gemini API key: {str(e)}")
             raise RuntimeError(f"Failed to initialize Gemini AI: {str(e)}")
         else:
-            logging.warning("Failed to configure Gemini AI, but continuing in test mode")
+            logger.warning("Failed to configure Gemini AI, but continuing in test mode")
 
 # Roboflow API Configuration
 ROBOFLOW_API_KEY = os.environ.get("ROBOFLOW_API_KEY")
@@ -1021,6 +1136,110 @@ def normalize_for_comparison(text):
     return text
 
 # --- PDF Processing Functions ---
+def extract_text_from_pdf_robust(pdf_bytes):
+    """Robust PDF text extraction with multiple fallbacks"""
+    logger.info("Starting robust PDF text extraction...")
+    
+    # Method 1: Try PyMuPDF first
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            text = ""
+            for page in doc:
+                # Handle text extraction uniformly for PyMuPDF versions
+                page_text = ""  # Initialize empty string for this page
+                if isinstance(page, FitzPage):
+                    # Get the text extraction method based on PyMuPDF version
+                    get_text_method = getattr(page, 'get_text', None)
+                    get_text_old = getattr(page, 'getText', None)
+                    
+                    if callable(get_text_method):
+                        extraction_methods = [
+                        ("get_text()", lambda p: p.get_text()),
+                        ("get_text('blocks')", lambda p: p.get_text("blocks")),
+                        ("get_text('words')", lambda p: p.get_text("words")),
+                        ("get_text('text')", lambda p: p.get_text("text")),
+                        ("getText()", lambda p: p.getText()),
+                        ("getText('blocks')", lambda p: p.getText("blocks")),
+                        ("getText('words')", lambda p: p.getText("words")),
+                    ]
+                    
+                    page_text = ""
+                    for method_name, extractor in extraction_methods:
+                        try:
+                            extracted = extractor(page)
+                            if isinstance(extracted, (list, tuple)):
+                                # Handle block/word output formats
+                                if isinstance(extracted[0], (list, tuple)):
+                                    # Blocks format
+                                    extracted = " ".join(block[4] if len(block) > 4 else str(block) for block in extracted)
+                                else:
+                                    # Words format
+                                    extracted = " ".join(str(word) for word in extracted)
+                            
+                            if extracted:
+                                extracted_str = str(extracted).strip()
+                                logger.info(f"Method {method_name} extracted {len(extracted_str)} chars")
+                                if len(extracted_str) > len(page_text):
+                                    page_text = extracted_str
+                                    logger.info(f"Using better result from {method_name} (sample: {extracted_str[:100]})")
+                                    break
+                        except Exception as e:
+                            logger.debug(f"Method {method_name} failed: {str(e)}")
+                            continue
+                    
+                    if not page_text:
+                        logger.warning("All text extraction methods failed for page")
+                else:
+                    logger.warning(f"Unexpected page type: {type(page)}")
+                    page_text = ""
+                
+                # Ensure we're always concatenating strings with proper spacing
+                text = f"{text}\n{page_text}" if text else page_text
+            
+            if text:
+                text_len = len(text.strip())
+                logger.info(f"PyMuPDF extracted {text_len} characters")
+                if text_len > 100:
+                    logger.info(f"Text sample: {text[:200]}...")
+                return text
+    except Exception as e:
+        logger.warning(f"PyMuPDF extraction failed: {e}")
+    
+    # Method 2: Convert to images and use Tesseract OCR
+    try:
+        images = convert_from_bytes(pdf_bytes, dpi=200)
+        text = ""
+        for i, image in enumerate(images):
+            page_text = extract_text_from_image_wrapper(image)
+            if page_text:
+                text += f"Page {i+1}:\n{page_text}\n\n"
+        
+        if text and len(text.strip()) > 100:
+            logger.info(f"Tesseract OCR extracted {len(text)} characters")
+            return text
+    except Exception as e:
+        logger.warning(f"Tesseract OCR failed: {e}")
+    
+    # Method 3: Simple Gemini analysis as last resort
+    try:
+        model_name = get_safe_model()
+        if model_name and api_key:
+            model = genai.GenerativeModel(model_name)
+            # Convert first page to image for analysis
+            images = convert_from_bytes(pdf_bytes, dpi=150, first_page=1, last_page=1)
+            if images:
+                response = model.generate_content([
+                    "Extract any visible text from this engineering drawing. Return only the raw text found.",
+                    images[0]
+                ])
+                if response.text:
+                    logger.info(f"Gemini extracted {len(response.text)} characters")
+                    return response.text
+    except Exception as e:
+        logger.error(f"All text extraction methods failed: {e}")
+    
+    return ""
+
 def process_pdf_with_enhanced_ocr(pdf_bytes):
     """
     Process PDF with enhanced OCR capabilities including Roboflow
@@ -2537,31 +2756,83 @@ def analyze_drawing_simple(pdf_bytes):
         return results
 
 def analyze_drawing(pdf_bytes):
-    """
-    Analyze engineering drawing using Gemini's multimodal capabilities with OCR fallback.
-    Uses automated model discovery and robust fallback to OCR.
-    """
-    if not pdf_bytes:
-        raise ValueError("PDF content cannot be empty")
+    """Simplified robust drawing analysis"""
+    logger.info("Starting simplified drawing analysis...")
     
-    # Initialize default results structure
+    # Initialize default results
     results = {
         "part_number": "Not Found",
-        "description": "Not Found",
+        "description": "Not Found", 
         "standard": "Not Found",
         "grade": "Not Found",
         "material": "Not Found",
-        "dimensions": {
-            "id1": "Not Found",
-            "id2": "Not Found",
-            "od1": "Not Found",
-            "od2": "Not Found",
-            "thickness": "Not Found",
-            "centerline_length": "Not Found"
-        },
+        "reinforcement": "Not Found",
+        "rings": "Not Found",
+        "dimensions": {},
         "coordinates": [],
         "error": None
     }
+    
+    try:
+        # Extract text using robust method
+        extracted_text = extract_text_from_pdf_robust(pdf_bytes)
+        
+        if not extracted_text or len(extracted_text.strip()) < 50:
+            results["error"] = "Could not extract sufficient text from PDF"
+            return results
+        
+        # Process with OCR text processor
+        processed_data = process_ocr_text(extracted_text)
+        
+        if processed_data:
+            # Update results with processed data
+            for key in ['part_number', 'description', 'standard', 'grade', 'material', 'rings', 'coordinates']:
+                if key in processed_data and processed_data[key] != "Not Found":
+                    results[key] = processed_data[key]
+            
+            if 'dimensions' in processed_data:
+                results['dimensions'].update(processed_data['dimensions'])
+        
+        # Enhance with material lookup
+        if results["standard"] != "Not Found" and results["grade"] != "Not Found":
+            material = get_material_from_standard(results["standard"], results["grade"])
+            if material != "Not Found":
+                results["material"] = material
+            
+            # Get reinforcement
+            reinforcement = get_reinforcement_from_material(
+                results["standard"], 
+                results["grade"], 
+                results["material"]
+            )
+            if reinforcement != "Not Found":
+                results["reinforcement"] = reinforcement
+        
+        logger.info("Drawing analysis completed successfully")
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error in drawing analysis: {e}")
+        results = {
+            "error": f"Analysis failed: {str(e)}",
+            "part_number": "Not Found",
+            "description": "Not Found",
+            "standard": "Not Found",
+            "grade": "Not Found",
+            "material": "Not Found",
+            "dimensions": {
+                "id1": "Not Found",
+                "id2": "Not Found",
+                "od1": "Not Found",
+                "od2": "Not Found",
+                "thickness": "Not Found"
+            },
+            "centerline_length": "Not Found",
+            "reinforcement": "Not Found",
+            "coordinates": [],
+            "error": None
+        }
+        return results
     
     temp_pdf_path = None
     
@@ -3370,80 +3641,210 @@ def validate_extracted_data(data):
 # --- API endpoint for file analysis ---
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
-    # 1. Basic request validation
+    start_time = time.time()
+    request_id = str(uuid.uuid4())
+    logging.info(f"[{request_id}] Starting new analysis request")
     if 'file' not in request.files:
         logging.warning("No file part in request")
-        return jsonify({'error': 'No file part in request'}), 400
+        return jsonify({'error': 'No file part in request', 'code': 'MISSING_FILE'}), 400
         
     file = request.files['file']
     if not file or not file.filename:
         logging.warning("No file selected")
-        return jsonify({'error': 'No file selected'}), 400
+        return jsonify({'error': 'No file selected', 'code': 'NO_FILE'}), 400
     
-    # 2. File type validation
+    # 2. File validations
     if not file.filename.lower().endswith('.pdf'):
         logging.warning(f"Invalid file type: {file.filename}")
-        return jsonify({"error": "Invalid file type. Please upload a PDF file."}), 400
+        return jsonify({"error": "Invalid file type. Please upload a PDF file.", 'code': 'INVALID_TYPE'}), 400
 
-    logging.info(f"Processing analysis request for file: {file.filename}")
+    # Check file size (20MB limit)
+    MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB in bytes
+    file.seek(0, 2)  # Seek to end
+    file_size = file.tell()
+    file.seek(0)  # Reset to start
+    
+    if file_size > MAX_FILE_SIZE:
+        duration = time.time() - start_time
+        logging.warning(f"[{request_id}] File too large: {file_size} bytes (processed in {duration:.2f}s)")
+        return jsonify({
+            "error": "File too large. Maximum size is 20MB.",
+            "code": "FILE_TOO_LARGE",
+            "details": f"File size: {file_size/1024/1024:.1f}MB, Max: 20MB",
+            "request_id": request_id,
+            "processing_time": f"{duration:.2f}s"
+        }), 413
+
+    logging.info(f"[{request_id}] Processing request for file: {file.filename} ({file_size/1024/1024:.1f}MB)")
+    analysis_start = time.time()
     
     try:
         # 3. Read file contents
         pdf_bytes = file.read()
         if not pdf_bytes:
             logging.warning("Uploaded file is empty")
-            return jsonify({"error": "Uploaded file is empty"}), 400
+            return jsonify({"error": "Uploaded file is empty", 'code': 'EMPTY_FILE'}), 400
             
         # 4. Analyze drawing
-        final_results = analyze_drawing(pdf_bytes)
+        try:
+            final_results = analyze_drawing(pdf_bytes)
+        except Exception as e:
+            logging.error(f"Analysis failed with error: {str(e)}")
+            return jsonify({"error": "Analysis failed", "details": str(e), 'code': 'ANALYSIS_ERROR'}), 500
         
         # 5. Response validation and return
         if not isinstance(final_results, dict):
             logging.error(f"Invalid analyzer response type: {type(final_results)}")
-            return jsonify({"error": "Internal error: Invalid response format"}), 500
+            return jsonify({"error": "Internal error: Invalid response format", 'code': 'INVALID_RESPONSE'}), 500
             
         if final_results.get("error"):
             error_msg = final_results["error"]
+            error_code = final_results.get("code", "UNKNOWN_ERROR")
             if "PDF conversion error" in error_msg:
                 logging.warning(f"PDF conversion failed: {error_msg}")
-                return jsonify({"error": "Invalid or corrupted PDF file"}), 400
+                return jsonify({
+                    "error": "Invalid or corrupted PDF file", 
+                    "code": "PDF_ERROR",
+                    "details": error_msg
+                }), 400
             elif "Content policy violation" in error_msg:
                 logging.warning(f"Content policy violation: {error_msg}")
-                return jsonify({"error": "Content policy violation"}), 403
+                return jsonify({
+                    "error": "Content policy violation",
+                    "code": "POLICY_VIOLATION",
+                    "details": error_msg
+                }), 403
+            elif "Model not available" in error_msg:
+                logging.error(f"Model availability error: {error_msg}")
+                return jsonify({
+                    "error": "Service temporarily unavailable",
+                    "code": "MODEL_UNAVAILABLE",
+                    "details": error_msg
+                }), 503
             else:
                 logging.error(f"Analysis error: {error_msg}")
-                return jsonify({"error": error_msg}), 500
+                return jsonify({
+                    "error": error_msg,
+                    "code": error_code,
+                    "details": error_msg
+                }), 500
         
         # Process the results further
         part_number = final_results.get('part_number', 'Unknown')
         logging.info(f"Successfully analyzed drawing for part {part_number}")
 
         # Enhanced dimension extraction and merging
-        # Get cleaned extracted text from multiple sources
-        extracted_text = final_results.get('extracted_text') or final_results.get('combined_text') \
-                        or final_results.get('ocr_text') or extract_text_from_pdf(pdf_bytes)
+        try:
+            # Get cleaned extracted text from multiple sources
+            extracted_text = final_results.get('extracted_text') or final_results.get('combined_text') \
+                            or final_results.get('ocr_text') or extract_text_from_pdf(pdf_bytes)
 
-        # 1) Get dimensions from the AI/previous processing safely (existing fallback)
-        ai_dims = final_results.get('dimensions', {}) if isinstance(final_results.get('dimensions'), dict) else {}
+            # 1) Get dimensions from the AI/previous processing safely (existing fallback)
+            ai_dims = final_results.get('dimensions', {}) if isinstance(final_results.get('dimensions'), dict) else {}
 
-        # 2) Parse dimensions from the raw text (regex-based direct extraction)
-        text_dims = extract_dimensions_from_text(extracted_text)
+            # 2) Parse dimensions from the raw text (regex-based direct extraction)
+            text_dims = extract_dimensions_from_text(extracted_text)
 
-        # 3) Merge: prefer direct text values when present (text_dims override empty ai dims)
-        merged_dims = {}
-        merged_dims.update(ai_dims)
-        for k, v in text_dims.items():
-            if v and v != "Not Found":
-                merged_dims[k] = v
+            # 3) Merge: prefer direct text values when present (text_dims override empty ai dims)
+            merged_dims = {}
+            merged_dims.update(ai_dims)
+            for k, v in text_dims.items():
+                if v and v != "Not Found":
+                    merged_dims[k] = v
 
-        # 4) Ensure normalized types for downstream code
-        # convert numeric-like strings to floats where appropriate
-        for k in ('id1', 'centerline_length', 'od1', 'id2', 'thickness'):
-            if merged_dims.get(k) not in (None, "Not Found"):
-                try:
-                    merged_dims[k] = float(str(merged_dims[k]).replace(',', '.'))
-                except Exception:
-                    pass
+            # 4) Ensure normalized types for downstream code
+            # convert numeric-like strings to floats where appropriate
+            for k in ('id1', 'centerline_length', 'od1', 'id2', 'thickness'):
+                if merged_dims.get(k) not in (None, "Not Found"):
+                    try:
+                        merged_dims[k] = float(str(merged_dims[k]).replace(',', ''))
+                    except (ValueError, TypeError):
+                        logging.warning(f"Failed to convert {k}={merged_dims[k]} to float")
+                        merged_dims[k] = None
+
+            # 5) Validate results
+            # Check for required fields in final_results
+            required_result_fields = ['part_number', 'extracted_text']
+            missing_result_fields = [f for f in required_result_fields if not final_results.get(f)]
+            if missing_result_fields:
+                logging.warning(f"Analysis results missing required fields: {', '.join(missing_result_fields)}")
+                return jsonify({
+                    "error": "Incomplete analysis results",
+                    "code": "MISSING_RESULT_FIELDS",
+                    "details": f"Missing fields: {', '.join(missing_result_fields)}",
+                    "partial_results": final_results
+                }), 422
+
+            # Validate dimension values
+            missing_fields = []
+            invalid_fields = []
+            for field, value in merged_dims.items():
+                if field in ['id1', 'od1', 'centerline_length']:
+                    if value is None or value == "Not Found":
+                        missing_fields.append(field)
+                    elif not isinstance(value, (int, float)) or value <= 0:
+                        invalid_fields.append(field)
+            
+            if missing_fields or invalid_fields:
+                error_details = []
+                if missing_fields:
+                    error_details.append(f"Missing values for: {', '.join(missing_fields)}")
+                if invalid_fields:
+                    error_details.append(f"Invalid values for: {', '.join(invalid_fields)}")
+                
+                logging.warning(f"Dimension validation failed: {'; '.join(error_details)}")
+                return jsonify({
+                    "error": "Invalid dimension values",
+                    "code": "INVALID_DIMENSIONS",
+                    "details": '; '.join(error_details),
+                    "partial_results": merged_dims
+                }), 422
+
+            # 6) Return successful response
+            response = {
+                "part_number": part_number,
+                "dimensions": merged_dims,
+                "confidence": final_results.get('confidence', 'medium'),
+                "analysis_source": "hybrid",  # indicates we used both AI and direct text extraction
+                "extraction_method": "multi-source"  # indicates we combined multiple text sources
+            }
+            
+            if 'material' in final_results:
+                response['material'] = final_results['material']
+
+            # Add performance metrics
+            duration = time.time() - start_time
+            analysis_duration = time.time() - analysis_start
+            response.update({
+                "request_id": request_id,
+                "processing_time": f"{duration:.2f}s",
+                "analysis_time": f"{analysis_duration:.2f}s"
+            })
+
+            logging.info(f"[{request_id}] Successfully completed analysis in {duration:.2f}s (analysis: {analysis_duration:.2f}s)")
+            return jsonify(response)
+
+        except Exception as e:
+            duration = time.time() - start_time
+            logging.error(f"[{request_id}] Error processing dimensions: {str(e)} (duration: {duration:.2f}s)")
+            return jsonify({
+                "error": "Failed to process dimensions",
+                "code": "DIMENSION_PROCESSING_ERROR",
+                "details": str(e),
+                "request_id": request_id,
+                "processing_time": f"{duration:.2f}s"
+            }), 500
+
+    except Exception as e:
+        duration = time.time() - start_time
+        logging.error(f"[{request_id}] Unexpected error processing request: {str(e)} (duration: {duration:.2f}s)")
+        return jsonify({
+            "error": "Internal server error",
+            "code": "SERVER_ERROR",
+            "details": str(e),
+            "request_id": request_id,
+            "processing_time": f"{duration:.2f}s"
+        }), 500
 
         final_results['dimensions'] = merged_dims
         logger.debug("dimensions after merge: %s", final_results.get('dimensions'))
@@ -3529,18 +3930,22 @@ def upload_and_analyze():
         # Generate Excel report if helper function exists
         try:
             if 'generate_excel_sheet' in globals():
-                excel_file = generate_corrected_excel_sheet(final_results, final_results.get("dimensions", {}), coordinates)
-                excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
-                final_results["excel_data"] = excel_b64
+                try:
+                    excel_file = generate_corrected_excel_sheet(final_results, final_results.get("dimensions", {}), coordinates)
+                    excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
+                    final_results["excel_data"] = excel_b64
+                except Exception as excel_error:
+                    logging.warning(f"Excel generation failed: {excel_error}")
+                    final_results["excel_error"] = str(excel_error)
         except Exception as e:
-            logging.warning(f"Excel generation skipped: {e}")
-
+            logging.error(f"Error in analysis process: {str(e)}")
+            return jsonify({
+                "error": f"Analysis failed: {str(e)}",
+                "stage": "analysis"
+            }), 500
+        
         logging.info(f"Successfully analyzed drawing: {final_results.get('part_number', 'Unknown')}")
         return jsonify(final_results)
-
-    except Exception as e:
-        logging.error(f"Error analyzing drawing: {str(e)}")
-        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
 
 # --- Route for the main webpage (no change) ---
 @app.route('/')
