@@ -678,50 +678,50 @@ def extract_text_advanced(image_path: str, use_roboflow: bool = True) -> dict:
 
 def assess_text_quality(text: str) -> float:
     """
-    Evaluate the quality of extracted text
-    Returns a score between 0 and 1
+    Wrapper for evaluate_text_quality to maintain backward compatibility
     """
-    if not text:
+    return evaluate_text_quality(text)
+    
+    try:
+        score = 0.0
+        text = str(text).upper()  # Normalize text for consistent matching
+        
+        # Check for key technical indicators with weights
+        indicators = {
+            'part_number': (r'\d{7}[A-Z]\d', 0.3),  # Part number is most important
+            'mpaps': (r'MPAPS\s*F[-\s]*\d+', 0.2),
+            'dimensions': (r'(?:ID|OD|LENGTH)\s*[=:]\s*\d+(?:\.\d+)?', 0.2),
+            'pressure': (r'(?:PRESSURE|WP|BP)\s*[=:]\s*\d+(?:\.\d+)?\s*(?:KPAG|KPA|BAR)', 0.1),
+            'grade': (r'(?:GRADE|TYPE)\s*[A-Z0-9]+', 0.1),
+            'material': (r'(?:MATERIAL|MAT\.?)\s*[:=]', 0.1)
+        }
+        
+        # Check each indicator
+        for key, (pattern, weight) in indicators.items():
+            if re.search(pattern, text, re.IGNORECASE):
+                score += weight
+                logger.debug(f"Found {key} indicator in text")
+        
+        # Additional quality metrics
+        words = text.split()
+        if len(words) > 10:  # Reasonable amount of text
+            score += 0.1
+            
+        # Check word quality (most technical terms 3-15 chars)
+        word_lengths = [len(w) for w in words if w.isalnum()]
+        if word_lengths and 3 <= sum(word_lengths) / len(word_lengths) <= 15:
+            score += 0.1
+        
+        # Check for excessive special characters or garbage text
+        special_char_ratio = len(re.findall(r'[^a-zA-Z0-9\s\.,\-]', text)) / (len(text) or 1)
+        if special_char_ratio < 0.3:  # Not too many special characters
+            score += 0.1
+        
+        return min(1.0, score)  # Cap score at 1.0
+        
+    except Exception as e:
+        logger.error(f"Error assessing text quality: {e}")
         return 0.0
-    
-    score = 0.0
-    
-    # Check for key technical indicators
-    indicators = {
-        'part_number': r'\d{7}[A-Z]\d',
-        'mpaps': r'MPAPS\s*F[-\s]*\d+',
-        'dimensions': r'(?:ID|OD|LENGTH)\s*[=:]\s*\d+(?:\.\d+)?',
-        'pressure': r'(?:PRESSURE|WP|BP)\s*[=:]\s*\d+(?:\.\d+)?\s*(?:KPAG|KPA|BAR)',
-        'grade': r'(?:GRADE|TYPE)\s*[A-Z0-9]+',
-        'material': r'(?:MATERIAL|MAT\.?)\s*[:=]'
-    }
-    
-    # Weight for each indicator
-    weights = {
-        'part_number': 0.3,
-        'mpaps': 0.2,
-        'dimensions': 0.2,
-        'pressure': 0.1,
-        'grade': 0.1,
-        'material': 0.1
-    }
-    
-    # Check each indicator
-    for key, pattern in indicators.items():
-        if re.search(pattern, text, re.IGNORECASE):
-            score += weights[key]
-    
-    # Additional quality checks
-    words = text.split()
-    if len(words) > 10:  # Reasonable amount of text
-        score += 0.1
-    
-    # Check for excessive special characters or garbage text
-    special_char_ratio = len(re.findall(r'[^a-zA-Z0-9\s\.,\-]', text)) / (len(text) or 1)
-    if special_char_ratio < 0.3:  # Not too many special characters
-        score += 0.1
-    
-    return min(1.0, score)  # Cap score at 1.0
 
 # --- Load and Clean Material and Reinforcement Database on Startup with Enhanced Debugging ---
 def load_material_database():
@@ -1992,6 +1992,21 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
         return error_output
 
 # --- Text Cleanup Functions ---
+def evaluate_text_quality(text: str) -> float:
+    """
+    Enhanced text quality assessment with weighted metrics.
+    Returns a score between 0.0 and 1.0.
+    """
+    if not text:
+        return 0.0
+        
+    try:
+        metrics = {
+            'length_score': 0.0,
+            'ascii_score': 0.0,
+            'word_score': 0.0,
+            'whitespace_score': 0.0,
+            'special_char_score': 0.0,
             'technical_score': 0.0  # For engineering-specific content
         }
         
@@ -2043,7 +2058,7 @@ def generate_excel_sheet(analysis_results, dimensions, development_length):
         logging.debug(f"Final quality score: {total_score:.2f}")
         
         return min(max(total_score, 0.0), 1.0)
-        
+
     except Exception as e:
         logging.error(f"Error in text quality assessment: {str(e)}", exc_info=True)
         return 0.0
