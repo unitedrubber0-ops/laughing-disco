@@ -106,6 +106,50 @@ def clean_rings_text(rings_text):
 
 
 
+def analyze_drawing_enhanced(image_path):
+    """Enhanced analysis with conditional rings extraction"""
+    try:
+        # First, get preliminary text using OCR
+        with Image.open(image_path) as img:
+            preliminary_text = extract_text_from_image_wrapper(img)
+        
+        # Determine if we should extract rings
+        extract_rings = should_extract_rings(preliminary_text)
+        
+        # Use conditional prompt
+        prompt = get_enhanced_engineering_prompt(preliminary_text)
+        
+        # Process with Gemini
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        image = Image.open(image_path)
+        content = [prompt, image]
+        
+        # Generate content and create analysis result
+        response = model.generate_content(content)
+        analysis_result = {'result': response.text} if response and response.text else None
+        
+        if analysis_result and analysis_result.get('result'):
+            cleaned_text = analysis_result['result'].strip().replace('```json', '').replace('```', '').strip()
+            try:
+                results = json.loads(cleaned_text)
+                
+                # If rings extraction was skipped but we found rings indicators later, extract them
+                if extract_rings and results.get('rings') == 'Not Found':
+                    rings_info = extract_rings_from_text_detailed(preliminary_text)
+                    if rings_info != "Not Found":
+                        results['rings'] = rings_info
+                        logger.info(f"Added rings information: {rings_info}")
+                
+                return results
+                
+            except json.JSONDecodeError as e:
+                logger.error(f"Enhanced analysis failed to parse JSON: {e}")
+                return None
+                
+    except Exception as e:
+        logger.error(f"Enhanced analysis failed: {e}")
+        return None
+
 def process_with_gemini(image_path):
     """
     Process an image with Google's Gemini Vision model.
@@ -119,10 +163,13 @@ def process_with_gemini(image_path):
             "Here is a technical drawing of a tube or hose component. Please analyze it and extract the following information:",
             image
         ]
-        response = model.generate_content(content)
         
-        if response and response.text:
-            cleaned_text = response.text.strip().replace('```json', '').replace('```', '').strip()
+        # Generate content and create analysis result
+        response = model.generate_content(content)
+        analysis_result = {'result': response.text} if response and response.text else None
+        
+        if analysis_result and analysis_result.get('result'):
+            cleaned_text = analysis_result['result'].strip().replace('```json', '').replace('```', '').strip()
             try:
                 results = json.loads(cleaned_text)
                 
@@ -292,6 +339,147 @@ def process_ocr_text(text):
     except Exception as e:
         logger.error(f"Error processing OCR text: {str(e)}")
         return None
+
+# --- Ring Detection and Extraction ---
+def extract_rings_from_text_detailed(text):
+    """Detailed rings extraction only called when rings are likely present"""
+    try:
+        text = clean_text_encoding(text)
+        
+        # More specific patterns for when we know rings exist
+        detailed_patterns = [
+            # Pattern for "RING REINFORCEMENT / STAINLESS WIRE 2MM / 2 PLACES"
+            r'RING\s+REINFORCEMENT\s*/([^/]+?)\s*/\s*(\d+)\s+PLACES?',
+            
+            # Pattern for rings with material and size
+            r'RINGS?[:\s]+([A-Za-z]+)\s+([A-Za-z]+)\s+(\d+(?:\.\d+)?\s*MM?)',
+            
+            # Pattern for rings with ASTM specifications
+            r'RINGS?[:\s]+([^,\n]+?ASTM[^,\n]*(?:TYPE[^,\n]*)?)',
+            
+            # Pattern for steel rings with specifications
+            r'STEEL\s+RINGS?[:\s]*([^\n]+?(?:\d+(?:\.\d+)?\s*MM?[^,\n]*)?)',
+            
+            # General rings specification
+            r'RINGS?[:\s]+([^\n]+?(?:\d+(?:\.\d+)?[^,\n]*)?)',
+        ]
+        
+        best_match = None
+        best_specificity = 0
+        
+        for pattern in detailed_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                # Calculate specificity (more groups = more specific)
+                specificity = len([g for g in match.groups() if g])
+                
+                if specificity > best_specificity:
+                    best_specificity = specificity
+                    rings_text = ' '.join([g for g in match.groups() if g]).strip()
+                    rings_text = re.sub(r'\s+', ' ', rings_text)
+                    rings_text = rings_text.strip(' ,.-/')
+                    
+                    # Filter out generic terms
+                    if rings_text and rings_text not in ['REINFORCEMENT', 'RING', 'RINGS']:
+                        if len(rings_text) > 5:  # Meaningful content
+                            best_match = rings_text
+        
+        if best_match:
+            logger.info(f"Detailed rings extraction found: {best_match}")
+            return best_match
+        else:
+            logger.warning("No detailed rings information found despite indicators")
+            return "Not Found"
+            
+    except Exception as e:
+        logger.error(f"Error in detailed rings extraction: {e}")
+        return "Not Found"
+
+def should_extract_rings(text):
+    """
+    Determine if rings information should be extracted based on keyword presence
+    Returns True if rings are likely present, False otherwise
+    """
+    if not text:
+        return False
+    
+    text_lower = text.lower()
+    
+    # Primary rings indicators
+    primary_indicators = [
+        'ring reinforcement',
+        'steel ring',
+        'wire ring', 
+        'rings:',
+        'ring spec',
+        'ring specification'
+    ]
+    
+    # Secondary indicators (need context)
+    secondary_indicators = [
+        'ring',
+        'rings'
+    ]
+    
+    # Check for strong primary indicators
+    for indicator in primary_indicators:
+        if indicator in text_lower:
+            logger.info(f"Rings extraction triggered by primary indicator: {indicator}")
+            return True
+    
+    # Check for secondary indicators with context
+    secondary_count = sum(1 for indicator in secondary_indicators if indicator in text_lower)
+    if secondary_count >= 2:
+        logger.info(f"Rings extraction triggered by multiple secondary indicators")
+        return True
+    
+    # Check for specific patterns that indicate rings
+    rings_patterns = [
+        r'ring.*\d+.*mm',  # "ring" followed by numbers and "mm"
+        r'ring.*steel',    # "ring" followed by "steel"
+        r'ring.*wire',     # "ring" followed by "wire"
+        r'rings.*astm',    # "rings" followed by "ASTM"
+        r'ring.*reinforcement.*\d+',  # "ring reinforcement" with numbers
+    ]
+    
+    for pattern in rings_patterns:
+        if re.search(pattern, text_lower):
+            logger.info(f"Rings extraction triggered by pattern: {pattern}")
+            return True
+    
+    logger.info("No rings indicators found, skipping rings extraction")
+    return False
+
+# --- Prompt Generation ---
+def get_enhanced_engineering_prompt(extracted_text):
+    """Conditionally include rings in prompt only if keywords are found"""
+    base_prompt = """Analyze this technical engineering drawing and extract the following information as JSON:
+
+REQUIRED FIELDS:
+- part_number: Look for formats like 3718791C1, 3541592C1 (7 digits + C + digit)
+- description: Main title, usually starting with "HOSE," "PIPE," etc.
+- standard: Material specifications like "MPAPS F-6034", "TMS-6034"
+- grade: Look for "GRADE", "TYPE" followed by codes like "H-AN", "1B", "C-AN"
+- dimensions: Extract ID, OD, wall thickness, centerline length
+- material: Primary material specification
+- reinforcement: Reinforcement type if specified"""
+
+    # Check if rings keywords exist in extracted text
+    rings_keywords = ['RING', 'RINGS', 'RING REINFORCEMENT', 'STEEL RING', 'WIRE RING']
+    has_rings = any(keyword.lower() in extracted_text.lower() for keyword in rings_keywords)
+    
+    if has_rings:
+        base_prompt += """
+- rings: Extract detailed rings specification including material, dimensions, and quantity"""
+
+    base_prompt += """
+
+SPECIAL INSTRUCTIONS:
+- Return ONLY valid JSON format
+- Use "Not Found" for missing values
+- Be precise with technical specifications"""
+
+    return base_prompt
 
 # --- Basic Configuration ---
 app = Flask(__name__)
@@ -2315,7 +2503,7 @@ def analyze_drawing(pdf_bytes):
     
     try:
         response = model.generate_content(prompt)
-        cleaned_text = response.text.strip().replace("```json", "").replace("```", "").strip()
+        cleaned_text = analysis_result['result'].strip().replace("```json", "").replace("```", "").strip()
         parsed_data = json.loads(cleaned_text)
         logging.info("Successfully parsed Gemini response into JSON.")
         return parsed_data
@@ -2715,9 +2903,9 @@ Pay special attention to distinguishing primary material specs from reference sp
             model = genai.GenerativeModel('gemini-pro-1.5-vision')
             response = model.generate_content([prompt, full_text])
             
-            if response and response.text:
+            if analysis_result and analysis_result.get('result'):
                 # Clean the response to ensure it's valid JSON
-                cleaned_response = re.sub(r'```json\s*|\s*```', '', response.text.strip())
+                cleaned_response = re.sub(r'```json\s*|\s*```', '', analysis_result['result'].strip())
                 
                 try:
                     # Parse the JSON response
@@ -2734,7 +2922,7 @@ Pay special attention to distinguishing primary material specs from reference sp
                 except json.JSONDecodeError as je:
                     logger.error(f'Failed to parse Gemini response as JSON: {str(je)}')
                     results['error'] = 'Failed to parse analysis results'
-                    print("Raw response:", response.text)  # Debug logging
+                    print("Raw response:", analysis_result['result'])  # Debug logging
             else:
                 logger.warning('Received empty response from Gemini')
                 results['error'] = 'No analysis results received'
@@ -3027,8 +3215,8 @@ def index():
 
 # --- Run the application (no change) ---
 def analyze_image_with_gemini_vision(pdf_bytes):
-    """Process PDF using Gemini Vision API for OCR"""
-    logger.info("Starting Gemini Vision OCR analysis...")
+    """Process PDF using Gemini Vision API with enhanced image optimization"""
+    logger.info("Starting Gemini Vision analysis with optimizations...")
     full_text = ""
     temp_pdf_path = None
 
@@ -3038,38 +3226,35 @@ def analyze_image_with_gemini_vision(pdf_bytes):
             temp_pdf.write(pdf_bytes)
             temp_pdf_path = temp_pdf.name
 
-        # Convert PDF to images
-        page_images = convert_from_path(temp_pdf_path, dpi=150)
-        logger.info(f"Converted PDF to {len(page_images)} images at 150 DPI")
+        # Convert PDF to images with higher DPI
+        page_images = convert_from_path(temp_pdf_path, dpi=200)
+        logger.info(f"Converted PDF to {len(page_images)} images at 200 DPI")
 
-        # Use the working model from gemini_helper
-        model = genai.GenerativeModel('gemini-2.0-flash-exp')
-        logger.info("Using gemini-2.0-flash-exp for vision processing")
+        # Optimize images for Gemini
+        from image_optimization import ensure_minimum_image_quality
+        optimized_images = ensure_minimum_image_quality(page_images)
+        logger.info("Images optimized for Gemini processing")
         
-        for i, page in enumerate(page_images):
-            logger.info(f"Processing page {i+1} with Gemini Vision...")
+        from gemini_analysis import robust_gemini_analysis, get_engineering_drawing_prompt
+        
+        for i, page in enumerate(optimized_images):
+            logger.info(f"Processing optimized page {i+1} with Gemini Vision...")
             
             try:
-                # Convert PIL Image to bytes
+                # Convert optimized PIL Image to bytes
                 img_byte_arr = io.BytesIO()
-                page.save(img_byte_arr, format='PNG')
+                page.save(img_byte_arr, format='PNG', optimize=True)
                 img_data = img_byte_arr.getvalue()
-            
-                # Create content parts
-                content_parts = [
-                    "Extract all text from this engineering drawing with high accuracy. Include: part numbers, dimensions, specifications, materials, grades, standards, and any coordinate data. Return the raw text exactly as it appears in the drawing.",
-                    {
-                        'mime_type': 'image/png',
-                        'data': img_data
-                    }
-                ]
                 
-                # Process with Gemini
-                response = model.generate_content(content_parts)
+                # Use robust analysis with multiple models
+                analysis_result = robust_gemini_analysis(
+                    img_data,
+                    get_engineering_drawing_prompt()
+                )
                 
-                if response and response.text:
-                    full_text += response.text + "\n"
-                    logger.info(f"Page {i+1} processed successfully, extracted {len(response.text)} characters")
+                if analysis_result and analysis_result.get('result'):
+                    full_text += analysis_result['result'] + "\n"
+                    logger.info(f"Page {i+1} processed successfully, extracted {len(analysis_result['result'])} characters")
                 else:
                     logger.warning(f"No text extracted from page {i+1}")
                     
