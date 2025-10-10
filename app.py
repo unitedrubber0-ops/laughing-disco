@@ -152,32 +152,38 @@ def analyze_drawing_enhanced(image_path):
         # Use conditional prompt
         prompt = get_enhanced_engineering_prompt(preliminary_text)
         
-        # Process with Gemini
-        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        # Process with Gemini using robust generation
         image = Image.open(image_path)
         content = [prompt, image]
         
-        # Generate content and create analysis result
-        response = model.generate_content(content)
-        analysis_result = {'result': response.text} if response and response.text else None
-        
-        if analysis_result and analysis_result.get('result'):
-            cleaned_text = analysis_result['result'].strip().replace('```json', '').replace('```', '').strip()
-            try:
-                results = json.loads(cleaned_text)
-                
-                # If rings extraction was skipped but we found rings indicators later, extract them
-                if extract_rings and results.get('rings') == 'Not Found':
-                    rings_info = extract_rings_from_text_detailed(preliminary_text)
-                    if rings_info != "Not Found":
-                        results['rings'] = rings_info
-                        logger.info(f"Added rings information: {rings_info}")
-                
-                return results
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"Enhanced analysis failed to parse JSON: {e}")
-                return None
+        try:
+            # Use robust generation with automatic model selection
+            response = robust_generate_with_models(content)
+            analysis_result = {'result': response.text} if response and response.text else None
+            
+            if analysis_result and analysis_result.get('result'):
+                raw_text = analysis_result['result'].strip()
+                cleaned_text = raw_text.replace('```json', '').replace('```', '').strip()
+                try:
+                    results = json.loads(cleaned_text)
+                    
+                    # If rings extraction was skipped but we found rings indicators later, extract them
+                    if extract_rings and results.get('rings') == 'Not Found':
+                        rings_info = extract_rings_from_text_detailed(preliminary_text)
+                        if rings_info != "Not Found":
+                            results['rings'] = rings_info
+                            logger.info(f"Added rings information: {rings_info}")
+                    
+                    return results
+                    
+                except json.JSONDecodeError as e:
+                    logger.error(f"Enhanced analysis failed to parse JSON: {e}")
+                    logger.error(f"Raw text received: {raw_text}")
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"Gemini model generation failed: {e}")
+            return None
                 
     except Exception as e:
         logger.error(f"Enhanced analysis failed: {e}")
@@ -185,26 +191,30 @@ def analyze_drawing_enhanced(image_path):
 
 def process_with_gemini(image_path):
     """
-    Process an image with Google's Gemini Vision model.
+    Process an image with Google's Gemini Vision model using robust model selection.
     Returns structured data extracted from the image.
     """
     try:
-        # Use the working model
-        model = genai.GenerativeModel('gemini-2.0-flash-exp')
         image = Image.open(image_path)
         content = [
             "Here is a technical drawing of a tube or hose component. Please analyze it and extract the following information:",
             image
         ]
         
-        # Generate content and create analysis result
-        response = model.generate_content(content)
-        analysis_result = {'result': response.text} if response and response.text else None
+        # Use robust generation helper
+        try:
+            response = robust_generate_with_models(content)
+            analysis_result = {'result': response.text} if response and response.text else None
+        except Exception as e:
+            logger.error(f"Robust model generation failed: {e}")
+            return None
         
         if analysis_result and analysis_result.get('result'):
-            cleaned_text = analysis_result['result'].strip().replace('```json', '').replace('```', '').strip()
+            raw_text = analysis_result['result']
+            cleaned_text = raw_text.strip().replace('```json', '').replace('```', '').strip()
             try:
                 results = json.loads(cleaned_text)
+                logger.info("Successfully parsed JSON response")
                 
                 # Post-process standards
                 if 'standard' in results:
@@ -212,6 +222,7 @@ def process_with_gemini(image_path):
                     if isinstance(std, str) and 'F-1' in std and 'F-30' in std:
                         results['standard'] = 'MPAPS F-30'
                         results['standards_note'] = 'Drawing shows both F-1 and F-30 standards'
+                        logger.info("Normalized standard to MPAPS F-30")
                 
                 # Normalize measurements
                 if 'working_pressure' in results and results['working_pressure'] != 'Not Found':
@@ -224,7 +235,9 @@ def process_with_gemini(image_path):
                 
                 return results
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse Gemini response: {e}")
+                logger.error(f"JSON parsing failed: {e}")
+                logger.error(f"Raw text received: {raw_text}")
+                logger.error(f"Cleaned text attempted: {cleaned_text}")
                 return None
     except Exception as e:
         logger.error(f"Error in process_with_gemini: {str(e)}")
@@ -548,51 +561,80 @@ def get_available_models():
 def get_safe_model():
     """Get a model that definitely exists and supports content generation"""
     try:
-        # Get models from API
-        available = get_available_models()
-        if not available:
-            logger.error("No models available from API")
-            return None
+        models = genai.list_models()
+        # Prefer vision-capable / generateContent models
+        candidates = []
+        for m in models:
+            name = getattr(m, "name", None)
+            methods = getattr(m, "supported_generation_methods", []) or []
+            if name and "generateContent" in methods:
+                candidates.append(name)
 
-        # Log available models for debugging
-        logger.info(f"Available models from API: {available}")
+        # Prefer current flash/pro models
+        preferred_order = [
+            "models/gemini-2.5-flash",
+            "models/gemini-flash-latest",
+            "models/gemini-2.5-flash-image",
+            "models/gemini-pro-latest",
+            "models/gemini-2.5-pro-preview-03-25"
+        ]
+        
+        # Keep only those present
+        for pref in preferred_order:
+            if pref in candidates:
+                logger.info(f"Selected preferred model: {pref}")
+                return pref
 
-        # Filter models that support generateContent
-        supported_models = []
-        for model_name in available:
-            try:
-                model = genai.GenerativeModel(model_name)
-                # Check if model has generateContent method
-                if hasattr(model, 'generate_content'):
-                    supported_models.append(model_name)
-            except Exception as e:
-                logger.warning(f"Failed to check model {model_name}: {e}")
+        if candidates:
+            logger.info(f"No preferred model found; using first candidate: {candidates[0]}")
+            return candidates[0]
 
-        if not supported_models:
-            logger.error("No models found that support content generation")
-            return None
-
-        # Return first supported model
-        selected_model = supported_models[0]
-        logger.info(f"Selected model: {selected_model}")
-        return selected_model
+        logger.error("No models supporting generateContent found")
+        return None
 
     except Exception as e:
-        logger.error(f"Error in get_safe_model: {e}")
+        logger.error(f"Error listing/selecting models: {e}", exc_info=True)
+        logger.warning("Available models: %s", [m.name for m in genai.list_models()])
         return None
+
+def robust_generate_with_models(content, model_candidates=None):
+    """Attempt to generate content with multiple model candidates, falling back on failure"""
+    if model_candidates is None:
+        # Get current safe model and any additional candidates
+        safe_model = get_safe_model()
+        if safe_model:
+            model_candidates = [safe_model]
+            # Add backup candidates from list_models
+            try:
+                models = genai.list_models()
+                for m in models:
+                    name = getattr(m, "name", None)
+                    methods = getattr(m, "supported_generation_methods", []) or []
+                    if name and "generateContent" in methods and name not in model_candidates:
+                        model_candidates.append(name)
+            except Exception as e:
+                logger.warning(f"Failed to get additional model candidates: {e}")
+        else:
+            raise RuntimeError("No safe model available")
+
+    last_exc = None
+    for model_name in model_candidates:
+        try:
+            model = genai.GenerativeModel(model_name)
+            resp = model.generate_content(content)
+            if resp and getattr(resp, "text", None):
+                return resp
+        except Exception as e:
+            logger.warning(f"Model {model_name} failed: {e}")
+            try:
+                logger.warning("Available models: %s", [m.name for m in genai.list_models()])
+            except Exception:
+                pass
+            last_exc = e
+            continue
     
-    for model in preferred_models:
-        if model in available:
-            logger.info(f"Selected model: {model}")
-            return model
-    
-    # Fallback to first available model
-    if available:
-        logger.info(f"Using fallback model: {available[0]}")
-        return available[0]
-    
-    logger.error("No available models found")
-    return None
+    # If all fail, raise last exception with context
+    raise last_exc or RuntimeError("All models failed to generate content")
 
 # Gemini API Configuration
 api_key = os.environ.get("GEMINI_API_KEY")
@@ -1205,14 +1247,37 @@ def extract_text_from_pdf_robust(pdf_bytes):
     except Exception as e:
         logger.warning(f"PyMuPDF extraction failed: {e}")
     
-    # Method 2: Convert to images and use Tesseract OCR
+    # Method 2: Convert to images and use Tesseract OCR with enhanced preprocessing
     try:
-        images = convert_from_bytes(pdf_bytes, dpi=200)
+        images = convert_from_bytes(pdf_bytes, dpi=300)  # Increased DPI for better quality
         text = ""
         for i, image in enumerate(images):
-            page_text = extract_text_from_image_wrapper(image)
+            # Enhanced preprocessing
+            img = image.convert("L")  # Convert to grayscale
+            if cv2_available:
+                try:
+                    # Apply CLAHE for better contrast
+                    if cv2 is not None and cv2_available:
+                        img_array = np.array(img)
+                        if len(img_array.shape) == 2:  # Check if grayscale
+                            img = Image.fromarray(cv2.equalizeHist(img_array))
+                        else:
+                            logger.warning("Skipping histogram equalization - image is not grayscale")
+                    else:
+                        logger.warning("OpenCV not available for preprocessing")
+                except Exception as e:
+                    logger.warning(f"OpenCV preprocessing failed: {e}")
+            
+            # Save preprocessed image with high quality
+            with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as temp_img:
+                img.save(temp_img.name, format="PNG", quality=95)
+                page_text = extract_text_from_image_wrapper(img)
+            
             if page_text:
                 text += f"Page {i+1}:\n{page_text}\n\n"
+            
+            # Log extraction results
+            logger.info(f"Page {i+1}: Extracted {len(page_text) if page_text else 0} characters")
         
         if text and len(text.strip()) > 100:
             logger.info(f"Tesseract OCR extracted {len(text)} characters")
@@ -3066,7 +3131,14 @@ def analyze_drawing(pdf_bytes):
         results["error"] = f"Analysis failed: {str(e)}"
         return results
     logging.info("Starting data parsing with Gemini...")
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    
+    # Get appropriate model using robust selection
+    try:
+        model = get_vision_model()
+    except Exception as e:
+        logger.error(f"Failed to get vision model: {e}")
+        results["error"] = "Failed to initialize vision model"
+        return results
     
     # --- UPDATED PROMPT ---
     prompt = f"""
@@ -3484,7 +3556,11 @@ Important: Report numeric values WITHOUT units. Example: for "HOSE ID = 19.05 MM
 For any value not found in drawing, use "Not Found" (not null or empty string).
 Pay special attention to distinguishing primary material specs from reference specs.
 """
-        model = genai.GenerativeModel('gemini-1.5-pro') # Use vision-capable model
+        try:
+            model = get_vision_model()
+        except Exception as e:
+            logger.error(f"Failed to get vision model: {e}")
+            return {'error': 'Failed to initialize vision model'}
         
         prompt = f"""
         Analyze the following text extracted from a technical engineering drawing. Your task is to find three specific pieces of information: the part number, the material standard, and the grade.
@@ -3505,7 +3581,8 @@ Pay special attention to distinguishing primary material specs from reference sp
 
         # --- Step 3: Call Gemini API with vision model ---
         try:
-            model = genai.GenerativeModel('gemini-pro-1.5-vision')
+            model = get_vision_model()
+            # Generate content with the enhanced prompt
             response = model.generate_content([prompt, full_text])
             
             if analysis_result and analysis_result.get('result'):
