@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Document Analysis Agent</title>
+    <style>
+        body { font-family: system-ui; max-width: 800px; margin: 2rem auto; padding: 0 1rem; }
+        .card { border: 1px solid #ccc; border-radius: 4px; padding: 1rem; margin: 1rem 0; }
+        .step { margin: 0.5rem 0; }
+        .step.success { color: green; }
+        .step.error { color: red; }
+        pre { background: #f5f5f5; padding: 0.5rem; border-radius: 4px; overflow-x: auto; }
+        .dropzone { border: 2px dashed #ccc; padding: 2rem; text-align: center; cursor: pointer; }
+        .dropzone.dragover { background: #f0f0f0; border-color: #666; }
+    </style>
+</head>
+<body>
+    <h1>Document Analysis Agent</h1>
+    
+    <div class="card">
+        <h3>Upload PDF & Prompt</h3>
+        <div class="dropzone" id="dropzone">
+            Drop PDF here or click to select
+            <input type="file" id="file" style="display:none" accept="application/pdf">
+        </div>
+        <div style="margin-top: 1rem;">
+            <textarea id="prompt" style="width: 100%; height: 60px;" placeholder="Enter your prompt (e.g., Extract materials and grades from this document)"></textarea>
+        </div>
+        <button onclick="analyze()" style="margin-top: 1rem;">Analyze Document</button>
+    </div>
+
+    <div class="card">
+        <h3>Results</h3>
+        <div id="results"></div>
+    </div>
+
+    <script>
+        // Dropzone handling
+        const dropzone = document.getElementById('dropzone');
+        const fileInput = document.getElementById('file');
+        
+        dropzone.ondragover = (e) => {
+            e.preventDefault();
+            dropzone.classList.add('dragover');
+        };
+        
+        dropzone.ondragleave = () => {
+            dropzone.classList.remove('dragover');
+        };
+        
+        dropzone.ondrop = (e) => {
+            e.preventDefault();
+            dropzone.classList.remove('dragover');
+            if (e.dataTransfer.files[0]) {
+                fileInput.files = e.dataTransfer.files;
+                dropzone.textContent = `Selected: ${e.dataTransfer.files[0].name}`;
+            }
+        };
+        
+        dropzone.onclick = () => fileInput.click();
+        
+        fileInput.onchange = () => {
+            if (fileInput.files[0]) {
+                dropzone.textContent = `Selected: ${fileInput.files[0].name}`;
+            }
+        };
+
+        // Analysis handling
+        async function analyze() {
+            const results = document.getElementById('results');
+            results.innerHTML = '<div>Processing...</div>';
+            
+            const file = fileInput.files[0];
+            const prompt = document.getElementById('prompt').value;
+            
+            if (!file || !prompt) {
+                results.innerHTML = '<div class="step error">Please select a PDF and enter a prompt</div>';
+                return;
+            }
+            
+            const formData = new FormData();
+            formData.append('file', file);
+            formData.append('prompt', prompt);
+            
+            try {
+                const response = await fetch('/api/agent', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                
+                // Display results
+                let html = '<div class="step">Generated Plan:</div>';
+                html += `<pre>${JSON.stringify(data.plan, null, 2)}</pre>`;
+                
+                html += '<div class="step">Execution Steps:</div>';
+                for (const step of data.result.steps) {
+                    html += `
+                        <div class="step ${step.ok ? 'success' : 'error'}">
+                            ${step.tool}: ${step.ok ? 'Success' : 'Failed'}
+                            ${step.output.error ? `(${step.output.error})` : ''}
+                        </div>
+                    `;
+                    
+                    if (step.output.text) {
+                        html += `<pre>Extracted Text:\n${step.output.text}</pre>`;
+                    }
+                    
+                    if (step.output.parsed) {
+                        html += `<pre>Parsed Data:\n${JSON.stringify(step.output.parsed, null, 2)}</pre>`;
+                    }
+                    
+                    if (step.output.matches) {
+                        html += `<pre>DB Matches:\n${JSON.stringify(step.output.matches, null, 2)}</pre>`;
+                    }
+                }
+                
+                results.innerHTML = html;
+                
+            } catch (error) {
+                results.innerHTML = `<div class="step error">Error: ${error.message}</div>`;
+            }
+        }
+    </script>
+</body>
+</html>

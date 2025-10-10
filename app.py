@@ -240,6 +240,105 @@ class PDFSyntaxError(Exception):
 
 # --- Helper Functions ---
 
+def extract_text_from_pdf_memory_safe(pdf_bytes, max_pages=1, dpi=150):
+    """
+    Memory-safe PDF text extraction using pdf2image and OCR.
+    Processes one page at a time and aggressively frees memory.
+    """
+    if not pdf_bytes:
+        return None
+
+    text_parts = []
+    try:
+        # Convert pages one at a time to manage memory
+        images = convert_from_bytes(
+            pdf_bytes,
+            dpi=dpi,
+            first_page=1,
+            last_page=max_pages,
+            fmt='jpg',
+            size=(1700, None),  # reasonable default size
+            grayscale=True
+        )
+
+        for img in images:
+            try:
+                # Free memory between pages
+                gc.collect()
+                
+                # Process page
+                processed = preprocess_for_ocr(img)
+                if isinstance(processed, tuple):
+                    processed, _ = processed
+                
+                # Run OCR and collect text
+                ocr_result = run_tesseract_and_log(processed)
+                if ocr_result and isinstance(ocr_result, dict):
+                    best_text = max(ocr_result.values(), key=len, default="")
+                    text_parts.append(best_text)
+                
+                # Free the processed image
+                del processed
+                gc.collect()
+            
+            except Exception as e:
+                logger.error(f"Error processing PDF page: {e}")
+                continue
+            finally:
+                # Always free the page image
+                del img
+                gc.collect()
+        
+        # Combine all extracted text
+        return "\n".join(text_parts)
+    
+    except Exception as e:
+        logger.error(f"PDF extraction error: {e}")
+        return None
+    finally:
+        gc.collect()
+
+def match_materials_db(parsed_data):
+    """
+    Match extracted materials info against the materials database.
+    Returns DataFrame of matching records or empty list if no matches.
+    
+    parsed_data: dict with 'materials' (list), 'grades' (list), etc.
+    """
+    try:
+        if not isinstance(parsed_data, dict):
+            return []
+        
+        # Get global database DataFrame
+        df = globals().get('material_df')
+        if df is None or not isinstance(df, pd.DataFrame):
+            logger.error("Materials database not properly loaded")
+            return []
+        
+        matches = []
+        materials = parsed_data.get('materials', [])
+        grades = parsed_data.get('grades', [])
+        
+        # Try exact matches first
+        for mat in materials:
+            for grade in grades:
+                mask = (
+                    df['STANDARD'].str.contains(str(mat), case=False, na=False) &
+                    df['GRADE'].str.contains(str(grade), case=False, na=False)
+                )
+                matches.extend(df[mask].to_dict('records'))
+        
+        # If no exact matches, try fuzzy matching on materials
+        if not matches:
+            for mat in materials:
+                mask = df['STANDARD'].str.contains(str(mat), case=False, na=False)
+                matches.extend(df[mask].to_dict('records'))
+        
+        return matches
+    except Exception as e:
+        logger.error(f"Error matching materials: {e}")
+        return []
+
 def safe_extract_text(page, method=None, **kwargs):
     """Safely extract text from a page object"""
     try:
@@ -1064,6 +1163,278 @@ def load_material_database():
     except Exception as e:
         logging.error(f"Unexpected error processing material database: {str(e)}")
         return None, None
+
+# --- BEGIN: Lightweight AI Agent integration (natural-language -> plan -> execute) ---
+# Note: Most imports like json, tempfile, and uuid already exist at top-level
+
+def _safe_llm_plan(prompt, model_name=None, max_tokens=512):
+    """
+    Lightweight wrapper to ask the configured LLM to produce text (ideally JSON).
+    Uses existing `genai` / `PREFERRED_MODEL` objects if available in app.py.
+    """
+    # Lazy imports/guards so this block can be appended safely to any app.py
+    try:
+        model = model_name or globals().get("PREFERRED_MODEL") or "models/gemini-2.5-flash"
+        # Attempt to use `genai.GenerativeModel` if present in this module's globals
+        genai_mod = globals().get("genai")
+        if genai_mod is None:
+            raise RuntimeError("LLM wrapper `genai` not available in globals.")
+
+        resp = genai_mod.GenerativeModel(model).generate_content({
+            "input": [{"role": "user", "content": prompt}],
+            "maxOutputTokens": max_tokens
+        })
+
+        # SDKs expose text differently; try common attributes
+        text = None
+        if hasattr(resp, "output_text"):
+            text = resp.output_text
+        elif hasattr(resp, "text"):
+            text = resp.text
+        else:
+            # Fallback: str()
+            text = str(resp)
+        return text
+    except Exception as e:
+        # Log with existing logger if available; otherwise print
+        lg = globals().get("logger")
+        if lg:
+            lg.exception("LLM planning call failed")
+        else:
+            print("LLM planning call failed:", e)
+        return None
+
+def _parse_json_safe(text):
+    """
+    Try strict json.loads first; then heuristically extract first {...} block.
+    """
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception:
+        # Heuristic: find first JSON object
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            try:
+                return json.loads(text[start:end + 1])
+            except Exception:
+                return None
+        return None
+
+def _ensure_tool(name):
+    """
+    Check whether helper functions referenced by the agent exist.
+    Returns True if present, False otherwise.
+    """
+    return name in globals() and callable(globals()[name])
+
+def run_agent_plan(plan, pdf_bytes=None):
+    """
+    Execute a simple JSON plan produced by the LLM.
+    
+    plan: dict with {"steps":[ {"tool": "<name>", "args": {...}}, ... ] }
+    Supported tools (by name):
+    - "ocr": runs extract_text_from_pdf_memory_safe(pdf_bytes, max_pages=..., dpi=...)
+    - "preprocess_image": runs preprocess_for_ocr on a PIL image (if passed) 
+    - "parse_text": asks LLM to parse given text into structured JSON
+    - "db_match": runs match_materials_db(parsed_json)
+    
+    The function is conservative about memory: it processes pages one-by-one and GC's aggressively.
+    """
+    logger_local = globals().get("logger")
+    results = {"steps": []}
+
+    # Basic validation
+    if not isinstance(plan, dict) or "steps" not in plan:
+        return {"error": "invalid plan", "plan": plan}
+
+    for step in plan.get("steps", []):
+        tool = step.get("tool")
+        args = step.get("args") or {}
+        step_result = {"tool": tool, "args": args, "ok": False, "output": None}
+        try:
+            if tool == "ocr":
+                if not _ensure_tool("extract_text_from_pdf_memory_safe"):
+                    step_result["output"] = {"error": "ocr helper not found"}
+                else:
+                    # allow passing overrides (dpi, max_pages) but the helper is memory-safe
+                    max_pages = int(args.get("max_pages", 1))
+                    text = globals()["extract_text_from_pdf_memory_safe"](pdf_bytes, max_pages=max_pages)
+                    step_result["output"] = {"text": text}
+                    step_result["ok"] = bool(text and len(text.strip()) > 0)
+
+            elif tool == "preprocess_image":
+                # expects 'image' in args (PIL) or 'image_path'
+                if not _ensure_tool("preprocess_for_ocr"):
+                    step_result["output"] = {"error": "preprocess_for_ocr not available"}
+                else:
+                    img = args.get("image")
+                    if img is None and args.get("image_path"):
+                        from PIL import Image
+                        img = Image.open(args["image_path"])
+                    if img is None:
+                        step_result["output"] = {"error": "no image provided"}
+                    else:
+                        processed = globals()["preprocess_for_ocr"](img)
+                        # preprocess_for_ocr may return single PIL or (pre,inv)
+                        step_result["output"] = {"preprocessed": True}
+                        step_result["ok"] = True
+
+            elif tool == "parse_text":
+                # Ask the LLM to parse raw text into structured JSON
+                instruction = args.get("instruction", "Extract materials, grades, and dimensions as JSON.")
+                raw_text = args.get("text")
+                if not raw_text:
+                    # attempt to find OCR output from previous steps
+                    for prior in reversed(results["steps"]):
+                        if prior.get("tool") == "ocr" and prior.get("output", {}).get("text"):
+                            raw_text = prior["output"]["text"]
+                            break
+                if not raw_text:
+                    step_result["output"] = {"error": "no text to parse"}
+                else:
+                    prompt = (
+                        "You are a strict JSON parser. Input text between >>> and <<<.\n"
+                        "Return only JSON with keys: materials (list), grades (list), dimensions (list of {name,value,units}), confidence (0-1).\n\n"
+                        f">>>\n{raw_text}\n<<<\n\nInstruction: {instruction}\n"
+                    )
+                    llm_out = _safe_llm_plan(prompt)
+                    parsed = _parse_json_safe(llm_out)
+                    step_result["output"] = {"parsed": parsed, "raw_llm": llm_out}
+                    step_result["ok"] = parsed is not None
+
+            elif tool == "db_match":
+                # expects parsed JSON either in args or prior parse_text output
+                parsed = args.get("parsed")
+                if parsed is None:
+                    for prior in reversed(results["steps"]):
+                        if prior.get("tool") == "parse_text" and prior.get("output", {}).get("parsed"):
+                            parsed = prior["output"]["parsed"]
+                            break
+                if parsed is None:
+                    step_result["output"] = {"error": "no parsed data to match"}
+                else:
+                    if not _ensure_tool("match_materials_db"):
+                        step_result["output"] = {"error": "match_materials_db not available"}
+                    else:
+                        matches = globals()["match_materials_db"](parsed)
+                        # match_materials_db can return DataFrame or list; try to jsonify-friendly convert
+                        try:
+                            import pandas as pd
+                            if isinstance(matches, pd.DataFrame):
+                                matches = matches.fillna("").to_dict(orient="records")
+                        except Exception:
+                            pass
+                        step_result["output"] = {"matches": matches}
+                        step_result["ok"] = True
+
+            else:
+                step_result["output"] = {"error": f"unknown tool {tool}"}
+
+        except MemoryError as me:
+            if logger_local:
+                logger_local.exception("MemoryError during agent step %s", tool)
+            step_result["ok"] = False
+            step_result["output"] = {"error": "memory"}
+            results["steps"].append(step_result)
+            # short-circuit on MemoryError to avoid crashing the worker
+            return results
+
+        except Exception as e:
+            if logger_local:
+                logger_local.exception("Exception running agent step %s", tool)
+            step_result["ok"] = False
+            step_result["output"] = {"error": str(e)}
+
+        # housekeeping: try to free memory between steps
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
+        results["steps"].append(step_result)
+
+    return results
+
+# Flask endpoint to accept natural language requests and run the agent plan
+try:
+    # Bind only if `app` exists in globals (the main Flask app variable)
+    if "app" in globals():
+        @app.route("/api/agent", methods=["POST"])
+        def api_agent():
+            """
+            Endpoint to accept an instruction and an optional PDF file.
+            Accepts multipart/form-data with fields:
+              - prompt (string)
+              - file (pdf)
+
+            Returns:
+              {
+                "plan": {...},        # JSON plan produced (or fallback)
+                "result": {...}       # execution results per step
+              }
+            """
+            data = {}
+            try:
+                # prefer form (file upload) but allow JSON body
+                if request.content_type and request.content_type.startswith("multipart/form-data"):
+                    prompt = request.form.get("prompt") or request.values.get("prompt")
+                    file = request.files.get("file")
+                else:
+                    payload = request.get_json(silent=True) or {}
+                    prompt = payload.get("prompt")
+                    file = None
+
+                pdf_bytes = file.read() if file else None
+
+                # Ask the LLM to produce a simple plan. If LLM fails, use a small default plan.
+                plan_prompt = (
+                    "You are a planner. Produce a JSON plan object with 'steps' (list). "
+                    "Allowed tools: ['ocr','preprocess_image','parse_text','db_match'].\n"
+                    "Each step must be: {\"tool\":\"...\",\"args\":{...}}.\n"
+                    "If user mentions pages or DPI, include them. Prefer memory-safe operations.\n"
+                    "Return only JSON.\n"
+                    f"User request: {prompt}\n\n"
+                    "Example:\n"
+                    '{"steps":[{"tool":"ocr","args":{"dpi":150,"max_pages":1}},'
+                    '{"tool":"parse_text","args":{"instruction":"extract materials,grades,dimensions"}},'
+                    '{"tool":"db_match","args":{}}]}'
+                )
+
+                plan_text = _safe_llm_plan(plan_prompt)
+                plan = _parse_json_safe(plan_text) or {
+                    "steps": [
+                        {"tool": "ocr", "args": {"dpi": 150, "max_pages": 1}},
+                        {"tool": "parse_text", "args": {"instruction": "extract materials and grades"}},
+                        {"tool": "db_match", "args": {}}
+                    ]
+                }
+
+                # If the parse_text step expects the OCR text inline, we will populate it during execution
+                result = run_agent_plan(plan, pdf_bytes=pdf_bytes)
+
+                return jsonify({"plan": plan, "result": result})
+    else:
+        # If `app` not present, skip binding endpoint
+        print("api_agent not bound: `app` variable not found in globals()")
+
+except Exception as e:
+    # Avoid crashing on import; log if logger present
+    lg = globals().get("logger")
+    if lg:
+        lg.exception("Failed to add /api/agent endpoint: %s", e)
+    else:
+        print("Failed to add /api/agent endpoint:", e)
+
+# --- END: Lightweight AI Agent integration ---
+
+# Add a test page for the agent
+@app.route('/agent-test')
+def agent_test():
+    """Simple test page for the /api/agent endpoint"""
+    return render_template('agent.html')
 
 # Load the material and reinforcement databases
 material_df, reinforcement_df = load_material_database()
