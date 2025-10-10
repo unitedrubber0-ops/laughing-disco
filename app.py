@@ -1387,6 +1387,11 @@ try:
                     prompt = payload.get("prompt")
                     file = None
 
+                if not prompt:
+                    response = jsonify({"error": "No prompt provided"})
+                    response.status_code = 400
+                    return response
+
                 pdf_bytes = file.read() if file else None
 
                 # Ask the LLM to produce a simple plan. If LLM fails, use a small default plan.
@@ -1414,8 +1419,15 @@ try:
 
                 # If the parse_text step expects the OCR text inline, we will populate it during execution
                 result = run_agent_plan(plan, pdf_bytes=pdf_bytes)
+                
+                response = jsonify({"plan": plan, "result": result})
+                return response
 
-                return jsonify({"plan": plan, "result": result})
+            except Exception as e:
+                logger.error(f"Error processing request: {str(e)}")
+                response = jsonify({"error": f"Request processing failed: {str(e)}"})
+                response.status_code = 400
+                return response
     else:
         # If `app` not present, skip binding endpoint
         print("api_agent not bound: `app` variable not found in globals()")
