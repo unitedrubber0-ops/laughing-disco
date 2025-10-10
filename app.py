@@ -12,7 +12,154 @@ import logging
 import tempfile
 import shutil
 import unicodedata
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Union, Any, Tuple
+from PIL import Image
+
+# Try importing optional dependencies
+try:
+    import cv2
+    cv2_available = True
+except ImportError:
+    cv2 = None
+    cv2_available = False
+
+# OCR Debug Configuration
+DEBUG_SAVE_DIR = os.path.join(os.path.dirname(__file__), "ocr_debug")
+os.makedirs(DEBUG_SAVE_DIR, exist_ok=True)
+
+def save_and_log_image_for_debug(img_pil, tag="preocr"):
+    """Save intermediate images for OCR debugging"""
+    fname = f"{tag}_{uuid.uuid4().hex[:8]}.png"
+    p = os.path.join(DEBUG_SAVE_DIR, fname)
+    img_pil.save(p)
+    logger.info(f"Saved debug image: {p}")
+    return p
+
+def run_tesseract_and_log(pil_img):
+    """Run OCR with multiple configurations and log results"""
+    # Save raw image for inspection
+    saved = save_and_log_image_for_debug(pil_img, tag="raw")
+    # run pytesseract with a couple of configs
+    cfgs = ["--psm 6", "--psm 3", "--psm 11"]  # different page segmentation modes
+    results = {}
+    for cfg in cfgs:
+        try:
+            txt = pytesseract.image_to_string(pil_img, lang="eng", config=cfg)
+        except Exception as e:
+            txt = ""
+            logger.exception(f"pytesseract failed with cfg {cfg}: {e}")
+        length = len(txt.strip())
+        logger.info(f"tesseract cfg={cfg} -> chars={length}")
+        # Save the result for quick glance
+        out_file = os.path.join(DEBUG_SAVE_DIR, f"ocr_{uuid.uuid4().hex[:8]}_{cfg.replace(' ', '_')}.txt")
+        with open(out_file, "w", encoding="utf-8") as fh:
+            fh.write(txt)
+        logger.info(f"Saved OCR text: {out_file}")
+        results[cfg] = txt
+    return results
+
+def preprocess_for_ocr(pil_img: Image.Image) -> Tuple[Image.Image, Image.Image]:
+    """Enhanced preprocessing pipeline for OCR.
+    Includes: CLAHE, denoising, adaptive threshold, morphology, and deskew
+
+    Args:
+        pil_img: Input PIL Image
+
+    Returns:
+        Tuple[Image.Image, Image.Image]: Tuple of (normal, inverted) processed images.
+        If processing fails, returns the original image for both.
+    
+    Raises:
+        ValueError: If input is not a PIL Image
+    """
+    # Input validation
+    if not isinstance(pil_img, Image.Image):
+        logger.error("Input must be a PIL Image")
+        raise ValueError("Input must be a PIL Image")
+
+    # Check OpenCV availability
+    if not cv2_available or not cv2:
+        logger.warning("OpenCV not available for preprocessing")
+        return pil_img, pil_img  # Return original and inverted versions
+
+    try:
+        # PIL -> OpenCV
+        img = np.array(pil_img.convert("RGB"))
+        if not hasattr(cv2, 'cvtColor') or not hasattr(cv2, 'COLOR_RGB2GRAY'):
+            logger.error("Required OpenCV functions not available")
+            return pil_img, pil_img
+            
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        
+        # 1) CLAHE equalization
+        if not hasattr(cv2, 'createCLAHE'):
+            logger.error("CLAHE function not available")
+            return pil_img, pil_img
+        
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+        eq = clahe.apply(gray)
+        save_and_log_image_for_debug(Image.fromarray(eq), "after_clahe")
+
+        # 2) Denoise (fast)
+        if not hasattr(cv2, 'fastNlMeansDenoising'):
+            logger.error("Denoising function not available")
+            return pil_img, pil_img
+        
+        den = cv2.fastNlMeansDenoising(eq, None, h=10, templateWindowSize=7, searchWindowSize=21)
+        save_and_log_image_for_debug(Image.fromarray(den), "after_denoise")
+
+        # 3) Adaptive threshold (good for varying lighting)
+        if not all(hasattr(cv2, attr) for attr in ['adaptiveThreshold', 'ADAPTIVE_THRESH_GAUSSIAN_C', 'THRESH_BINARY']):
+            logger.error("Thresholding functions not available")
+            return pil_img, pil_img
+        
+        th = cv2.adaptiveThreshold(den, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                               cv2.THRESH_BINARY, 15, 9)
+        save_and_log_image_for_debug(Image.fromarray(th), "after_threshold")
+
+        # 4) Morphology to close gaps (if characters broken)
+        if not all(hasattr(cv2, attr) for attr in ['getStructuringElement', 'MORPH_RECT', 'morphologyEx', 'MORPH_CLOSE']):
+            logger.error("Morphological operations not available")
+            return pil_img, pil_img
+        
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2,2))
+        morphed = cv2.morphologyEx(th, cv2.MORPH_CLOSE, kernel)
+        save_and_log_image_for_debug(Image.fromarray(morphed), "after_morph")
+
+        # 5) Deskew (estimate angle by moments on the binary image)
+        if all(hasattr(cv2, attr) for attr in ['minAreaRect', 'getRotationMatrix2D', 'warpAffine', 'INTER_CUBIC', 'BORDER_REPLICATE']):
+            coords = np.column_stack(np.where(morphed > 0))
+            if coords.shape[0] > 0:
+                angle = cv2.minAreaRect(coords)[-1]
+                if angle < -45:
+                    angle = -(90 + angle)
+                else:
+                    angle = -angle
+                if abs(angle) > 0.1:  # only rotate if reasonable
+                    (h, w) = morphed.shape[:2]
+                    M = cv2.getRotationMatrix2D((w//2, h//2), angle, 1.0)
+                    morphed = cv2.warpAffine(morphed, M, (w, h),
+                                           flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+                    logger.info(f"Applied deskew angle {angle:.2f}")
+                    save_and_log_image_for_debug(Image.fromarray(morphed), "after_deskew")
+            else:
+                logger.info("No non-zero coords found for deskew")
+        else:
+            logger.warning("Deskew functions not available")
+
+        # Try inverted version for white-on-dark text
+        inv = cv2.bitwise_not(morphed)
+        save_and_log_image_for_debug(Image.fromarray(inv), "inverted")
+
+        # Convert back to PIL for pytesseract (both normal and inverted)
+        pil_out = Image.fromarray(morphed)
+        pil_inv = Image.fromarray(inv)
+        
+        return pil_out, pil_inv
+
+    except Exception as e:
+        logger.error(f"Error during image processing: {e}")
+        return pil_img, pil_img  # Return original image on error
 
 # Third party imports
 import numpy as np
@@ -49,16 +196,17 @@ cv2_available = False
 
 try:
     import cv2
-    if cv2 is not None:
+    if cv2 and hasattr(cv2, 'cvtColor'):  # Check for key OpenCV functions
         cv2_available = True
         logging.info("OpenCV (cv2) initialized successfully")
     else:
-        logging.warning("OpenCV (cv2) imported but not initialized")
+        cv2 = None
+        logging.warning("OpenCV (cv2) imported but required functions not found")
 except ImportError:
     logging.warning("OpenCV (cv2) import failed")
-except Exception:
-    logging.warning("OpenCV (cv2) initialization error")
-    logging.warning("OpenCV (cv2) not available")
+except Exception as e:
+    logging.warning(f"OpenCV (cv2) initialization error: {e}")
+    cv2 = None
 
 # Check OCR dependencies
 tesseract_path = shutil.which("tesseract")
@@ -1179,71 +1327,133 @@ def normalize_for_comparison(text):
 
 # --- PDF Processing Functions ---
 def extract_text_from_pdf_robust(pdf_bytes):
-    """Robust PDF text extraction with multiple fallbacks"""
-    logger.info("Starting robust PDF text extraction...")
-    
-    # Method 1: Try PyMuPDF first
+    """Enhanced PDF text extraction with multiple DPI attempts and preprocessing"""
     try:
-        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
-            text = ""
-            for page in doc:
-                # Handle text extraction uniformly for PyMuPDF versions
-                page_text = ""  # Initialize empty string for this page
-                if isinstance(page, FitzPage):
-                    # Get the text extraction method based on PyMuPDF version
-                    get_text_method = getattr(page, 'get_text', None)
-                    get_text_old = getattr(page, 'getText', None)
-                    
-                    if callable(get_text_method):
-                        extraction_methods = [
-                        ("get_text()", lambda p: p.get_text()),
-                        ("get_text('blocks')", lambda p: p.get_text("blocks")),
-                        ("get_text('words')", lambda p: p.get_text("words")),
-                        ("get_text('text')", lambda p: p.get_text("text")),
-                        ("getText()", lambda p: p.getText()),
-                        ("getText('blocks')", lambda p: p.getText("blocks")),
-                        ("getText('words')", lambda p: p.getText("words")),
-                    ]
-                    
-                    page_text = ""
-                    for method_name, extractor in extraction_methods:
-                        try:
-                            extracted = extractor(page)
-                            if isinstance(extracted, (list, tuple)):
-                                # Handle block/word output formats
-                                if isinstance(extracted[0], (list, tuple)):
-                                    # Blocks format
-                                    extracted = " ".join(block[4] if len(block) > 4 else str(block) for block in extracted)
-                                else:
-                                    # Words format
-                                    extracted = " ".join(str(word) for word in extracted)
-                            
-                            if extracted:
-                                extracted_str = str(extracted).strip()
-                                logger.info(f"Method {method_name} extracted {len(extracted_str)} chars")
-                                if len(extracted_str) > len(page_text):
-                                    page_text = extracted_str
-                                    logger.info(f"Using better result from {method_name} (sample: {extracted_str[:100]})")
-                                    break
-                        except Exception as e:
-                            logger.debug(f"Method {method_name} failed: {str(e)}")
-                            continue
-                    
-                    if not page_text:
-                        logger.warning("All text extraction methods failed for page")
-                else:
-                    logger.warning(f"Unexpected page type: {type(page)}")
-                    page_text = ""
-                
-                # Ensure we're always concatenating strings with proper spacing
-                text = f"{text}\n{page_text}" if text else page_text
+        # Create temp file for processing
+        with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as temp_pdf:
+            temp_pdf.write(pdf_bytes)
+            temp_pdf.flush()
+            pdf_path = temp_pdf.name
             
-            if text:
-                text_len = len(text.strip())
-                logger.info(f"PyMuPDF extracted {text_len} characters")
-                if text_len > 100:
-                    logger.info(f"Text sample: {text[:200]}...")
-                return text
+        logger.info("Starting enhanced PDF text extraction")
+        
+        # Try multiple DPI settings
+        dpi_options = [300, 400]
+        best_text = ""
+        best_dpi = None
+        best_length = 0
+        
+        for dpi in dpi_options:
+            logger.info(f"Attempting conversion at {dpi} DPI")
+            try:
+                # Convert PDF to images with current DPI
+                images = convert_from_path(pdf_path, dpi=dpi)
+                logger.info(f"Successfully converted PDF to {len(images)} images at {dpi} DPI")
+                
+                for i, pil_img in enumerate(images):
+                    logger.info(f"Processing page {i+1} with {dpi} DPI")
+                    
+                    # Save original for reference
+                    saved_orig = save_and_log_image_for_debug(pil_img, f"orig_dpi{dpi}_page{i+1}")
+                    
+                    # Try normal and preprocessed versions
+                    # Get preprocessed versions
+                    try:
+                        normal_img, inverted_img = preprocess_for_ocr(pil_img)
+                        variants = [
+                            ("original", [pil_img]),
+                            ("preprocessed", [normal_img, inverted_img])
+                        ]
+                    except Exception as e:
+                        logger.error(f"Error in preprocessing: {e}")
+                        # If preprocessing fails, only use original image
+                        variants = [("original", [pil_img])]
+                    
+                    for variant_name, variant_imgs in variants:
+                        for img_idx, img in enumerate(variant_imgs):
+                            img_type = "normal" if img_idx == 0 else "inverted"
+                            logger.info(f"Trying {variant_name} {img_type}")
+                            
+                            # Run OCR with multiple configs
+                            ocr_results = run_tesseract_and_log(img)
+                            
+                            # Find best result for this variant
+                            if ocr_results:
+                                best_cfg, text = max(ocr_results.items(), key=lambda t: len(t[1].strip()))
+                                text = text.strip()
+                                length = len(text)
+                                
+                                logger.info(f"{variant_name} {img_type} produced {length} chars with {best_cfg}")
+                                
+                                if length > best_length:
+                                    best_length = length
+                                    best_text = text
+                                    best_dpi = dpi
+                                    logger.info(f"New best result: {length} chars at {dpi} DPI")
+                
+            except Exception as e:
+                logger.error(f"Error processing at {dpi} DPI: {str(e)}")
+                continue
+        
+        if best_text:
+            logger.info(f"Best extraction: {best_length} chars at {best_dpi} DPI")
+            return best_text
+        else:
+            logger.error("All text extraction attempts failed")
+            return None
+        # Text extraction methods
+        get_text_old = getattr(page, 'getText', None)
+        
+        if callable(get_text_method):
+            extraction_methods = [
+                ("get_text()", lambda p: p.get_text()),
+                ("get_text('blocks')", lambda p: p.get_text("blocks")),
+                ("get_text('words')", lambda p: p.get_text("words")),
+                ("get_text('text')", lambda p: p.get_text("text")),
+                ("getText()", lambda p: p.getText()),
+                ("getText('blocks')", lambda p: p.getText("blocks")),
+                ("getText('words')", lambda p: p.getText("words")),
+            ]
+        
+            page_text = ""
+            for method_name, extractor in extraction_methods:
+                try:
+                    extracted = extractor(page)
+                    if isinstance(extracted, (list, tuple)):
+                        # Handle block/word output formats
+                        if isinstance(extracted[0], (list, tuple)):
+                            # Blocks format
+                            extracted = " ".join(block[4] if len(block) > 4 else str(block) for block in extracted)
+                        else:
+                            # Words format
+                            extracted = " ".join(str(word) for word in extracted)
+                    
+                    if extracted:
+                        extracted_str = str(extracted).strip()
+                        logger.info(f"Method {method_name} extracted {len(extracted_str)} chars")
+                        if len(extracted_str) > len(page_text):
+                            page_text = extracted_str
+                            logger.info(f"Using better result from {method_name} (sample: {extracted_str[:100]})")
+                            break
+                except Exception as e:
+                    logger.debug(f"Method {method_name} failed: {str(e)}")
+                    continue
+            
+            if not page_text:
+                logger.warning("All text extraction methods failed for page")
+        else:
+            logger.warning(f"Unexpected page type: {type(page)}")
+            page_text = ""
+        
+        # Ensure we're always concatenating strings with proper spacing
+        text = f"{text}\n{page_text}" if text else page_text
+        
+        if text:
+            text_len = len(text.strip())
+            logger.info(f"PyMuPDF extracted {text_len} characters")
+            if text_len > 100:
+                logger.info(f"Text sample: {text[:200]}...")
+            return text
     except Exception as e:
         logger.warning(f"PyMuPDF extraction failed: {e}")
     
@@ -1284,7 +1494,6 @@ def extract_text_from_pdf_robust(pdf_bytes):
             return text
     except Exception as e:
         logger.warning(f"Tesseract OCR failed: {e}")
-    
     # Method 3: Simple Gemini analysis as last resort
     try:
         model_name = get_safe_model()
