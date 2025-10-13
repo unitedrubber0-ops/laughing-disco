@@ -13,9 +13,11 @@ import numpy as np
 import unicodedata
 import openpyxl
 import openpyxl.utils
-from rings_extraction import RingsExtractor, extract_rings_info, extract_coordinates, polyline_length
+from extraction_utils import (
+    extract_rings_info, extract_coordinates, polyline_length,
+    extract_development_length, snippet_around
+)
 import fitz  # PyMuPDF
-import rings_extraction
 from PIL import Image, ImageFilter
 from excel_output import generate_corrected_excel_sheet
 
@@ -181,11 +183,12 @@ def process_ocr_text(text):
         if part_match:
             result["part_number"] = part_match.group(0)
 
-        # Extract rings using RingsExtractor with fallback patterns
-        result["rings"] = RingsExtractor.extract_rings(text)
+        # Extract rings info with enhanced extraction
+        rings_info = extract_rings_info(text)
+        result["rings"] = rings_info.get('count')
         
-        # If RingsExtractor didn't find anything, try direct pattern matching
-        if result["rings"] == "Not Found":
+        # If no rings found, try direct pattern matching
+        if not result["rings"]:
             rings_patterns = [
                 r'RINGS:\s*([^\n]+?(?:ASTM[^,\n]*)(?:[^,\n]*TYPE[^,\n]*)?)',
                 r'RINGS[:\s]+([^\n]+?ASTM[^,\n]*(?:TYPE[^,\n]*)?)',
@@ -291,7 +294,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- API Key Configuration ---
@@ -2088,9 +2091,9 @@ def analyze_drawing(pdf_bytes):
         # Extract rings and coordinate information
         if "extracted_text" in best_result:
             extracted_text = best_result["extracted_text"]
-            rings_info = rings_extraction.extract_rings_info(extracted_text)
-            coords = rings_extraction.extract_coordinates(extracted_text)
-            dev_length = rings_extraction.polyline_length(coords)
+            rings_info = extract_rings_info(extracted_text)
+            coords = extract_coordinates(extracted_text)
+            dev_length = polyline_length(coords)
 
             # Log the extraction results
             if not rings_info.get('types') and rings_info.get('count') is None:
@@ -3179,7 +3182,53 @@ def extract_text_from_pdf(pdf_bytes):
         
         result = '\n'.join(final_text)
         logger.info(f"Final extracted text length: {len(result)} characters")
-        return result
+        
+        # Enhanced extraction and logging
+        try:
+            rings_info = extract_rings_info(result)
+            coords = extract_coordinates(result)
+            dev_length = polyline_length(coords)
+            explicit_dev = extract_development_length(result)
+
+            # If explicit development length present, prefer that
+            if explicit_dev:
+                dev_val, dev_unit = explicit_dev
+                logging.info(f"Explicit development length found: {dev_val} {dev_unit or ''}")
+            else:
+                if dev_length is not None:
+                    logging.info(f"Computed development length from coords: {dev_length:.3f}")
+                else:
+                    logging.info("No development length computed from coords or explicit text")
+
+            # Look for keywords to show context
+            for kw in ['RING', 'INNER', 'OUTER', 'POINT', 'COORD', 'DEVELOP', 'DEV LENGTH']:
+                snip = snippet_around(result, kw)
+                if snip:
+                    logging.debug(f"Context around '{kw}': {snip!r}")
+
+            # Log concise parse result
+            logging.info(f"Rings parse result: count={rings_info.get('count')}, types={rings_info.get('types')}, raw_matches={rings_info.get('raw_matches')}")
+            logging.info(f"Coords found: {len(coords)} points" if coords else "No coords found")
+
+            # Create extraction metadata
+            extraction_data = {
+                'text': result,
+                'rings_count': rings_info.get('count'),
+                'rings_types': ', '.join(rings_info.get('types') or []),
+                'ring_coords': ';'.join([f"{x:.3f},{y:.3f}" for x,y in coords]) if coords else None,
+                'development_length': round(dev_length, 3) if dev_length is not None else (round(explicit_dev[0], 3) if explicit_dev else None),
+                'development_unit': explicit_dev[1] if explicit_dev else None
+            }
+
+            # If no rings found, log first 400 chars for manual inspection
+            if not rings_info.get('types') and rings_info.get('count') is None:
+                logging.warning("No rings information found in text. First 400 chars of extracted text for inspection: %r", result[:400])
+
+        except Exception as e:
+            logging.exception("Error during rings/coords extraction: %s", e)
+            extraction_data = {'text': result}
+            
+        return extraction_data
         
     except Exception as e:
         logger.error(f"Error in enhanced text extraction: {e}")
