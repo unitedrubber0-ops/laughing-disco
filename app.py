@@ -13,8 +13,9 @@ import numpy as np
 import unicodedata
 import openpyxl
 import openpyxl.utils
+from rings_extraction import RingsExtractor, extract_rings_info, extract_coordinates, polyline_length
 import fitz  # PyMuPDF
-from rings_extraction import RingsExtractor
+import rings_extraction
 from PIL import Image, ImageFilter
 from excel_output import generate_corrected_excel_sheet
 
@@ -2014,6 +2015,12 @@ def analyze_drawing(pdf_bytes):
             "centerline_length": "Not Found"
         },
         "coordinates": [],
+        "rings_info": {
+            "count": None,
+            "types": [],
+            "raw_matches": []
+        },
+        "development_length": None,
         "error": None
     }
     
@@ -2077,6 +2084,29 @@ def analyze_drawing(pdf_bytes):
         
         if "coordinates" in best_result and isinstance(best_result["coordinates"], list):
             results["coordinates"] = best_result["coordinates"]
+            
+        # Extract rings and coordinate information
+        if "extracted_text" in best_result:
+            extracted_text = best_result["extracted_text"]
+            rings_info = rings_extraction.extract_rings_info(extracted_text)
+            coords = rings_extraction.extract_coordinates(extracted_text)
+            dev_length = rings_extraction.polyline_length(coords)
+
+            # Log the extraction results
+            if not rings_info.get('types') and rings_info.get('count') is None:
+                logger.warning("No rings information found in text — examples of nearby text snippet for debugging: %r", extracted_text[:400])
+            else:
+                logger.info("Rings info extracted: %s", rings_info)
+
+            if coords:
+                logger.info(f"Found {len(coords)} ring coordinate points. Development length: {dev_length:.3f}")
+            else:
+                logger.info("No coordinates available for development length calculation")
+
+            # Update results with ring information
+            results["rings_info"] = rings_info
+            results["ring_coordinates"] = coords
+            results["development_length"] = round(dev_length, 3) if dev_length is not None else None
         
         logger.info("Drawing analysis completed successfully")
         return results
