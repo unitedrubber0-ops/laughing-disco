@@ -8,6 +8,7 @@ import gc
 import json
 import logging
 import tempfile
+from material_utils import normalize_standard, normalize_grade, safe_search
 from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
 import numpy as np
 import unicodedata
@@ -377,27 +378,7 @@ def get_reinforcement_from_material(standard, grade, material):
         
         logging.info(f"Reinforcement lookup initiated: Standard='{standard}', Grade='{grade}', Material='{material}'")
         
-        # Enhanced normalization for comparison
-        def normalize_standard(std):
-            std = str(std).upper().strip()
-            # Handle MPAPS F-series variations
-            std = re.sub(r'MPAPS\s*F\s*[-_]?\s*(\d+)', r'MPAPS F-\1', std)
-            std = re.sub(r'\s+', ' ', std).strip()
-            return std
-        
-        def normalize_grade(grd):
-            grd = str(grd).upper().strip()
-            # Handle grade variations (1B, I-B, etc.)
-            grd = re.sub(r'GRADE\s*', '', grd)
-            grd = re.sub(r'TYPE\s*', '', grd)
-            grd = re.sub(r'[_\-\s]', '', grd)
-            # Convert Roman numerals
-            roman_map = {'I': '1', 'II': '2', 'III': '3'}
-            for roman, num in roman_map.items():
-                if grd == roman:
-                    grd = num + 'B'  # Assume B type if not specified
-            return grd
-        
+        # Using imported normalize functions from material_utils
         norm_standard = normalize_standard(clean_standard)
         norm_grade = normalize_grade(clean_grade)
         
@@ -618,16 +599,31 @@ def get_material_from_standard(standard, grade):
     """
     Enhanced material lookup with improved F-series standard matching
     """
+    # Defensive checks
+    if isinstance(standard, dict):
+        logging.warning("get_material_from_standard received 'standard' as dict; attempting to coerce. repr=%r", standard)
+    if isinstance(grade, dict):
+        logging.warning("get_material_from_standard received 'grade' as dict; attempting to coerce. repr=%r", grade)
+
     if material_df is None:
         logging.error("Material database not loaded")
         return "Not Found"
     
-    if standard == "Not Found" or grade == "Not Found":
-        logging.warning("Standard or grade not provided")
+    standard_orig = standard
+    grade_orig = grade
+
+    # coerce to strings safely using helper
+    standard = normalize_standard(standard)
+    grade = normalize_grade(grade)
+
+    if standard == "" or grade == "":
+        logging.warning("Standard or grade not provided or normalization failed")
         return "Not Found"
+
+    logging.debug("Material lookup: normalized standard=%r grade=%r (orig_standard=%r orig_grade=%r)",
+                  standard, grade, standard_orig, grade_orig)
     
     try:
-        # Clean inputs
         clean_standard = clean_text_encoding(str(standard))
         clean_grade = clean_text_encoding(str(grade))
         
@@ -639,27 +635,7 @@ def get_material_from_standard(standard, grade):
             clean_standard = 'MPAPS F-30'
             logging.info(f"Mapping MPAPS F-1 to {clean_standard}")
         
-        # Enhanced normalization for comparison
-        def normalize_standard(std):
-            std = str(std).upper().strip()
-            # Handle MPAPS F-series variations
-            std = re.sub(r'MPAPS\s*F\s*[-_]?\s*(\d+)', r'MPAPS F-\1', std)
-            std = re.sub(r'\s+', ' ', std).strip()
-            return std
-        
-        def normalize_grade(grd):
-            grd = str(grd).upper().strip()
-            # Handle grade variations (1B, I-B, etc.)
-            grd = re.sub(r'GRADE\s*', '', grd)
-            grd = re.sub(r'TYPE\s*', '', grd)
-            grd = re.sub(r'[_\-\s]', '', grd)
-            # Convert Roman numerals
-            roman_map = {'I': '1', 'II': '2', 'III': '3'}
-            for roman, num in roman_map.items():
-                if grd == roman:
-                    grd = num + 'B'  # Assume B type if not specified
-            return grd
-        
+        # Using imported normalize functions from material_utils
         norm_standard = normalize_standard(clean_standard)
         norm_grade = normalize_grade(clean_grade)
         
@@ -792,8 +768,8 @@ def get_material_from_standard(standard, grade):
                 standard_score = 0.8
             else:
                 # Check for F-series standards match
-                std_pattern = re.search(r'F(\d+)', norm_standard)
-                db_pattern = re.search(r'F(\d+)', norm_db_standard)
+                std_pattern = safe_search(r'F(\d+)', norm_standard)
+                db_pattern = safe_search(r'F(\d+)', norm_db_standard)
                 if std_pattern and db_pattern:
                     if std_pattern.group(1) == db_pattern.group(1):
                         standard_score = 0.85
