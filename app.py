@@ -2590,34 +2590,9 @@ def analyze_drawing_with_gemini(pdf_bytes):
         logger.info("=== END OF EXTRACTED TEXT FOR DEBUGGING ===")
         
         # Initial coordinate extraction
-        coords = extract_coordinates_from_text(combined_text)
-        logger.info(f"Initial coordinates extracted: {len(coords)} points")
+        results["coordinates"] = extract_coordinates_from_text(combined_text)
+        logger.info(f"Initial coordinates extracted: {len(results['coordinates'])} points")
 
-        # Validate and normalize coordinates
-        validated_coords = []
-        for p in coords:
-            if not isinstance(p, dict):
-                continue
-            try:
-                x = float(p.get('x'))
-                y = float(p.get('y'))
-                z = float(p.get('z', 0))  # Default z to 0 if not present
-                validated = {'point': p.get('point', ''), 'x': x, 'y': y, 'z': z}
-                # optional radius
-                if 'r' in p and p['r'] not in (None, ''):
-                    try:
-                        validated['r'] = float(p['r'])
-                    except Exception:
-                        pass
-                validated_coords.append(validated)
-            except Exception as e:
-                logger.warning(f"Skipping invalid coordinate point {p}: {str(e)}")
-                continue
-
-        if len(validated_coords) < 2:
-            logger.warning(f"Not enough valid coordinate points to compute development length. Found {len(validated_coords)} valid points.")
-        
-        results["coordinates"] = validated_coords
         # Normalize coordinates robustly and compute development length
         raw_coords = results.get('coordinates', [])
 
@@ -2857,6 +2832,12 @@ def validate_extracted_data(data):
             issues.append("Grade/Type not found in drawing")
         if data.get('material') == 'Not Found':
             issues.append("Material could not be identified from standard and grade")
+            
+        # Don't flag "No Rings" as an issue - it's a valid state
+        rings = data.get('rings', 'No Rings')
+        if rings == "Not Found":
+            issues.append("Rings information extraction failed")
+        # "No Rings" is fine - it means the drawing doesn't have rings
         
         # Validate dimensions with safe access
         dimensions = data.get('dimensions', {})

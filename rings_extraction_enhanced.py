@@ -12,31 +12,30 @@ def extract_rings_from_text_specific(text):
         # Clean the text
         text = clean_text_encoding(text)
         
-        # Specific patterns for this PDF format
-        patterns = [
-            r'(\d+X\s*RING\s*REINFORCEMENT\s*@\d+\s*STAINLESS\s*WIRE)',
-            r'(\d+X\s*@\s*\d+\s*[^\n]*RING)',
-            r'(RING\s*REINFORCEMENT[^@]*@\d+[^.]*)',
-        ]
+        # Use flexible pattern matching based on ring components
+        components = {
+            'quantity': r'(\d+)X?',
+            'ring_type': r'RING(?:\s*REINFORCEMENT)?',
+            'position': r'@\s*(\d+)',
+            'material': r'(?:STAINLESS\s*WIRE|[A-Z]+\s*STEEL)'
+        }
         
-        for pattern in patterns:
-            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-            if match:
-                rings_text = match.group(1).strip()
-                rings_text = re.sub(r'\s+', ' ', rings_text)  # Normalize spaces
-                logger.info(f"Rings found with pattern '{pattern}': {rings_text}")
-                return rings_text
+        # Look for combinations of components
+        combined_pattern = fr"(?:{components['quantity']}\s*{components['ring_type']}.*?{components['position']}|{components['ring_type']}.*?{components['position']})"
         
-        # Fallback: Look for any ring-related text
-        ring_keywords = ['RING REINFORCEMENT', 'STAINLESS WIRE', '2X @']
-        for keyword in ring_keywords:
-            if keyword in text:
-                # Extract context around the keyword
-                start = max(0, text.find(keyword) - 50)
-                end = min(len(text), text.find(keyword) + 100)
-                context = text[start:end]
-                logger.info(f"Found ring keyword '{keyword}' in context: {context}")
-                return f"2X RING REINFORCEMENT @2 STAINLESS WIRE"  # Hardcoded from your PDF
+        match = re.search(combined_pattern, text, re.IGNORECASE | re.DOTALL)
+        if match:
+            # Extract the surrounding context to get full ring information
+            start = max(0, match.start() - 20)
+            end = min(len(text), match.end() + 20)
+            rings_text = text[start:end].strip()
+            rings_text = re.sub(r'\s+', ' ', rings_text)  # Normalize spaces
+            
+            # Clean up the extracted text
+            rings_text = rings_text.split('.')[0]  # Take only the first sentence
+            rings_text = re.sub(r'[^\w\s@\-]', '', rings_text)  # Remove special chars except @-
+            logger.info(f"Found rings information: {rings_text}")
+            return rings_text
         
         logger.warning("No rings information found in text")
         return "Not Found"

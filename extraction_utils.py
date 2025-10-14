@@ -6,19 +6,25 @@ import math
 import logging
 from typing import List, Tuple, Optional
 
-# Patterns for ring counts/types
+# Base components for ring pattern matching
+_RING_COMPONENTS = {
+    'quantity': r'(?:(\d+)\s*(?:X|TIMES|PCS)?)',
+    'type': r'(?:RING(?:S)?|REINFORCEMENT)',
+    'position': r'(?:@\s*\d+|INNER|OUTER|MIDDLE)',
+    'material': r'(?:STAINLESS\s*(?:STEEL|WIRE)|[A-Z]+\s*STEEL|[A-Z]{2,4})'
+}
+
+# Dynamic patterns built from components
 _RING_COUNT_PATTERNS = [
-    r'RINGS?\s*[:=\-]?\s*(\d+)',               # RINGS: 2
-    r'\b(\d+)\s*R(?:INGS?)?\b',                # 2R or 2 RINGS
-    r'NO\.?\s*OF\s*RINGS\s*[:=\-]?\s*(\d+)',   # No. of rings: 2
-    r'RING\s*COUNT\s*[:=\-]?\s*(\d+)',
-    r'RINGS?\s*\(\s*(\d+)\s*\)',               # RINGS(2)
+    fr"{_RING_COMPONENTS['quantity']}\s*{_RING_COMPONENTS['type']}",
+    fr"{_RING_COMPONENTS['type']}\s*{_RING_COMPONENTS['quantity']}",
+    fr"(?:NO\.?\s*OF\s*)?{_RING_COMPONENTS['type']}\s*[:=\-]?\s*{_RING_COMPONENTS['quantity']}"
 ]
 
 _RING_TYPE_PATTERNS = [
-    r'\b(INNER|OUTER|MID|RING|RINGS|SEAL)\s*[:=\-]\s*([A-Z0-9\-\s/]+)',   # INNER: NBR
-    r'\b(RING|RINGS)\b[^\n:]*[:\-\n]\s*([A-Z0-9,\/\-\s]+)',              # RINGS: STEEL, NBR
-    r'\b(INNER|OUTER)[\s:]*([A-Z0-9\-]+)\b'                               # INNER NBR
+    fr"{_RING_COMPONENTS['position']}\s*[:=\-]?\s*{_RING_COMPONENTS['material']}",
+    fr"{_RING_COMPONENTS['type']}\s*[:=\-]?\s*{_RING_COMPONENTS['material']}",
+    fr"{_RING_COMPONENTS['material']}\s*{_RING_COMPONENTS['type']}"
 ]
 
 # Patterns for explicit coordinates and points
