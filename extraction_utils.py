@@ -6,6 +6,9 @@ import math
 import logging
 from typing import List, Tuple, Optional
 
+# Initialize module logger
+logger = logging.getLogger(__name__)
+
 # Base components for ring pattern matching
 _RING_COMPONENTS = {
     'quantity': r'(?:(\d+)\s*(?:X|TIMES|PCS)?)',
