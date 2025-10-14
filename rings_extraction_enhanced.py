@@ -3,8 +3,11 @@ import logging
 import re
 import logging
 
+from material_utils import _coerce_to_text
+
 def clean_text_encoding(text):
     """Clean and normalize text encoding issues."""
+    text = _coerce_to_text(text)
     if not text:
         return ""
     try:

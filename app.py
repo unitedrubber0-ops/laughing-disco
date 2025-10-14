@@ -2590,9 +2590,34 @@ def analyze_drawing_with_gemini(pdf_bytes):
         logger.info("=== END OF EXTRACTED TEXT FOR DEBUGGING ===")
         
         # Initial coordinate extraction
-        results["coordinates"] = extract_coordinates_from_text(combined_text)
-        logger.info(f"Initial coordinates extracted: {len(results['coordinates'])} points")
+        coords = extract_coordinates_from_text(combined_text)
+        logger.info(f"Initial coordinates extracted: {len(coords)} points")
 
+        # Validate and normalize coordinates
+        validated_coords = []
+        for p in coords:
+            if not isinstance(p, dict):
+                continue
+            try:
+                x = float(p.get('x'))
+                y = float(p.get('y'))
+                z = float(p.get('z', 0))  # Default z to 0 if not present
+                validated = {'point': p.get('point', ''), 'x': x, 'y': y, 'z': z}
+                # optional radius
+                if 'r' in p and p['r'] not in (None, ''):
+                    try:
+                        validated['r'] = float(p['r'])
+                    except Exception:
+                        pass
+                validated_coords.append(validated)
+            except Exception as e:
+                logger.warning(f"Skipping invalid coordinate point {p}: {str(e)}")
+                continue
+
+        if len(validated_coords) < 2:
+            logger.warning(f"Not enough valid coordinate points to compute development length. Found {len(validated_coords)} valid points.")
+        
+        results["coordinates"] = validated_coords
         # Normalize coordinates robustly and compute development length
         raw_coords = results.get('coordinates', [])
 

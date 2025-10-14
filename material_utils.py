@@ -2,15 +2,17 @@
 Utilities for material handling and text normalization.
 """
 import re
+import json
 import logging
 import traceback
 import math
+import inspect
 from typing import Any
 
-def safe_material_lookup_entry(standard_raw, grade_raw, material_df, lookup_fn):
+def safe_material_lookup_entry(standard_raw, grade_raw, lookup_fn, material_df=None):
     """
-    Coerce dicts -> strings, log reprs when dicts are passed, then call your lookup.
-    lookup_fn is your existing get_material_from_standard(standard, grade, material_df)
+    Enhanced material lookup with flexible argument handling.
+    Coerces inputs to strings and handles functions that expect different numbers of arguments.
     """
     try:
         # Log types to find leak
@@ -18,20 +20,61 @@ def safe_material_lookup_entry(standard_raw, grade_raw, material_df, lookup_fn):
             logging.warning("safe_material_lookup_entry: dict-like input detected. standard repr=%r grade repr=%r",
                             standard_raw, grade_raw)
 
-        # Coerce with your normalize helpers (safe for dicts)
+        # Coerce with normalize helpers (safe for dicts)
         std = normalize_standard(standard_raw)
         grd = normalize_grade(grade_raw)
 
         logging.debug("safe_material_lookup_entry: normalized standard=%r grade=%r", std, grd)
 
-        # Call lookup_fn with normalized strings
-        return lookup_fn(std, grd, material_df)
+        # Check function signature and call appropriately
+        sig = inspect.signature(lookup_fn)
+        params = len(sig.parameters)
+        logging.debug(f"safe_material_lookup_entry: lookup_fn expects {params} parameters")
+        
+        # Prefer to pass material_df only if the function expects it
+        if params >= 3:
+            return lookup_fn(std, grd, material_df)
+        else:
+            return lookup_fn(std, grd)
 
     except Exception as e:
         logging.error("Error in material lookup: %s\nstandard_raw repr=%r\ngrade_raw repr=%r\nTraceback:\n%s",
                       e, standard_raw, grade_raw, traceback.format_exc())
-        # return a safe fallback so rest of pipeline doesn't crash
-        return "Not Found"
+        # Fallback attempts
+        try:
+            return lookup_fn(std, grd)
+        except TypeError:
+            if material_df is not None:
+                return lookup_fn(std, grd, material_df)
+            return "Not Found"
+
+def _coerce_to_text(value):
+    """
+    Ensure we return a string: if value is a dict with common keys, return the text field.
+    Otherwise JSON-dump or str() it.
+    """
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        # If common field exists, prefer it
+        for k in ('text', 'ocr_text', 'raw_text', 'content', 'STANDARD', 'standard', 'value', 'name'):
+            if k in value:
+                try:
+                    return str(value[k])
+                except Exception:
+                    pass
+        # fallback to compact json
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except Exception:
+            return str(value)
+    # fallback for other non-str types
+    try:
+        return str(value)
+    except Exception:
+        return ""
 
 def _coerce_to_str_maybe_dict(val, keys_to_try=('STANDARD','standard','value','name')):
     """
