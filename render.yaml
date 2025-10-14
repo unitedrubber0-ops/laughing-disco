@@ -1,8 +1,9 @@
-# yaml-language-server: $schema=https://raw.githubusercontent.com/render-oss/render-yaml-schema/main/render.yaml.json
+# Render.com deployment configuration
+# See: https://render.com/docs/yaml-spec for documentation
 
 services:
-  - type: web
-    name: flask-app
+  - type: web  # Specifies a web service (alternatives: static, worker, cron)
+    name: flask-app  # Service name in Render dashboard
     runtime: python
     buildCommand: |
       sudo apt-get update
