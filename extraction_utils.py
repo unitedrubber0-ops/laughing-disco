@@ -159,6 +159,30 @@ def polyline_length(coords: List[Tuple[float, float]]) -> Optional[float]:
         total += math.hypot(x1 - x0, y1 - y0)
     return total
 
+# try to extract a printed diameter or phi symbol
+_DIA_PATTERNS = [
+    r'(?:DIA|DIAMETER|Ø|PHI|⌀)\s*[:=]?\s*([+-]?\d+\.?\d*)\s*(MM|IN|INCH|CM)?',  # e.g., DIA: 85 mm
+    r'\bD\s*[:=]?\s*([+-]?\d+\.?\d*)\s*(MM|IN|CM)?\b'
+]
+
+def extract_diameter(text: str) -> Optional[Tuple[float, Optional[str]]]:
+    """Extract diameter value and optional unit from text using various patterns."""
+    t = (text or "").upper()
+    for p in _DIA_PATTERNS:
+        m = re.search(p, t, flags=re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1))
+                unit = (m.group(2) or '').upper().strip() or None
+                return val, unit
+            except Exception:
+                continue
+    return None
+
+def development_length_from_diameter(dia_value: float, unit: Optional[str] = None) -> float:
+    """Return circumference = pi * D. Unit left as-is."""
+    return math.pi * dia_value
+
 def extract_development_length(text: str) -> Optional[Tuple[float, Optional[str]]]:
     """
     Extract explicit development length value and unit from text.

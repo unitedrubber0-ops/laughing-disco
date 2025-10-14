@@ -3,6 +3,35 @@ Utilities for material handling and text normalization.
 """
 import re
 import logging
+import traceback
+import math
+from typing import Any
+
+def safe_material_lookup_entry(standard_raw, grade_raw, material_df, lookup_fn):
+    """
+    Coerce dicts -> strings, log reprs when dicts are passed, then call your lookup.
+    lookup_fn is your existing get_material_from_standard(standard, grade, material_df)
+    """
+    try:
+        # Log types to find leak
+        if isinstance(standard_raw, dict) or isinstance(grade_raw, dict):
+            logging.warning("safe_material_lookup_entry: dict-like input detected. standard repr=%r grade repr=%r",
+                            standard_raw, grade_raw)
+
+        # Coerce with your normalize helpers (safe for dicts)
+        std = normalize_standard(standard_raw)
+        grd = normalize_grade(grade_raw)
+
+        logging.debug("safe_material_lookup_entry: normalized standard=%r grade=%r", std, grd)
+
+        # Call lookup_fn with normalized strings
+        return lookup_fn(std, grd, material_df)
+
+    except Exception as e:
+        logging.error("Error in material lookup: %s\nstandard_raw repr=%r\ngrade_raw repr=%r\nTraceback:\n%s",
+                      e, standard_raw, grade_raw, traceback.format_exc())
+        # return a safe fallback so rest of pipeline doesn't crash
+        return "Not Found"
 
 def _coerce_to_str_maybe_dict(val, keys_to_try=('STANDARD','standard','value','name')):
     """
@@ -48,10 +77,44 @@ def normalize_grade(grd):
         logging.exception("normalize_grade failed for input: %r; returning empty string", grd)
         return ''
 
-def safe_search(pattern, text, flags=0):
-    """
-    Safely perform regex search on text that might be None or non-string.
-    """
+def _process_extraction_result(val: Any) -> str:
+    """Process an extraction result, converting to string or empty string if None."""
+    if val is None:
+        return ''
+    return str(val)
+
+# Diameter extraction helpers
+_DIA_PATTERNS = [
+    r'(?:DIA|DIAMETER|Ø|PHI|⌀)\s*[:=]?\s*([+-]?\d+\.?\d*)\s*(MM|IN|INCH|CM)?',  # e.g., DIA: 85 mm
+    r'\bD\s*[:=]?\s*([+-]?\d+\.?\d*)\s*(MM|IN|CM)?\b'
+]
+
+def extract_diameter(text: str) -> tuple[float, str | None] | None:
+    """Extract diameter value and unit from text, returning (value, unit) or None."""
+    t = (text or "").upper()
+    for p in _DIA_PATTERNS:
+        m = re.search(p, t, flags=re.IGNORECASE)
+        if m:
+            try:
+                val = float(m.group(1))
+                unit = (m.group(2) or '').upper().strip() or None
+                return val, unit
+            except Exception:
+                continue
+    return None
+
+def development_length_from_diameter(dia_value: float, unit: str | None = None) -> float:
+    """Return circumference = pi * D. Unit left as-is."""
+    return math.pi * dia_value
+
+def are_rings_empty(rings_info: dict) -> bool:
+    """Return True if both types and count are missing/empty."""
+    if rings_info is None:
+        return True
+    return not rings_info.get('types') and not rings_info.get('count')
+
+def safe_search(pattern: str, text: str | None, flags: int = 0) -> re.Match | None:
+    """Safely perform regex search on text that might be None or non-string."""
     try:
         if text is None:
             return None

@@ -1,6 +1,7 @@
 import os
 import re
 import math
+import traceback
 import base64
 import pandas as pd
 import io
@@ -8,7 +9,10 @@ import gc
 import json
 import logging
 import tempfile
-from material_utils import normalize_standard, normalize_grade, safe_search
+from material_utils import (
+    normalize_standard, normalize_grade, safe_search, safe_material_lookup_entry,
+    extract_diameter, development_length_from_diameter, are_rings_empty
+)
 from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
 import numpy as np
 import unicodedata
@@ -2069,23 +2073,50 @@ def analyze_drawing(pdf_bytes):
             extracted_text = best_result["extracted_text"]
             rings_info = extract_rings_info(extracted_text)
             coords = extract_coordinates(extracted_text)
-            dev_length = polyline_length(coords)
+            dev_len = polyline_length(coords)
 
-            # Log the extraction results
-            if not rings_info.get('types') and rings_info.get('count') is None:
-                logger.warning("No rings information found in text — examples of nearby text snippet for debugging: %r", extracted_text[:400])
+            # Handle development length with fallbacks
+            explicit_dev = extract_development_length(extracted_text)
+            if explicit_dev:
+                dev_value, dev_unit = explicit_dev
+                logger.info("Explicit development length found: %s %s", dev_value, dev_unit)
+                dev_len_final = float(dev_value)
+                dev_unit_final = dev_unit
             else:
-                logger.info("Rings info extracted: %s", rings_info)
+                # if not explicit and we don't have 2 coords, try diameter
+                if dev_len is None or len(coords) < 2:
+                    dia = extract_diameter(extracted_text)
+                    if dia:
+                        dia_val, dia_unit = dia
+                        dev_len_final = development_length_from_diameter(dia_val, dia_unit)
+                        dev_unit_final = dia_unit
+                        logger.info("Computed development length from diameter %.3f %s -> %.3f", dia_val, dia_unit or '', dev_len_final)
+                    else:
+                        dev_len_final = dev_len  # may be None
+                        dev_unit_final = None
+                else:
+                    dev_len_final = dev_len
+                    dev_unit_final = None
 
+            # Log extraction results with improved warnings
+            if not rings_info.get('types') and not rings_info.get('count'):
+                logger.warning("No rings information found in text. first 400 chars: %r", extracted_text[:400])
+            else:
+                logger.info("Rings parse result: count=%s, types=%s", rings_info.get('count'), rings_info.get('types'))
+
+            # Log coordinates info
             if coords:
-                logger.info(f"Found {len(coords)} ring coordinate points. Development length: {dev_length:.3f}")
+                if dev_len_final:
+                    logger.info(f"Found {len(coords)} ring coordinate points. Development length: {dev_len_final:.3f}")
+                else:
+                    logger.info(f"Found {len(coords)} ring coordinate points, but could not compute development length")
             else:
                 logger.info("No coordinates available for development length calculation")
 
             # Update results with ring information
             results["rings_info"] = rings_info
             results["ring_coordinates"] = coords
-            results["development_length"] = round(dev_length, 3) if dev_length is not None else None
+            results["development_length"] = round(dev_len_final, 3) if dev_len_final is not None else None
         
         logger.info("Drawing analysis completed successfully")
         return results
@@ -2923,7 +2954,13 @@ def upload_and_analyze():
                 standard = suggested_standard
             
             # Lookup material using the potentially updated standard
-            final_results["material"] = get_material_from_standard(standard, grade)
+            # Debug stack trace for dict inputs
+            if isinstance(standard, dict) or isinstance(grade, dict):
+                logging.warning("Caller stack snippet:\n%s", ''.join(traceback.format_list(traceback.extract_stack(limit=6))))
+
+            final_results["material"] = safe_material_lookup_entry(standard, grade, material_df, get_material_from_standard)
+            if final_results["material"] == "Not Found":
+                logging.warning("Material not found for standard=%r grade=%r", standard, grade)
 
             # --- NEW: lookup reinforcement based on standard, grade and material ---
             try:
@@ -3164,14 +3201,30 @@ def extract_text_from_pdf(pdf_bytes):
             rings_info = extract_rings_info(result)
             coords = extract_coordinates(result)
             dev_length = polyline_length(coords)
-            explicit_dev = extract_development_length(result)
 
-            # If explicit development length present, prefer that
+            explicit_dev = extract_development_length(result)  # you already have this
             if explicit_dev:
-                dev_val, dev_unit = explicit_dev
-                logging.info(f"Explicit development length found: {dev_val} {dev_unit or ''}")
+                dev_value, dev_unit = explicit_dev
+                logging.info("Explicit development length found: %s %s", dev_value, dev_unit)
+                dev_len_final = float(dev_value)
+                dev_unit_final = dev_unit
             else:
-                if dev_length is not None:
+                # if not explicit and we don't have 2 coords, try diameter
+                if dev_length is None or len(coords) < 2:
+                    dia = extract_diameter(result)
+                    if dia:
+                        dia_val, dia_unit = dia
+                        dev_len_final = development_length_from_diameter(dia_val, dia_unit)
+                        dev_unit_final = dia_unit
+                        logging.info("Computed development length from diameter %.3f %s -> %.3f", dia_val, dia_unit or '', dev_len_final)
+                    else:
+                        dev_len_final = dev_length  # may be None
+                        dev_unit_final = None
+                else:
+                    dev_len_final = dev_length
+                    dev_unit_final = None
+                    
+                if dev_len_final is not None:
                     logging.info(f"Computed development length from coords: {dev_length:.3f}")
                 else:
                     logging.info("No development length computed from coords or explicit text")
@@ -3196,9 +3249,16 @@ def extract_text_from_pdf(pdf_bytes):
                 'development_unit': explicit_dev[1] if explicit_dev else None
             }
 
-            # If no rings found, log first 400 chars for manual inspection
-            if not rings_info.get('types') and rings_info.get('count') is None:
+            # Only warn if both types and count are missing
+            if are_rings_empty(rings_info):
                 logging.warning("No rings information found in text. First 400 chars of extracted text for inspection: %r", result[:400])
+            else:
+                logging.info("Rings parse result: count=%s, types=%s", rings_info.get('count'), rings_info.get('types'))
+
+            # Ensure when writing into row that types is converted to string
+            if rings_info:
+                extraction_data['RINGS_TYPES'] = ', '.join(rings_info.get('types') or [])
+                extraction_data['RINGS_COUNT'] = rings_info.get('count')
 
         except Exception as e:
             logging.exception("Error during rings/coords extraction: %s", e)
