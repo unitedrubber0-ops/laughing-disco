@@ -3057,25 +3057,15 @@ def upload_and_analyze():
 
             # In the /api/analyze route, after reinforcement extraction:
 
-# Extract rings information
-        # Enhanced rings extraction
+        # Clean rings extraction - NO MANUAL FALLBACKS
         try:
             rings_text = extract_rings_from_text_specific(extracted_text)
-            
-            if rings_text != "Not Found":
-                final_results["rings"] = rings_text
-                logger.info(f"Rings information extracted: {rings_text}")
-            else:
-                # Fallback based on what we see in the PDF
-                final_results["rings"] = "2X RING REINFORCEMENT @2 STAINLESS WIRE"
-                final_results["rings_note"] = "Manually extracted from PDF pattern"
-                logger.info("Using manual rings extraction from PDF pattern")
+            final_results["rings"] = rings_text
+            logger.info(f"Final rings result: {rings_text}")
                 
         except Exception as e:
             logger.error(f"Error in rings extraction: {e}")
-            final_results["rings"] = "2X RING REINFORCEMENT @2 STAINLESS WIRE"
-            
-        # Validate the extracted data
+            final_results["rings"] = "No Rings"        # Validate the extracted data
         try:
             validation_issues = validate_extracted_data(final_results)
             if validation_issues:

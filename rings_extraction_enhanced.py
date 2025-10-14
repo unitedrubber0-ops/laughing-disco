@@ -7,39 +7,44 @@ from text_utils import _coerce_to_text, clean_text_encoding
 logger = logging.getLogger(__name__)
 
 def extract_rings_from_text_specific(text):
-    """Enhanced rings extraction for specific PDF format"""
+    """Enhanced rings extraction for specific PDF format - returns only explicitly found rings"""
     try:
-        # Clean the text
-        text = clean_text_encoding(text)
-        
-        # Use flexible pattern matching based on ring components
-        components = {
-            'quantity': r'(\d+)X?',
-            'ring_type': r'RING(?:\s*REINFORCEMENT)?',
-            'position': r'@\s*(\d+)',
-            'material': r'(?:STAINLESS\s*WIRE|[A-Z]+\s*STEEL)'
-        }
-        
-        # Look for combinations of components
-        combined_pattern = fr"(?:{components['quantity']}\s*{components['ring_type']}.*?{components['position']}|{components['ring_type']}.*?{components['position']})"
-        
-        match = re.search(combined_pattern, text, re.IGNORECASE | re.DOTALL)
-        if match:
-            # Extract the surrounding context to get full ring information
-            start = max(0, match.start() - 20)
-            end = min(len(text), match.end() + 20)
-            rings_text = text[start:end].strip()
-            rings_text = re.sub(r'\s+', ' ', rings_text)  # Normalize spaces
+        # Clean and normalize input text
+        text = clean_text_encoding(_coerce_to_text(text))
+        if not text:
+            logger.info("No text provided for rings extraction")
+            return "No Rings"
             
-            # Clean up the extracted text
-            rings_text = rings_text.split('.')[0]  # Take only the first sentence
-            rings_text = re.sub(r'[^\w\s@\-]', '', rings_text)  # Remove special chars except @-
-            logger.info(f"Found rings information: {rings_text}")
-            return rings_text
+        # Look for explicit rings mentions - no fallbacks
+        rings_patterns = [
+            r'RINGS?\s*:\s*([^\n.,;]+(?:[.,;]\s*[^\n.,;]+)*)',  # RINGS: followed by text
+            r'RINGS?\s*-\s*([^\n.,;]+(?:[.,;]\s*[^\n.,;]+)*)',  # RINGS - followed by text
+            r'(\d+\s*X\s*RING[^\n.,;]*(?:[.,;]\s*[^\n.,;]+)*)',  # 2X RING etc.
+            r'(RING\s*REINFORCEMENT[^\n.,;]*(?:[.,;]\s*[^\n.,;]+)*)',  # RING REINFORCEMENT
+        ]
         
-        logger.warning("No rings information found in text")
-        return "Not Found"
+        for pattern in rings_patterns:
+            matches = re.finditer(pattern, text, re.IGNORECASE)
+            for match in matches:
+                # Safely extract the text
+                if match.lastindex and match.lastindex >= 1:
+                    rings_text = match.group(1).strip()
+                else:
+                    rings_text = match.group(0).strip()
+                
+                # Clean up the text
+                rings_text = re.sub(r'\s+', ' ', rings_text)
+                rings_text = rings_text.strip(' ,.-;')
+                
+                # Only return if we have meaningful content with "RING" in it
+                if len(rings_text) > 5 and 'RING' in rings_text.upper():
+                    logger.info(f"Found explicit rings information: {rings_text}")
+                    return rings_text
+        
+        # If we get here, no rings were explicitly mentioned
+        logger.info("No explicit rings information found in PDF - returning 'No Rings'")
+        return "No Rings"
         
     except Exception as e:
         logger.error(f"Error extracting rings: {e}")
-        return "Not Found"
+        return "No Rings"

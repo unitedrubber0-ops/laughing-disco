@@ -43,68 +43,75 @@ _DEV_LENGTH_PATTERNS = [
 
 def extract_rings_info(text: str) -> dict:
     """
-    Return {'count': Optional[int], 'types': List[str], 'raw_matches': List[(kind, snippet)]}
-    Will set count = len(types) if count not found and types found.
+    Extract rings information from text.
+    Returns a dict with keys: count, types, raw_matches.
     """
-    t = (text or "").upper()
-    result = {'count': None, 'types': [], 'raw_matches': []}
-
-    # 1) count
-    for pat in _RING_COUNT_PATTERNS:
-        m = re.search(pat, t, flags=re.IGNORECASE)
-        if m:
-            try:
-                result['count'] = int(m.group(1))
-                result['raw_matches'].append(('count', m.group(0)))
-                break
-            except Exception:
-                pass
-
-    # 2) types (explicit lines)
-    for pat in _RING_TYPE_PATTERNS:
-        for m in re.finditer(pat, t, flags=re.IGNORECASE):
-            raw = m.group(0).strip()
-            # Most patterns put label in group1, value in group2
-            if len(m.groups()) >= 2:
-                val = m.group(2).strip()
-            else:
-                val = m.group(1).strip()
-            parts = [p.strip() for p in re.split(r'[,/;]', val) if p.strip()]
-            for p in parts:
-                # normalize spacing, uppercase
-                p_clean = re.sub(r'\s+', ' ', p).strip()
-                if p_clean:
-                    # store as e.g. "INNER:NBR" when possible
-                    label = (m.group(1) or '').strip().upper()
-                    if label and not p_clean.startswith(label):
-                        stored = f"{label}:{p_clean}"
-                    else:
-                        stored = p_clean
-                    result['types'].append(stored)
-            result['raw_matches'].append(('type', raw))
-
-    # 3) tokens like INNER:NBR anywhere
-    token_match = re.findall(r'\b(INNER|OUTER|MID|RING)[\s:\-]*([A-Z0-9\-/]+)\b', t)
-    for tok in token_match:
-        label, v = tok
-        result['types'].append(f"{label}:{v}")
-        result['raw_matches'].append(('token', f"{label}:{v}"))
-
-    # dedupe preserving order
-    seen = set()
-    deduped = []
-    for v in result['types']:
-        if v not in seen:
-            seen.add(v)
-            deduped.append(v)
-    result['types'] = deduped
-
-    # If we didn't find a numeric count but have types, set count = len(types)
-    if result['count'] is None and result['types']:
-        result['count'] = len(result['types'])
-        result['raw_matches'].append(('inferred_count', f"inferred from types ({len(result['types'])})"))
-
-    return result
+    result = {
+        "count": None,
+        "types": [],
+        "raw_matches": []
+    }
+    try:
+        if not text:
+            return result
+            
+        t = str(text).upper()
+        
+        # Look for explicit rings mentions
+        rings_patterns = [
+            r'RINGS?\s*:\s*([^\n.,;]+(?:[.,;]\s*[^\n.,;]+)*)',
+            r'RINGS?\s*-\s*([^\n.,;]+(?:[.,;]\s*[^\n.,;]+)*)',
+            r'(\d+\s*X\s*RING[^\n.,;]*(?:[.,;]\s*[^\n.,;]+)*)',
+            r'(RING\s*REINFORCEMENT[^\n.,;]*(?:[.,;]\s*[^\n.,;]+)*)',
+        ]
+        
+        for pattern in rings_patterns:
+            matches = re.finditer(pattern, t, re.IGNORECASE)
+            for m in matches:
+                # Safely extract matched text
+                if m.lastindex and m.lastindex >= 1:
+                    val = m.group(1).strip()
+                else:
+                    val = m.group(0).strip()
+                
+                if not val:
+                    continue
+                    
+                # Clean the value
+                val = re.sub(r'\s+', ' ', val)
+                val = val.strip(' ,.-;')
+                
+                # Only add if meaningful
+                if len(val) > 3:
+                    result["raw_matches"].append({
+                        "text": val,
+                        "pattern": pattern
+                    })
+                    
+                    # Try to extract count
+                    count_match = re.search(r'(\d+)\s*X', val, re.IGNORECASE)
+                    if count_match:
+                        try:
+                            result["count"] = int(count_match.group(1))
+                        except (ValueError, TypeError):
+                            pass
+                    
+                    # Extract type information
+                    if 'REINFORCEMENT' in val:
+                        result["types"].append('REINFORCEMENT')
+                    if 'STAINLESS' in val:
+                        result["types"].append('STAINLESS')
+                    if 'WIRE' in val:
+                        result["types"].append('WIRE')
+        
+        # Deduplicate types while preserving order
+        result["types"] = list(dict.fromkeys(result["types"]))
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in extract_rings_info: {e}")
+        return result
 
 def extract_coordinates(text: str) -> List[Tuple[float, float]]:
     """
