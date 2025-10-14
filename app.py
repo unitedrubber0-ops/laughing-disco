@@ -2907,6 +2907,9 @@ def validate_extracted_data(data):
 # --- API endpoint for file analysis ---
 @app.route('/api/analyze', methods=['POST'])
 def upload_and_analyze():
+    """
+    Process PDF file using our comprehensive extraction system
+    """
     # 1. Basic request validation
     if 'file' not in request.files:
         logging.warning("No file part in request")
@@ -2917,7 +2920,7 @@ def upload_and_analyze():
         logging.warning("No file selected")
         return jsonify({'error': 'No file selected'}), 400
     
-    # 2. File type validation
+    # 2. File type validation    
     if not file.filename.lower().endswith('.pdf'):
         logging.warning(f"Invalid file type: {file.filename}")
         return jsonify({"error": "Invalid file type. Please upload a PDF file."}), 400
@@ -2925,35 +2928,34 @@ def upload_and_analyze():
     logging.info(f"Processing analysis request for file: {file.filename}")
     
     try:
+        # Get output format preference    
+        output_type = request.form.get('output_type', 'json')
+        if output_type not in ['json', 'excel']:
+            output_type = 'json'
+            
         # 3. Read file contents
         pdf_bytes = file.read()
         if not pdf_bytes:
             logging.warning("Uploaded file is empty")
             return jsonify({"error": "Uploaded file is empty"}), 400
             
-        # 4. Analyze drawing
-        final_results = analyze_drawing(pdf_bytes)
+        # 4. Process PDF using comprehensive extraction
+        from pdf_processor import process_pdf_comprehensive, generate_output
+        results, error = process_pdf_comprehensive(pdf_bytes, output_type)
         
-        # 5. Response validation and return
-        if not isinstance(final_results, dict):
-            logging.error(f"Invalid analyzer response type: {type(final_results)}")
-            return jsonify({"error": "Internal error: Invalid response format"}), 500
+        if error:
+            logging.warning(f"PDF processing error: {error}")
+            return jsonify({"error": error}), 400
             
-        if final_results.get("error"):
-            error_msg = final_results["error"]
-            if "PDF conversion error" in error_msg:
-                logging.warning(f"PDF conversion failed: {error_msg}")
-                return jsonify({"error": "Invalid or corrupted PDF file"}), 400
-            elif "Content policy violation" in error_msg:
-                logging.warning(f"Content policy violation: {error_msg}")
-                return jsonify({"error": "Content policy violation"}), 403
-            else:
-                logging.error(f"Analysis error: {error_msg}")
-                return jsonify({"error": error_msg}), 500
+        # 5. Generate output in requested format
+        output = generate_output(results, output_type)
         
-        # Process the results further
-        part_number = final_results.get('part_number', 'Unknown')
-        logging.info(f"Successfully analyzed drawing for part {part_number}")
+        return jsonify({"success": True, "data": output}), 200
+        
+    except Exception as e:
+        logger.error(f"Error processing request: {str(e)}")
+        logger.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
 
         # Enhanced dimension extraction and merging
         # Get cleaned extracted text from multiple sources
@@ -3079,43 +3081,43 @@ def upload_and_analyze():
         dev_length = 0
         
         # Calculate development length with improved handling
-        try:
-            coordinates = final_results.get("coordinates", [])
-            logger.debug("Raw coordinates (first 6): %s", coordinates[:6] if coordinates else [])
-            
-            if coordinates:
-                try:
-                    dev_length = calculate_development_length_safe(coordinates)
-                    final_results["development_length_mm"] = f"{dev_length:.2f}"
-                    logger.debug("Development length computed: %s", final_results["development_length_mm"])
-                except ValueError as ve:
-                    final_results["development_length_mm"] = "Not Found"
-                    logger.warning(f"Could not compute development length: {ve}")
-                except Exception as exc:
-                    final_results["development_length_mm"] = "Not Found"
-                    logger.exception("Error computing development length: %s", exc)
-            else:
-                final_results["development_length_mm"] = "Not Found"
-                logger.info("No coordinates found for development length calculation")
-        except Exception as e:
-            final_results["development_length_mm"] = "Not Found"
-            logger.exception("Error in development length calculation: %s", e)
+        coordinates = final_results.get("coordinates", [])
+        logger.debug("Raw coordinates (first 6): %s", coordinates[:6] if coordinates else [])
         
-        # Generate Excel report if helper function exists
-        try:
-            if 'generate_excel_sheet' in globals():
+        if coordinates:
+            try:
+                dev_length = calculate_development_length_safe(coordinates)
+                final_results["development_length_mm"] = f"{dev_length:.2f}"
+                logger.debug("Development length computed: %s", final_results["development_length_mm"])
+            except ValueError as ve:
+                final_results["development_length_mm"] = "Not Found"
+                logger.warning(f"Could not compute development length: {ve}")
+            except Exception as exc:
+                final_results["development_length_mm"] = "Not Found"
+                logger.exception("Error computing development length: %s", exc)
+        else:
+            final_results["development_length_mm"] = "Not Found"
+            logger.info("No coordinates found for development length calculation")
+
+        # Try to generate Excel report if functionality exists
+        if 'generate_excel_sheet' in globals():
+            try:
                 excel_file = generate_corrected_excel_sheet(final_results, final_results.get("dimensions", {}), coordinates)
                 excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
                 final_results["excel_data"] = excel_b64
-        except Exception as e:
-            logging.warning(f"Excel generation skipped: {e}")
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Excel generation skipped due to data error: {e}")
+                final_results["excel_error"] = f"Data error: {str(e)}"
+            except IOError as e:
+                logging.warning(f"Excel generation skipped due to IO error: {e}")
+                final_results["excel_error"] = f"IO error: {str(e)}"
+            except Exception as e:
+                logging.warning(f"Excel generation skipped due to unexpected error: {e}")
+                final_results["excel_error"] = f"Unexpected error: {str(e)}"
 
+        # Successful analysis
         logging.info(f"Successfully analyzed drawing: {final_results.get('part_number', 'Unknown')}")
         return jsonify(final_results)
-
-    except Exception as e:
-        logging.error(f"Error analyzing drawing: {str(e)}")
-        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
 
 # --- Route for the main webpage (no change) ---
 @app.route('/')
