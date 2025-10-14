@@ -1,6 +1,21 @@
 import re
 import logging
-from extraction_utils import clean_text_encoding
+import re
+import logging
+
+def clean_text_encoding(text):
+    """Clean and normalize text encoding issues."""
+    if not text:
+        return ""
+    try:
+        # Replace common problematic characters
+        text = re.sub(r'[^\x00-\x7F]+', ' ', text)  # Remove non-ASCII
+        text = re.sub(r'[\r\n]+', '\n', text)       # Normalize newlines
+        text = re.sub(r'\s+', ' ', text)            # Normalize spaces
+        return text.strip()
+    except Exception as e:
+        logger.error(f"Error cleaning text encoding: {e}")
+        return text
 
 logger = logging.getLogger(__name__)
 

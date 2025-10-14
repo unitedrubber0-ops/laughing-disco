@@ -15,6 +15,7 @@ from material_utils import (
 )
 from material_mappings import map_tms_to_mpaps_standard, debug_material_lookup
 from rings_cleaning import clean_rings_text
+from rings_extraction_enhanced import extract_rings_from_text_specific
 from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
 import numpy as np
 import unicodedata
