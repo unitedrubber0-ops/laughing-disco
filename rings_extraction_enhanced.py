@@ -2,23 +2,7 @@ import re
 import logging
 import re
 import logging
-
-from material_utils import _coerce_to_text
-
-def clean_text_encoding(text):
-    """Clean and normalize text encoding issues."""
-    text = _coerce_to_text(text)
-    if not text:
-        return ""
-    try:
-        # Replace common problematic characters
-        text = re.sub(r'[^\x00-\x7F]+', ' ', text)  # Remove non-ASCII
-        text = re.sub(r'[\r\n]+', '\n', text)       # Normalize newlines
-        text = re.sub(r'\s+', ' ', text)            # Normalize spaces
-        return text.strip()
-    except Exception as e:
-        logger.error(f"Error cleaning text encoding: {e}")
-        return text
+from text_utils import _coerce_to_text, clean_text_encoding
 
 logger = logging.getLogger(__name__)
 
