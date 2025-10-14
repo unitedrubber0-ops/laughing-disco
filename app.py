@@ -13,6 +13,8 @@ from material_utils import (
     normalize_standard, normalize_grade, safe_search, safe_material_lookup_entry,
     extract_diameter, development_length_from_diameter, are_rings_empty
 )
+from material_mappings import map_tms_to_mpaps_standard, debug_material_lookup
+from rings_cleaning import clean_rings_text
 from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
 import numpy as np
 import unicodedata
@@ -2071,32 +2073,66 @@ def analyze_drawing(pdf_bytes):
         # Extract rings and coordinate information
         if "extracted_text" in best_result:
             extracted_text = best_result["extracted_text"]
+            # Extract rings information
             rings_info = extract_rings_info(extracted_text)
-            coords = extract_coordinates(extracted_text)
-            dev_len = polyline_length(coords)
+            if rings_info and (rings_info.get('count') or rings_info.get('types')):
+                # Clean and format rings text
+                rings_text = clean_rings_text(rings_info.get('raw_matches', [{}])[0].get('text', '') if rings_info.get('raw_matches') else "")
+                if rings_text and rings_text != "Not Found":
+                    results["rings"] = rings_text
+                    logger.info(f"Rings information extracted: {rings_text}")
+                else:
+                    # Fallback to count and types
+                    rings_count = rings_info.get('count', '')
+                    rings_types = ', '.join(rings_info.get('types', []))
+                    if rings_count or rings_types:
+                        results["rings"] = f"{rings_count} {rings_types}".strip()
+                        logger.info(f"Rings information from count/types: {results['rings']}")
+            else:
+                results["rings"] = "Not Found"
+                logger.info("No rings information found")
 
-            # Handle development length with fallbacks
+            # Extract and calculate development length with fallbacks
+            coords = extract_coordinates(extracted_text)
+            dev_len = polyline_length(coords) if coords and len(coords) >= 2 else None
+            logger.info(f"Available coordinates: {len(coords) if coords else 0} points")
+
+            # Try all development length calculation methods
+            dev_len_final = None
+            dev_unit_final = None
+
+            # 1. Try explicit development length
             explicit_dev = extract_development_length(extracted_text)
             if explicit_dev:
                 dev_value, dev_unit = explicit_dev
                 logger.info("Explicit development length found: %s %s", dev_value, dev_unit)
                 dev_len_final = float(dev_value)
                 dev_unit_final = dev_unit
-            else:
-                # if not explicit and we don't have 2 coords, try diameter
-                if dev_len is None or len(coords) < 2:
-                    dia = extract_diameter(extracted_text)
-                    if dia:
-                        dia_val, dia_unit = dia
-                        dev_len_final = development_length_from_diameter(dia_val, dia_unit)
-                        dev_unit_final = dia_unit
-                        logger.info("Computed development length from diameter %.3f %s -> %.3f", dia_val, dia_unit or '', dev_len_final)
-                    else:
-                        dev_len_final = dev_len  # may be None
-                        dev_unit_final = None
-                else:
-                    dev_len_final = dev_len
-                    dev_unit_final = None
+            
+            # 2. Try coordinate-based length
+            elif dev_len is not None:
+                dev_len_final = dev_len
+                logger.info(f"Development length from coordinates: {dev_len:.3f}")
+            
+            # 3. Try diameter-based calculation
+            elif not dev_len_final:
+                dia = extract_diameter(extracted_text)
+                if dia:
+                    dia_val, dia_unit = dia
+                    dev_len_final = development_length_from_diameter(dia_val, dia_unit)
+                    dev_unit_final = dia_unit
+                    logger.info("Computed development length from diameter %.3f %s -> %.3f", dia_val, dia_unit or '', dev_len_final)
+
+            # 4. Try centerline length as last resort
+            if not dev_len_final:
+                # This assumes you have a way to get centerline length
+                centerline = results.get("dimensions", {}).get("centerline_length")
+                if centerline and centerline != "Not Found":
+                    try:
+                        dev_len_final = float(centerline)
+                        logger.info(f"Using centerline length as development length: {centerline}")
+                    except (ValueError, TypeError):
+                        pass
 
             # Log extraction results with improved warnings
             if not rings_info.get('types') and not rings_info.get('count'):
@@ -2953,14 +2989,30 @@ def upload_and_analyze():
                 final_results['remark'] = remark
                 standard = suggested_standard
             
-            # Lookup material using the potentially updated standard
-            # Debug stack trace for dict inputs
-            if isinstance(standard, dict) or isinstance(grade, dict):
-                logging.warning("Caller stack snippet:\n%s", ''.join(traceback.format_list(traceback.extract_stack(limit=6))))
+            # Debug and fix data types
+            standard, grade = debug_material_lookup(standard, grade)
+            
+            # Before material lookup, try mapping standards
+            original_standard = standard
+            standard = map_tms_to_mpaps_standard(standard)
+            if original_standard != standard:
+                final_results["original_standard"] = original_standard
+                final_results["mapped_standard"] = standard
+                logger.info(f"Mapped standard from {original_standard} to {standard}")
 
+            # Lookup material using the potentially updated standard
             final_results["material"] = safe_material_lookup_entry(standard, grade, material_df, get_material_from_standard)
+            
+            # If material still not found, try with standardization fixes
             if final_results["material"] == "Not Found":
-                logging.warning("Material not found for standard=%r grade=%r", standard, grade)
+                logger.warning("Material not found for standard=%r grade=%r", standard, grade)
+                # Try common variations or fixes
+                standard_str = str(standard) if standard is not None else ""
+                if "-" in standard_str:
+                    no_dash = standard_str.replace("-", "")
+                    final_results["material"] = safe_material_lookup_entry(no_dash, grade, material_df, get_material_from_standard)
+                    if final_results["material"] != "Not Found":
+                        logger.info(f"Found material after removing dashes: {no_dash}")
 
             # --- NEW: lookup reinforcement based on standard, grade and material ---
             try:
