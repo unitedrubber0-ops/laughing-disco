@@ -9,6 +9,7 @@ import gc
 import json
 import logging
 import tempfile
+from pdf_processor import process_pdf_comprehensive, generate_output
 from material_utils import (
     normalize_standard, normalize_grade, safe_search, safe_material_lookup_entry,
     extract_diameter, development_length_from_diameter, are_rings_empty
@@ -2940,7 +2941,6 @@ def upload_and_analyze():
             return jsonify({"error": "Uploaded file is empty"}), 400
             
         # 4. Process PDF using comprehensive extraction
-        from pdf_processor import process_pdf_comprehensive, generate_output
         results, error = process_pdf_comprehensive(pdf_bytes, output_type)
         
         if error:
