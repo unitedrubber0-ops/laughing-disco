@@ -1,10 +1,9 @@
-# Use Python 3.11 slim image as the base
 FROM python:3.11-slim
 
-# Set working directory in the container
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies including Poppler and Tesseract
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     poppler-utils \
     tesseract-ocr \
@@ -13,30 +12,29 @@ RUN apt-get update && apt-get install -y \
     pkg-config \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements file and material database
-COPY requirements.txt .
+# Copy Python files first to check for their existence
+COPY *.py ./
+COPY requirements.txt ./
 COPY ["MATERIAL WITH STANDARD.xlsx", "./"]
+
+# List files to verify
+RUN echo "Verifying Python files:" && \
+    ls -la *.py && \
+    echo "Python files verified."
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application
-COPY . .
-
-# Verify key files are present
-RUN ls -la /app/pdf_processor.py && \
-    ls -la /app/material_utils.py && \
-    ls -la /app/gemini_helper.py
-
-# Add the application directory to Python path
-ENV PYTHONPATH=/app
+# Copy remaining application files
+COPY templates ./templates/
+COPY static ./static/
 
 # Set environment variables
+ENV PYTHONPATH=/app
 ENV FLASK_APP=app.py
-ENV FLASK_ENV=production
 
-# Expose the port the app runs on
+# Expose port
 EXPOSE 10000
 
-# Command to run the application
+# Run the application
 CMD ["gunicorn", "--bind", "0.0.0.0:10000", "app:app"]
