@@ -23,10 +23,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Create startup script
 RUN echo '#!/bin/bash\n\
-echo "Running debug script..."\n\
-./debug.sh\n\
+echo "=== Environment Debug Info ==="\n\
+pwd\n\
+echo "Directory contents:"\n\
+ls -la\n\
+echo "Python path:"\n\
+python -c "import sys; print(sys.path)"\n\
 echo "Starting application..."\n\
-exec gunicorn --bind 0.0.0.0:10000 app:app' > /app/start.sh && \
+exec gunicorn --bind 0.0.0.0:10000 wsgi:app --log-level debug' > /app/start.sh && \
     chmod +x /app/start.sh
 
 # Set environment variables
