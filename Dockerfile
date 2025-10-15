@@ -23,6 +23,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application
 COPY . .
 
+# Verify key files are present
+RUN ls -la /app/pdf_processor.py && \
+    ls -la /app/material_utils.py && \
+    ls -la /app/gemini_helper.py
+
+# Add the application directory to Python path
+ENV PYTHONPATH=/app
+
 # Set environment variables
 ENV FLASK_APP=app.py
 ENV FLASK_ENV=production
