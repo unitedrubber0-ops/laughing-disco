@@ -24,13 +24,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Create startup script
 RUN echo '#!/bin/bash\n\
 echo "=== Environment Debug Info ==="\n\
-pwd\n\
+cd /app\n\
+echo "Current directory: $(pwd)"\n\
 echo "Directory contents:"\n\
-ls -la\n\
+ls -la /app\n\
+echo "Python files in /app:"\n\
+find /app -name "*.py" -type f\n\
 echo "Python path:"\n\
-python -c "import sys; print(sys.path)"\n\
+PYTHONPATH=/app python -c "import sys; print(\\"\\n\\".join(sys.path))"\n\
+echo "Trying to import pdf_processor:"\n\
+PYTHONPATH=/app python -c "import pdf_processor; print(f\\"Found pdf_processor at: {pdf_processor.__file__}\\")" || echo "Import failed"\n\
 echo "Starting application..."\n\
-exec gunicorn --bind 0.0.0.0:10000 wsgi:app --log-level debug' > /app/start.sh && \
+export PYTHONPATH=/app:${PYTHONPATH}\n\
+exec gunicorn --bind 0.0.0.0:10000 wsgi:app --log-level debug --preload' > /app/start.sh && \
     chmod +x /app/start.sh
 
 # Set environment variables
