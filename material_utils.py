@@ -97,6 +97,81 @@ def normalize_grade(grd):
         logging.exception("normalize_grade failed for input: %r; returning empty string", grd)
         return ''
 
+# Mapping derived from ASTM D2000 Table X1.1 (Table of "Polymers Most Often Used").
+# Source: ASTM D2000 (uploaded PDFs). See file citations in the chat.
+_D2000_MATERIAL_TO_POLYMER = {
+    "AA": "Natural rubber / reclaimed rubber / SBR / butyl / EP (polybutadiene / polyisoprene)",
+    "AK": "Polysulfides",
+    "BA": "Ethylene propylene (EPDM) / high-temperature SBR / butyl",
+    "BC": "Chloroprene polymers (Neoprene)",
+    "BE": "Chloroprene polymers (Neoprene)",
+    "BF": "Nitrile rubber (NBR) polymers",
+    "BG": "NBR polymers and urethanes",
+    "BK": "NBR",
+    "CA": "Ethylene propylene (EPDM)",
+    "CE": "Chlorosulfonated polyethylene (Hypalon)",
+    "CH": "NBR and epichlorohydrin polymers",
+    "DA": "Ethylene propylene polymers",
+    "DE": "CM / CSM (chlorosulfonated / chlorinated polyethylenes)",
+    "DF": "Polyacrylic (butyl-acrylate type)",
+    "DH": "Polyacrylic polymers / HNBR",
+    "EE": "AEM (ethylene acrylic elastomers)",
+    "EH": "ACM (polyacrylate)",
+    "EK": "FZ (fluoro-elastomer family; see standard)",
+    "FC": "Silicones (high temperature/high strength)",
+    "FE": "Silicones",
+    "FK": "Fluorinated silicones",
+    "GE": "Silicones",
+    "HK": "Fluorinated elastomers (Viton / Fluorel / similar)",
+    "KK": "Perfluoroelastomers",
+}
+
+# Build an ordered list of keys (longer keys first is safe but keys here are 2 letters).
+_D2000_KEYS = sorted(_D2000_MATERIAL_TO_POLYMER.keys(), key=lambda k: -len(k))
+
+def _find_designation_in_text(text):
+    """
+    Return the first material designation key found in `text` (e.g. 'BC', 'HK'), or None.
+    The search is case-insensitive and tolerant of compact forms like 'M2BC507' or '4CA720'.
+    """
+    if not text:
+        return None
+    t = text.upper()
+    for key in _D2000_KEYS:
+        # ensure key isn't surrounded by letters (but digits or other chars are fine).
+        # (?<![A-Z]) asserts previous char is NOT an ASCII letter.
+        # (?![A-Z]) asserts next char is NOT an ASCII letter.
+        pattern = rf"(?<![A-Z]){re.escape(key)}(?![A-Z])"
+        if re.search(pattern, t):
+            return key
+    return None
+
+def detect_d2000_polymer(callout_text):
+    """
+    Given a string containing an ASTM D2000 callout (or drawing text),
+    return a tuple (designation, polymer_string). If nothing found, (None, None).
+    Example input: "ASTM D2000 M2BC 507 A14 EO34" -> ('BC', 'Chloroprene polymers (Neoprene)')
+    """
+    try:
+        if not callout_text or not isinstance(callout_text, str):
+            return None, None
+        # quick normalization
+        s = callout_text.strip()
+        key = _find_designation_in_text(s)
+        if not key:
+            # As a fallback, try to split tokens and match tokens like "CA" or "M2BC"
+            tokens = re.split(r"[\s,;/]+", s.upper())
+            for tok in tokens:
+                # try to find any key inside token (use direct substring)
+                for k in _D2000_KEYS:
+                    if k in tok:
+                        return k, _D2000_MATERIAL_TO_POLYMER.get(k)
+            return None, None
+        return key, _D2000_MATERIAL_TO_POLYMER.get(key)
+    except Exception:
+        logging.exception("Error in detect_d2000_polymer")
+        return None, None
+
 def _process_extraction_result(val: Any) -> str:
     """Process an extraction result, converting to string or empty string if None."""
     if val is None:
