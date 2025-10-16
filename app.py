@@ -10,17 +10,37 @@ import json
 import logging
 import tempfile
 import importlib
+from typing import Any, Dict, Optional, Tuple, Union, Callable, TypeVar, Literal, cast
+
+# Type definitions for PDF processing functions
+PDFResult = Dict[str, Any]
+PDFError = Optional[str]
+ProcessPDFFunction = Callable[[bytes, str], Tuple[Optional[PDFResult], Optional[str]]]
+GenerateOutputFunction = Callable[[PDFResult, str], Any]
 
 # ---- defensive pdf_processor import ----
 PDF_PROCESSOR_AVAILABLE = False
-process_pdf_comprehensive = None
-generate_output = None
+process_pdf_comprehensive: ProcessPDFFunction
+generate_output: GenerateOutputFunction
+
+def default_pdf_processor(pdf_bytes: bytes, output_type: str = 'json') -> Tuple[Optional[PDFResult], Optional[str]]:
+    return {}, "PDF processing not available"
+
+def default_output_generator(results: PDFResult, output_type: str = 'json') -> Any:
+    return results
+
+# Initialize with defaults
+process_pdf_comprehensive = default_pdf_processor
+generate_output = default_output_generator
 
 try:
     pdf_processor = importlib.import_module("pdf_processor")
-    process_pdf_comprehensive = getattr(pdf_processor, "process_pdf_comprehensive", None)
-    generate_output = getattr(pdf_processor, "generate_output", None)
-    if callable(process_pdf_comprehensive) and callable(generate_output):
+    pdf_func = getattr(pdf_processor, "process_pdf_comprehensive", None)
+    out_func = getattr(pdf_processor, "generate_output", None)
+    
+    if callable(pdf_func) and callable(out_func):
+        process_pdf_comprehensive = cast(ProcessPDFFunction, pdf_func)
+        generate_output = cast(GenerateOutputFunction, out_func)
         PDF_PROCESSOR_AVAILABLE = True
         logging.info("pdf_processor module loaded successfully")
     else:
@@ -29,15 +49,18 @@ except Exception as exc:
     logging.warning(f"pdf_processor module not available: {exc}; will use internal fallbacks")
 
 # module-level fallbacks (safe and available to any function)
-def _fallback_process_pdf_comprehensive(pdf_bytes, output_type='json'):
+def _fallback_process_pdf_comprehensive(pdf_bytes: bytes, output_type: str = 'json') -> Tuple[Optional[PDFResult], Optional[str]]:
     try:
         # late import or call existing helper to avoid circular import problems
-        return analyze_drawing(pdf_bytes), None
+        result = analyze_drawing(pdf_bytes)
+        if isinstance(result, dict):
+            return result, None
+        return None, "Invalid analysis result"
     except Exception as e:
         logging.exception("Fallback process_pdf_comprehensive failed")
         return None, str(e)
 
-def _fallback_generate_output(results, output_type='json'):
+def _fallback_generate_output(results: PDFResult, output_type: str = 'json') -> Any:
     try:
         if output_type == 'excel' and 'generate_excel_sheet' in globals():
             return generate_excel_sheet(results, results.get('dimensions', {}), results.get('development_length'))
@@ -54,10 +77,8 @@ if not PDF_PROCESSOR_AVAILABLE:
 # Final defensive check - ensure we have callable functions
 if not callable(process_pdf_comprehensive) or not callable(generate_output):
     logging.error("PDF processing functions not properly initialized")
-    def process_pdf_comprehensive(pdf_bytes, output_type='json'):
-        return {}, "PDF processing not available"
-    def generate_output(results, output_type='json'):
-        return results
+    process_pdf_comprehensive = default_pdf_processor
+    generate_output = default_output_generator
     process_pdf_comprehensive = _fallback_process_pdf_comprehensive
     generate_output = _fallback_generate_output
 
@@ -3014,6 +3035,11 @@ def upload_and_analyze():
                 return jsonify({"error": "Invalid processing results"}), 500
                 
             output = generate_output(results, output_type)
+            return jsonify({"success": True, "data": output}), 200
+            
+        except Exception as e:
+            logging.exception("Error processing PDF")
+            return jsonify({"error": str(e)}), 500
         
         return jsonify({"success": True, "data": output}), 200
         
