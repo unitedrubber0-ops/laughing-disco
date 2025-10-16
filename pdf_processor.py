@@ -8,10 +8,23 @@ Drop into your project root so `import pdf_processor` succeeds.
 import io
 import json
 import logging
+from typing import Dict, Any, Optional, Tuple, Union, List, cast
+import fitz  # PyMuPDF
+from fitz import Document
 
-def _extract_text_with_pymupdf(pdf_bytes):
+# Configure logging
+logger = logging.getLogger(__name__)
+
+# Import functions from other modules
+from gemini_helper import process_with_vision_model
+# Temporarily mock extract_all_fields_from_text until proper implementation
+def extract_all_fields_from_text(text: str, source: str = "") -> Dict[str, Any]:
+    """Temporary mock function for field extraction"""
+    return {"text": text, "source": source}
+
+def _extract_text_with_pymupdf(pdf_bytes: bytes) -> Optional[Dict[str, Union[int, List[str], str]]]:
     try:
-        import fitz  # PyMuPDF
+        from fitz import Document, Page
     except Exception:
         logging.warning("PyMuPDF not available; falling back to naive text extract")
         return None
@@ -20,17 +33,19 @@ def _extract_text_with_pymupdf(pdf_bytes):
         doc = fitz.open(stream=pdf_bytes, filetype="pdf")
         pages = []
         for p in doc:
-            pages.append(p.get_text())
+            # Extract text using textpage to ensure compatibility
+            textpage = p.get_textpage()
+            pages.append(textpage.extractText())
         return {"page_count": doc.page_count, "pages": pages, "text": "\n".join(pages)}
     except Exception as e:
         logging.exception("PyMuPDF extraction failed")
         return None
 
-def _naive_text_extract(pdf_bytes):
+def _naive_text_extract(pdf_bytes: bytes) -> Dict[str, Optional[Union[int, List[str], str]]]:
     # Very small fallback: return raw bytes length and empty text
     return {"page_count": None, "pages": [], "text": ""}
 
-def process_pdf_comprehensive(pdf_bytes, output_type='json'):
+def process_pdf_comprehensive(pdf_bytes: bytes, output_type: str = 'json') -> Tuple[Dict[str, Any], str]:
     """
     Process PDF data using a comprehensive approach that combines text extraction,
     OCR, and field parsing.
@@ -53,7 +68,8 @@ def process_pdf_comprehensive(pdf_bytes, output_type='json'):
         text_content = ""
         for page_num in range(doc.page_count):
             page = doc[page_num]  # Get page
-            text = page.get_textpage().extractText()  # Use native method
+            textpage = page.get_textpage()
+            text = textpage.extractText()  # Extract text from textpage
             text_content += text
             
         # If we got meaningful text, process it
@@ -103,7 +119,7 @@ def process_pdf_comprehensive(pdf_bytes, output_type='json'):
         if 'doc' in locals():
             doc.close()
             
-def generate_output(data: Dict[str, Any], output_type: str = "json") -> Any:
+def generate_output(data: Dict[str, Any], output_type: str = "json") -> Dict[str, Any]:
     """
     Generate output in requested format
     """
