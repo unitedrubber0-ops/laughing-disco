@@ -1,9 +1,0 @@
-.git
-.gitignore
-README.md
-.env
-*.pyc
-__pycache__
-*.log
-.DS_Store
-.venv*
