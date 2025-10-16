@@ -9,7 +9,25 @@ import gc
 import json
 import logging
 import tempfile
-from pdf_processor import process_pdf_comprehensive, generate_output
+import importlib
+
+# ---- defensive pdf_processor import ----
+PDF_PROCESSOR_AVAILABLE = False
+process_pdf_comprehensive = None
+generate_output = None
+
+try:
+    pdf_processor = importlib.import_module("pdf_processor")
+    process_pdf_comprehensive = getattr(pdf_processor, "process_pdf_comprehensive", None)
+    generate_output = getattr(pdf_processor, "generate_output", None)
+    if callable(process_pdf_comprehensive) and callable(generate_output):
+        PDF_PROCESSOR_AVAILABLE = True
+        logging.info("pdf_processor module loaded successfully")
+    else:
+        logging.warning("pdf_processor module loaded but required functions missing; will use internal fallbacks")
+except Exception as exc:
+    logging.warning(f"pdf_processor module not available: {exc}; will use internal fallbacks")
+
 from material_utils import (
     normalize_standard, normalize_grade, safe_search, safe_material_lookup_entry,
     extract_diameter, development_length_from_diameter, are_rings_empty
@@ -2929,6 +2947,35 @@ def upload_and_analyze():
     logging.info(f"Processing analysis request for file: {file.filename}")
     
     try:
+        # Setup fallback if pdf_processor not available
+        if not PDF_PROCESSOR_AVAILABLE:
+            logging.warning("Using internal fallback for PDF processing because pdf_processor is not available")
+
+            def process_pdf_comprehensive(pdf_bytes, output_type='json'):
+                """
+                Minimal fallback that uses the app's internal analyze_drawing function.
+                Returns (results_dict, error_str_or_None).
+                """
+                try:
+                    # analyze_drawing is defined later in app.py and will be available at call time
+                    res = analyze_drawing(pdf_bytes)
+                    return res, None
+                except Exception as e:
+                    logging.exception("Fallback process_pdf_comprehensive failed")
+                    return None, str(e)
+
+            def generate_output(results, output_type='json'):
+                """
+                Minimal fallback: return JSON results or generate an excel using existing helper.
+                """
+                try:
+                    if output_type == 'excel' and 'generate_excel_sheet' in globals():
+                        return generate_excel_sheet(results, results.get('dimensions', {}), results.get('development_length'))
+                    return results
+                except Exception:
+                    logging.exception("Fallback generate_output failed")
+                    return results
+
         # Get output format preference    
         output_type = request.form.get('output_type', 'json')
         if output_type not in ['json', 'excel']:
