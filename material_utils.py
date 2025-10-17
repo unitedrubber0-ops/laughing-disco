@@ -143,7 +143,6 @@ D2000_CALLOUT_RE = re.compile(
     r'(?:ASTM\s*D\s*2000[:\s]*)?'       # optional "ASTM D2000" prefix
     r'(?:M?\d*)\s*([A-K]{2})\s*([0-9]{3})',  # Grade (M2), Type-Class (BC), Hardness/Tensile (507)
     flags=re.IGNORECASE)
-)
 
 def parse_d2000_callouts_from_text(text: str) -> List[Dict[str, Any]]:
     """
