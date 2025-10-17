@@ -141,30 +141,28 @@ _D2000_MATERIAL_TO_POLYMER = {
 # regex to find D2000 callouts in free text
 D2000_CALLOUT_RE = re.compile(
     r'(?:ASTM\s*D\s*2000[:\s]*)?'       # optional "ASTM D2000" prefix
-    r'\b(M?\d+)\s*([A-Z]{1,2})\s*([0-9]{3})\b',  # e.g. M2 BC 507  OR M2BC507 OR 2BC507
-    flags=re.IGNORECASE
+    r'(?:M?\d*)\s*([A-K]{2})\s*([0-9]{3})',  # Grade (M2), Type-Class (BC), Hardness/Tensile (507)
+    flags=re.IGNORECASE)
 )
 
 def parse_d2000_callouts_from_text(text: str) -> List[Dict[str, Any]]:
     """
     Parse ASTM D2000 callouts from a chunk of text and map Type/Class to polymer family.
-    Returns list of dicts: {raw, grade_prefix, type_class, hardness_tensile, polymer, context_snippet}
+    Returns list of dicts: {raw, type_class, hardness_tensile, polymer, context_snippet}
     """
     results = []
     if not text:
         return results
     for m in D2000_CALLOUT_RE.finditer(text):
         raw = m.group(0)
-        grade_prefix = m.group(1).upper()  # e.g. 'M2' or '2'
-        type_class = m.group(2).upper()    # e.g. 'BC'
-        hard_tens = m.group(3)             # e.g. '507'
+        type_class = m.group(1).upper()    # e.g. 'BC'
+        hard_tens = m.group(2)             # e.g. '507'
         polymer = _D2000_MATERIAL_TO_POLYMER.get(type_class, "Unknown / not in mapping")
         # context: capture a small snippet around match for verification
         start, end = m.span()
         snippet = text[max(0, start-60):min(len(text), end+60)].replace("\n", " ")
         results.append({
             "raw": raw,
-            "grade_prefix": grade_prefix,
             "type_class": type_class,
             "hardness_tensile": hard_tens,
             "polymer": polymer,
