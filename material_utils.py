@@ -6,7 +6,7 @@ import logging
 import traceback
 import math
 import inspect
-from typing import Any
+from typing import Any, List, Dict, Optional, Union
 
 def safe_material_lookup_entry(standard_raw, grade_raw, material_df, lookup_fn):
     """
@@ -97,80 +97,145 @@ def normalize_grade(grd):
         logging.exception("normalize_grade failed for input: %r; returning empty string", grd)
         return ''
 
+# Optional: for PDF->image + OCR
+# pip install pytesseract Pillow
+try:
+    import fitz  # PyMuPDF
+except Exception:
+    fitz = None
+try:
+    from PIL import Image
+    import pytesseract
+except Exception:
+    pytesseract = None
+    Image = None
+
 # Mapping derived from ASTM D2000 Table X1.1 (Table of "Polymers Most Often Used").
-# Source: ASTM D2000 (uploaded PDFs). See file citations in the chat.
 _D2000_MATERIAL_TO_POLYMER = {
-    "AA": "Natural rubber / reclaimed rubber / SBR / butyl / EP (polybutadiene / polyisoprene)",
+    "AA": "Natural rubber / SBR / butyl / polyisoprene (general-purpose)",
     "AK": "Polysulfides",
-    "BA": "Ethylene propylene (EPDM) / high-temperature SBR / butyl",
-    "BC": "Chloroprene polymers (Neoprene)",
-    "BE": "Chloroprene polymers (Neoprene)",
-    "BF": "Nitrile rubber (NBR) polymers",
-    "BG": "NBR polymers and urethanes",
+    "BA": "Ethylene-propylene (EPDM) / high-temp SBR / butyl",
+    "BC": "Chloroprene polymers (neoprene)",
+    "BE": "Chloroprene polymers (neoprene)",
+    "BF": "NBR polymers (nitrile)",
+    "BG": "NBR polymers, urethanes",
     "BK": "NBR",
     "CA": "Ethylene propylene (EPDM)",
-    "CE": "Chlorosulfonated polyethylene (Hypalon)",
-    "CH": "NBR and epichlorohydrin polymers",
+    "CE": "Chlorosulfonated polyethylene (Hypalon) / CM",
+    "CH": "NBR polymers, epichlorohydrin polymers",
     "DA": "Ethylene propylene polymers",
-    "DE": "CM / CSM (chlorosulfonated / chlorinated polyethylenes)",
+    "DE": "CM, CSM",
     "DF": "Polyacrylic (butyl-acrylate type)",
-    "DH": "Polyacrylic polymers / HNBR",
-    "EE": "AEM (ethylene acrylic elastomers)",
+    "DH": "Polyacrylic polymers, HNBR",
+    "EE": "AEM (ethylene acrylic elastomer)",
     "EH": "ACM (polyacrylate)",
-    "EK": "FZ (fluoro-elastomer family; see standard)",
-    "FC": "Silicones (high temperature/high strength)",
+    "EK": "FZ (special family)",
+    "FC": "Silicones (high strength)",
     "FE": "Silicones",
     "FK": "Fluorinated silicones",
     "GE": "Silicones",
-    "HK": "Fluorinated elastomers (Viton / Fluorel / similar)",
+    "HK": "Fluorinated elastomers (Viton, Fluorel, etc.)",
     "KK": "Perfluoroelastomers",
 }
 
-# Build an ordered list of keys (longer keys first is safe but keys here are 2 letters).
-_D2000_KEYS = sorted(_D2000_MATERIAL_TO_POLYMER.keys(), key=lambda k: -len(k))
+# regex to find D2000 callouts in free text
+D2000_CALLOUT_RE = re.compile(
+    r'(?:ASTM\s*D\s*2000[:\s]*)?'       # optional "ASTM D2000" prefix
+    r'\b(M?\d+)\s*([A-Z]{1,2})\s*([0-9]{3})\b',  # e.g. M2 BC 507  OR M2BC507 OR 2BC507
+    flags=re.IGNORECASE
+)
 
-def _find_designation_in_text(text):
+def parse_d2000_callouts_from_text(text: str) -> List[Dict[str, Any]]:
     """
-    Return the first material designation key found in `text` (e.g. 'BC', 'HK'), or None.
-    The search is case-insensitive and tolerant of compact forms like 'M2BC507' or '4CA720'.
+    Parse ASTM D2000 callouts from a chunk of text and map Type/Class to polymer family.
+    Returns list of dicts: {raw, grade_prefix, type_class, hardness_tensile, polymer, context_snippet}
     """
+    results = []
     if not text:
-        return None
-    t = text.upper()
-    for key in _D2000_KEYS:
-        # ensure key isn't surrounded by letters (but digits or other chars are fine).
-        # (?<![A-Z]) asserts previous char is NOT an ASCII letter.
-        # (?![A-Z]) asserts next char is NOT an ASCII letter.
-        pattern = rf"(?<![A-Z]){re.escape(key)}(?![A-Z])"
-        if re.search(pattern, t):
-            return key
-    return None
+        return results
+    for m in D2000_CALLOUT_RE.finditer(text):
+        raw = m.group(0)
+        grade_prefix = m.group(1).upper()  # e.g. 'M2' or '2'
+        type_class = m.group(2).upper()    # e.g. 'BC'
+        hard_tens = m.group(3)             # e.g. '507'
+        polymer = _D2000_MATERIAL_TO_POLYMER.get(type_class, "Unknown / not in mapping")
+        # context: capture a small snippet around match for verification
+        start, end = m.span()
+        snippet = text[max(0, start-60):min(len(text), end+60)].replace("\n", " ")
+        results.append({
+            "raw": raw,
+            "grade_prefix": grade_prefix,
+            "type_class": type_class,
+            "hardness_tensile": hard_tens,
+            "polymer": polymer,
+            "context": snippet
+        })
+    return results
 
-def detect_d2000_polymer(callout_text):
+def extract_text_from_pdf_with_ocr(pdf_path: str, dpi: int = 200) -> str:
     """
-    Given a string containing an ASTM D2000 callout (or drawing text),
-    return a tuple (designation, polymer_string). If nothing found, (None, None).
-    Example input: "ASTM D2000 M2BC 507 A14 EO34" -> ('BC', 'Chloroprene polymers (Neoprene)')
+    Render each PDF page to an image and OCR it with pytesseract.
+    Returns concatenated text for all pages.
+    Requirements: PyMuPDF (fitz) + pytesseract + tesseract binary installed.
     """
-    try:
-        if not callout_text or not isinstance(callout_text, str):
-            return None, None
-        # quick normalization
-        s = callout_text.strip()
-        key = _find_designation_in_text(s)
-        if not key:
-            # As a fallback, try to split tokens and match tokens like "CA" or "M2BC"
-            tokens = re.split(r"[\s,;/]+", s.upper())
-            for tok in tokens:
-                # try to find any key inside token (use direct substring)
-                for k in _D2000_KEYS:
-                    if k in tok:
-                        return k, _D2000_MATERIAL_TO_POLYMER.get(k)
-            return None, None
-        return key, _D2000_MATERIAL_TO_POLYMER.get(key)
-    except Exception:
-        logging.exception("Error in detect_d2000_polymer")
-        return None, None
+    if fitz is None:
+        raise RuntimeError("PyMuPDF (fitz) not available. Install it to enable PDF rendering.")
+    if pytesseract is None:
+        raise RuntimeError("pytesseract not available. Install pytesseract and tesseract binary.")
+    doc = fitz.open(pdf_path)
+    out_text = []
+    for pageno in range(len(doc)):
+        page = doc.load_page(pageno)
+        mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
+        try:
+            # Try new API (PyMuPDF >= 1.19.0)
+            pix = page.get_pixmap(matrix=mat, alpha=False)  # type: ignore
+        except AttributeError:
+            # Fallback for older versions
+            pix = page.getPixmap(matrix=mat, alpha=False)  # type: ignore
+        try:
+            img_bytes = pix.tobytes("png")
+        except AttributeError:
+            # Fallback for older versions
+            img_bytes = pix.getPNGData()
+        if Image is not None:  # Check if PIL is available
+            from io import BytesIO
+            img = Image.open(BytesIO(img_bytes))
+            page_text = pytesseract.image_to_string(img) if pytesseract else ""
+            out_text.append(page_text)
+    return "\n\n".join(out_text)
+
+def find_polymers_in_pdf_or_text(pdf_path: Optional[str] = None, text: Optional[str] = None, try_ocr: bool = True) -> List[Dict[str, Any]]:
+    """
+    If text is supplied, parse it. If pdf_path is supplied:
+      - attempt to extract embedded text (via fitz.get_text("text"))
+      - if embedded text is essentially empty and try_ocr=True -> run OCR
+    Returns parse_d2000_callouts_from_text results.
+    """
+    doc_text = text or ""
+    if pdf_path and not text:
+        if fitz is None:
+            raise RuntimeError("PyMuPDF (fitz) required to read PDF. Install fitz first.")
+        doc = fitz.open(pdf_path)
+        extracted = []
+        for p in doc:
+            try:
+                # Try new API (PyMuPDF >= 1.19.0)
+                extracted.append(p.get_text("text"))  # type: ignore
+            except AttributeError:
+                # Fallback for older versions
+                extracted.append(p.getText("text"))  # type: ignore
+        doc_text = "\n\n".join(extracted).strip()
+        # If embedded text is tiny/empty, fall back to OCR (useful for scanned drawings)
+        if (not doc_text or len(doc_text) < 20) and try_ocr:
+            try:
+                doc_text = extract_text_from_pdf_with_ocr(pdf_path)
+            except Exception as ocr_exc:
+                logging.exception("OCR failed")
+                # if OCR fails, return empty with an informative dict
+                return [{"error": str(ocr_exc)}]
+    # now parse text
+    return parse_d2000_callouts_from_text(doc_text)
 
 def _process_extraction_result(val: Any) -> str:
     """Process an extraction result, converting to string or empty string if None."""
