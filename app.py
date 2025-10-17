@@ -2985,64 +2985,84 @@ def upload_and_analyze():
         final_results['dimensions'] = merged_dims
         logger.debug("dimensions after merge: %s", final_results.get('dimensions'))
 
-        # Look up material based on standard and grade
+            # Look up material and polymer based on standard and grade
         try:
-            standard = final_results.get("standard", "Not Found")
+            specification_string = final_results.get("standard", "Not Found")
             grade = final_results.get("grade", "Not Found")
+            logging.info(f"Initial raw specification string from Gemini: '{specification_string}'")
+            logging.info(f"Initial raw grade from Gemini: '{grade}'")
+
+            main_astm_callout = None
+            type_class_code = None
+
+            # --- Start of New, Robust Extraction Logic ---
+            if isinstance(specification_string, str) and "ASTM" in specification_string.upper():
+                # Regex to find the core callout, e.g., "M2CH708"
+                core_match = re.search(r'(M?\d?\s*[A-K]{2}\s*\d+)', specification_string.upper())
+                if core_match:
+                    main_astm_callout = core_match.group(1).replace(" ", "")
+                    logging.info(f"Successfully extracted core ASTM callout: '{main_astm_callout}'")
+                    
+                    # Regex to find just the Type-Class from the core callout
+                    type_class_match = re.search(r'([A-K]{2})', main_astm_callout)
+                    if type_class_match:
+                        type_class_code = type_class_match.group(1)
+                        logging.info(f"Successfully extracted Type-Class code: '{type_class_code}'")
+                    else:
+                        logging.warning(f"Could not extract Type-Class from core callout '{main_astm_callout}'")
+                else:
+                    logging.warning(f"Could not find a core ASTM callout pattern in '{specification_string}'")
+            else:
+                logging.warning("Specification string is not a valid ASTM string or is missing.")
+            # --- End of New, Robust Extraction Logic ---
+
+            # 1. Polymer Type Lookup (using the clean type_class_code)
+            final_results["polymer_type"] = "Not Found" # Default
+            if main_astm_callout:
+                # Use our improved polymer type lookup with the main ASTM callout
+                from material_utils import get_polymer_type_from_astm_code
+                final_results["polymer_type"] = get_polymer_type_from_astm_code(main_astm_callout)
+                logging.info(f"Polymer lookup result for '{main_astm_callout}': {final_results['polymer_type']}")
+            else:
+                logging.warning("Skipping polymer lookup because ASTM callout was not found.")
+
+            # 2. Material Lookup (using the main_astm_callout if available, else original string)
+            final_results["material"] = "Not Found" # Default
+            lookup_standard = main_astm_callout if main_astm_callout else specification_string
             
             # Debug and fix data types
-            standard, grade = debug_material_lookup(standard, grade)
+            lookup_standard, grade = debug_material_lookup(lookup_standard, grade)
             
-            # Map TMS standards to MPAPS
-            original_standard = standard
-            standard = map_tms_to_mpaps_standard(standard)
-            if original_standard != standard:
-                final_results["original_standard"] = original_standard
-                final_results["mapped_standard"] = standard
-                logger.info(f"Standard mapped from {original_standard} to {standard}")
-            
+            # Map TMS standards to MPAPS (only for non-ASTM standards)
+            if not main_astm_callout:  # Skip mapping for ASTM standards
+                original_standard = lookup_standard
+                lookup_standard = map_tms_to_mpaps_standard(lookup_standard)
+                if original_standard != lookup_standard:
+                    final_results["original_standard"] = original_standard
+                    final_results["mapped_standard"] = lookup_standard
+                    logger.info(f"Standard mapped from {original_standard} to {lookup_standard}")
+
             # Handle grade extraction from your specific PDF
             if "H-ANRX" in str(grade) or "H-ANRX" in str(final_results.get("description", "")):
                 grade = "H-ANRX"
                 logger.info(f"Using grade: {grade}")
-            
-            # Lookup material using the potentially updated standard
-            final_results["material"] = safe_material_lookup_entry(standard, grade, material_df, get_material_from_standard)
-            
-            # Add polymer type lookup for ASTM D2000 standards
-            if "ASTM" in str(standard).upper() and "D2000" in str(standard).upper():
-                logger.info(f"Looking up polymer type for ASTM D2000 standard: {standard}")
-                from material_utils import get_polymer_type_from_astm_code
-                final_results["polymer_type"] = get_polymer_type_from_astm_code(standard)
-            else:
-                final_results["polymer_type"] = "Not Applicable"
-            
-            # If material not found, try alternative lookups
-            if final_results["material"] == "Not Found":
-                logger.warning(f"Material not found for standard='{standard}', grade='{grade}'")
-                
-                # Try with just the base standard without grade
-                if grade and grade != "Not Found":
-                    final_results["material"] = safe_material_lookup_entry(standard, "Not Found", material_df, get_material_from_standard)
+
+            # Try material lookup with the clean standard
+            final_results["material"] = safe_material_lookup_entry(lookup_standard, grade, material_df, get_material_from_standard)
+            logging.info(f"Material lookup result for standard='{lookup_standard}' and grade='{grade}': {final_results['material']}")
+
+            # If material not found and we have an ASTM standard, try without suffixes
+            if final_results["material"] == "Not Found" and main_astm_callout:
+                base_callout = re.sub(r'(M?\d?[A-K]{2}\d+).*', r'\1', main_astm_callout)
+                if base_callout != main_astm_callout:
+                    final_results["material"] = safe_material_lookup_entry(base_callout, grade, material_df, get_material_from_standard)
                     if final_results["material"] != "Not Found":
-                        final_results["material_note"] = f"Found without specific grade {grade}"
-            
-            logger.info(f"Final material result: {final_results['material']}")
-            
-            # If material still not found, try with standardization fixes
-            if final_results["material"] == "Not Found":
-                logger.warning("Material not found for standard=%r grade=%r", standard, grade)
-                # Try common variations or fixes
-                standard_str = str(standard) if standard is not None else ""
-                if "-" in standard_str:
-                    no_dash = standard_str.replace("-", "")
-                    final_results["material"] = safe_material_lookup_entry(no_dash, grade, material_df, get_material_from_standard)
-                    if final_results["material"] != "Not Found":
-                        logger.info(f"Found material after removing dashes: {no_dash}")
+                        logging.info(f"Found material using base callout '{base_callout}'")
+                        final_results["material_note"] = f"Found using base callout without suffixes"
 
             # Enhanced reinforcement lookup
             try:
-                reinforcement_val = get_reinforcement_from_material(standard, grade, final_results.get("material", "Not Found"))
+                reinforcement_val = get_reinforcement_from_material(lookup_standard, grade, final_results.get("material", "Not Found"))
                 
                 # If not found, try to infer from rings information
                 if reinforcement_val in ["Not Found", "None", None, ""]:
@@ -3058,12 +3078,12 @@ def upload_and_analyze():
             except Exception as e:
                 logging.warning(f"Reinforcement lookup failed: {e}", exc_info=True)
                 final_results["reinforcement"] = "Not Found"
-        except Exception as e:
-            logging.error(f"Error in material lookup: {e}")
-            final_results["material"] = "Not Found"
-            final_results["reinforcement"] = "Not Found"
 
-            # In the /api/analyze route, after reinforcement extraction:
+        except Exception as e:
+            logging.error(f"CRITICAL ERROR in material/polymer/reinforcement lookup block: {e}", exc_info=True)
+            final_results["material"] = "Error"
+            final_results["reinforcement"] = "Error"
+            final_results["polymer_type"] = "Error"            # In the /api/analyze route, after reinforcement extraction:
 
         # Clean rings extraction - NO MANUAL FALLBACKS
         try:
