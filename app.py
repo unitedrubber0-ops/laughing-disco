@@ -3009,6 +3009,14 @@ def upload_and_analyze():
             # Lookup material using the potentially updated standard
             final_results["material"] = safe_material_lookup_entry(standard, grade, material_df, get_material_from_standard)
             
+            # Add polymer type lookup for ASTM D2000 standards
+            if "ASTM" in str(standard).upper() and "D2000" in str(standard).upper():
+                logger.info(f"Looking up polymer type for ASTM D2000 standard: {standard}")
+                from material_utils import get_polymer_type_from_astm_code
+                final_results["polymer_type"] = get_polymer_type_from_astm_code(standard)
+            else:
+                final_results["polymer_type"] = "Not Applicable"
+            
             # If material not found, try alternative lookups
             if final_results["material"] == "Not Found":
                 logger.warning(f"Material not found for standard='{standard}', grade='{grade}'")

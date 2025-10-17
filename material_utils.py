@@ -237,6 +237,32 @@ def find_polymers_in_pdf_or_text(pdf_path: Optional[str] = None, text: Optional[
     # now parse text
     return parse_d2000_callouts_from_text(doc_text)
 
+def get_polymer_type_from_astm_code(astm_callout_string: str) -> str:
+    """
+    Looks up the polymer type based on the Type-Class letters in an ASTM D2000 call-out.
+    The mapping is based on ASTM D2000-18, Table X1.1.
+
+    Args:
+        astm_callout_string (str): The full ASTM D2000 specification string.
+
+    Returns:
+        str: The polymer type (e.g., "Ethylene propylene") or "Not Found".
+    """
+    if not astm_callout_string or not isinstance(astm_callout_string, str):
+        return "Not Found"
+
+    # Match pattern from ASTM D2000-18, Table X1.1
+    match = re.search(r'M?\d?\s*([A-K]{2})', astm_callout_string.upper())
+    
+    if match:
+        type_class_code = match.group(1)
+        polymer = _D2000_MATERIAL_TO_POLYMER.get(type_class_code, "Not Found")
+        logging.info(f"Found Type-Class code '{type_class_code}', mapped to polymer: '{polymer}'")
+        return polymer
+    else:
+        logging.warning(f"Could not extract Type-Class code from string: '{astm_callout_string}'")
+        return "Not Found"
+
 def _process_extraction_result(val: Any) -> str:
     """Process an extraction result, converting to string or empty string if None."""
     if val is None:

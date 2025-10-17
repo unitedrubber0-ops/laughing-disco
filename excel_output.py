@@ -35,6 +35,7 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             'CHILD PART QTY',                                    # Quantity
             'SPECIFICATION',                                     # Combined standard+grade
             'MATERIAL',                                         # From database lookup
+            'POLYMER TYPE',                                      # For ASTM D2000 materials
             'REINFORCEMENT',                                     # Additional info
             'RINGS',                                            # Rings information
             'VOLUME AS PER 2D',                                 # Volume calculation
@@ -111,6 +112,7 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             'CHILD PART QTY': "1",
             'SPECIFICATION': specification,
             'MATERIAL': analysis_results.get('material', 'Not Found'),
+            'POLYMER TYPE': analysis_results.get('polymer_type', 'Not Applicable'),
             'REINFORCEMENT': analysis_results.get('reinforcement', 'Not Found'),
             'RINGS': analysis_results.get('rings', 'Not Found'),
             'VOLUME AS PER 2D': analysis_results.get('volume', 'Not Found'),
