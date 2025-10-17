@@ -244,23 +244,15 @@ def get_polymer_type_from_astm_code(astm_callout_string: str) -> str:
 
     Returns:
         str: The polymer type (e.g., "Ethylene propylene") or "Not Found".
-    
-    Examples:
-        >>> get_polymer_type_from_astm_code("ASTM D2000 M2BC 507")
-        'Chloroprene polymers (neoprene)'
-        >>> get_polymer_type_from_astm_code("M2CH710")
-        'NBR polymers, epichlorohydrin polymers'
     """
     if not astm_callout_string or not isinstance(astm_callout_string, str):
         return "Not Found"
-
-    # Use the global regex pattern to find Type-Class code
-    matches = parse_d2000_callouts_from_text(astm_callout_string)
-    if matches:
-        # Use first match if multiple found
-        polymer_type = matches[0].get("polymer")
-        if polymer_type and polymer_type != "Unknown / not in mapping":
-            return polymer_type
+        
+    # Use our existing robust parsing logic
+    results = parse_d2000_callouts_from_text(astm_callout_string)
+    
+    # Return first polymer type found, or "Not Found" if none found
+    return results[0]["polymer"] if results else "Not Found"
 
     # Match pattern from ASTM D2000-18, Table X1.1
     match = re.search(r'M?\d?\s*([A-K]{2})', astm_callout_string.upper())
