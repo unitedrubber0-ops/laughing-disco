@@ -37,15 +37,27 @@ def safe_material_lookup_entry(standard_raw, grade_raw, material_df, lookup_fn):
             else:
                 result = lookup_fn(std, grd)
                 
+            # If result found, try to normalize it
+            if result and result != "Not Found":
+                normalized_result = normalize_material(result)
+                logging.debug(f"Material normalization: {result} -> {normalized_result}")
+                result = normalized_result or result  # Use normalized if available, else original
+                
             return result if result else "Not Found"
             
         except Exception as e:
             logging.warning(f"safe_material_lookup_entry signature inspection failed: {e}, trying fallback calls")
             # Fallback attempts
             try:
-                return lookup_fn(std, grd)
+                result = lookup_fn(std, grd)
+                if result and result != "Not Found":
+                    result = normalize_material(result) or result
+                return result
             except TypeError:
-                return lookup_fn(std, grd, material_df)
+                result = lookup_fn(std, grd, material_df)
+                if result and result != "Not Found":
+                    result = normalize_material(result) or result
+                return result
 
     except Exception as e:
         logging.error("Error in material lookup: %s\nstandard_raw repr=%r\ngrade_raw repr=%r\nTraceback:\n%s",
@@ -95,6 +107,45 @@ def normalize_grade(grd):
         return grd
     except Exception as e:
         logging.exception("normalize_grade failed for input: %r; returning empty string", grd)
+        return ''
+
+def normalize_material(material):
+    """
+    Normalize material names to handle common variations.
+    """
+    if not material:
+        return ''
+        
+    try:
+        # Convert to string and clean up
+        mat = _coerce_to_str_maybe_dict(material, keys_to_try=('MATERIAL','material','name'))
+        mat = mat.upper().strip()
+        
+        # Common material name variations
+        variations = {
+            'EPDM': ['P-EPDM', 'EPDM RUBBER', 'ETHYLENE PROPYLENE'],
+            'NBR': ['P-NBR', 'NITRILE', 'BUNA-N', 'BUNA N'],
+            'SILICONE': ['P-SILICONE', 'SI', 'VMQ'],
+            'VITON': ['FKM', 'FLUOROELASTOMER'],
+            'NEOPRENE': ['P-NEOPRENE', 'CR', 'CHLOROPRENE']
+        }
+        
+        # Check for each variation
+        for base, variants in variations.items():
+            if base in mat:
+                return base
+            for variant in variants:
+                if variant in mat:
+                    return base
+                    
+        # Remove common prefixes/suffixes
+        mat = re.sub(r'^P-', '', mat)
+        mat = re.sub(r'\s*RUBBER$', '', mat)
+        
+        return mat
+        
+    except Exception as e:
+        logging.exception("normalize_material failed for input: %r; returning empty string", material)
         return ''
 
 # Optional: for PDF->image + OCR
