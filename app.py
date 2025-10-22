@@ -2987,54 +2987,48 @@ def upload_and_analyze():
 
             # Look up material and polymer based on standard and grade
         try:
-            specification_string = final_results.get("standard", "Not Found")
+            # Get the initial values
+            standard = final_results.get("standard", "Not Found")
             grade = final_results.get("grade", "Not Found")
-            logging.info(f"Initial raw specification string from Gemini: '{specification_string}'")
-            logging.info(f"Initial raw grade from Gemini: '{grade}'")
+            logging.info(f"Initial standard: '{standard}', grade: '{grade}'")
 
-            main_astm_callout = None
-            type_class_code = None
-
-            # --- Start of New, Robust Extraction Logic ---
-            if isinstance(specification_string, str) and "ASTM" in specification_string.upper():
-                # Regex to find the core callout, e.g., "M2CH708"
-                core_match = re.search(r'(M?\d?\s*[A-K]{2}\s*\d+)', specification_string.upper())
-                if core_match:
-                    main_astm_callout = core_match.group(1).replace(" ", "")
-                    logging.info(f"Successfully extracted core ASTM callout: '{main_astm_callout}'")
-                    
-                    # Regex to find just the Type-Class from the core callout
-                    type_class_match = re.search(r'([A-K]{2})', main_astm_callout)
-                    if type_class_match:
-                        type_class_code = type_class_match.group(1)
-                        logging.info(f"Successfully extracted Type-Class code: '{type_class_code}'")
-                    else:
-                        logging.warning(f"Could not extract Type-Class from core callout '{main_astm_callout}'")
-                else:
-                    logging.warning(f"Could not find a core ASTM callout pattern in '{specification_string}'")
+            # Combine standard and grade for ASTM D2000 specifications
+            if isinstance(standard, str) and "ASTM" in standard.upper() and "D2000" in standard.upper():
+                specification_string = f"{standard} {grade}" if grade != "Not Found" else standard
+                logging.info(f"Combined ASTM D2000 specification: '{specification_string}'")
             else:
-                logging.warning("Specification string is not a valid ASTM string or is missing.")
-            # --- End of New, Robust Extraction Logic ---
-
-            # 1. Polymer Type Lookup (using the clean type_class_code)
-            final_results["polymer_type"] = "Not Found" # Default
-            if main_astm_callout:
-                # Use our improved polymer type lookup with the main ASTM callout
-                from material_utils import get_polymer_type_from_astm_code
-                final_results["polymer_type"] = get_polymer_type_from_astm_code(main_astm_callout)
-                logging.info(f"Polymer lookup result for '{main_astm_callout}': {final_results['polymer_type']}")
+                specification_string = standard
+            
+            # Use our robust D2000 callout parsing
+            from material_utils import parse_d2000_callouts_from_text
+            d2000_results = parse_d2000_callouts_from_text(specification_string)
+            
+            if d2000_results:
+                # We found a valid D2000 callout
+                d2000_info = d2000_results[0]  # Use first match
+                main_astm_callout = d2000_info["raw"]
+                type_class_code = d2000_info["type_class"]
+                polymer_type = d2000_info["polymer"]
+                
+                logging.info(f"Extracted D2000 info - Callout: '{main_astm_callout}', "
+                           f"Type-Class: '{type_class_code}', Polymer: '{polymer_type}'")
+                
+                # Set the polymer type
+                final_results["polymer_type"] = polymer_type
+                
+                # Use the clean callout for material lookup
+                lookup_standard = main_astm_callout
             else:
-                logging.warning("Skipping polymer lookup because ASTM callout was not found.")
-
-            # 2. Material Lookup (using the main_astm_callout if available, else original string)
-            final_results["material"] = "Not Found" # Default
-            lookup_standard = main_astm_callout if main_astm_callout else specification_string
+                # Not a D2000 spec or no valid callout found
+                logging.info("No valid D2000 callout found, using original standard")
+                lookup_standard = standard
+                final_results["polymer_type"] = "Not Applicable"
             
             # Debug and fix data types
             lookup_standard, grade = debug_material_lookup(lookup_standard, grade)
             
             # Map TMS standards to MPAPS (only for non-ASTM standards)
-            if not main_astm_callout:  # Skip mapping for ASTM standards
+            if not d2000_results:  # Skip mapping for D2000 standards
                 original_standard = lookup_standard
                 lookup_standard = map_tms_to_mpaps_standard(lookup_standard)
                 if original_standard != lookup_standard:
@@ -3051,8 +3045,8 @@ def upload_and_analyze():
             final_results["material"] = safe_material_lookup_entry(lookup_standard, grade, material_df, get_material_from_standard)
             logging.info(f"Material lookup result for standard='{lookup_standard}' and grade='{grade}': {final_results['material']}")
 
-            # If material not found and we have an ASTM standard, try without suffixes
-            if final_results["material"] == "Not Found" and main_astm_callout:
+            # If material not found and we have a D2000 callout, try without suffixes
+            if final_results["material"] == "Not Found" and d2000_results:
                 base_callout = re.sub(r'(M?\d?[A-K]{2}\d+).*', r'\1', main_astm_callout)
                 if base_callout != main_astm_callout:
                     final_results["material"] = safe_material_lookup_entry(base_callout, grade, material_df, get_material_from_standard)
