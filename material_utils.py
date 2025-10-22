@@ -138,11 +138,21 @@ _D2000_MATERIAL_TO_POLYMER = {
     "KK": "Perfluoroelastomers",
 }
 
-# regex to find D2000 callouts in free text
-D2000_CALLOUT_RE = re.compile(
+# Multiple regex patterns to find D2000 callouts in free text
+# Order matters - more specific patterns first
+D2000_CALLOUT_PATTERNS = [
+    # Pattern 1: Standard D2000 format (e.g., "ASTM D2000 M2BC507")
     r'(?:ASTM\s*D\s*2000[:\s]*)?'       # optional "ASTM D2000" prefix
     r'(?:M?\d*)\s*([A-K]{2})\s*([0-9]{3})',  # Grade (M2), Type-Class (BC), Hardness/Tensile (507)
-    flags=re.IGNORECASE)
+
+    # Pattern 2: Type-Class between grade and numbers (e.g., "M7 CA 807")
+    r'M?\d*\s*([A-K]{2})\s*\d{3}',
+
+    # Pattern 3: Standalone Type-Class with numbers (e.g., "CA 807")
+    r'\b([A-K]{2})\s*\d{3}\b'
+]
+
+D2000_CALLOUT_RE = re.compile('|'.join(f'({p})' for p in D2000_CALLOUT_PATTERNS), flags=re.IGNORECASE)
 
 def parse_d2000_callouts_from_text(text: str) -> List[Dict[str, Any]]:
     """
@@ -152,21 +162,51 @@ def parse_d2000_callouts_from_text(text: str) -> List[Dict[str, Any]]:
     results = []
     if not text:
         return results
+
+    # Clean up the input text
+    text = text.replace('\n', ' ').strip()
+    
     for m in D2000_CALLOUT_RE.finditer(text):
-        raw = m.group(0)
-        type_class = m.group(1).upper()    # e.g. 'BC'
-        hard_tens = m.group(2)             # e.g. '507'
-        polymer = _D2000_MATERIAL_TO_POLYMER.get(type_class, "Unknown / not in mapping")
-        # context: capture a small snippet around match for verification
-        start, end = m.span()
-        snippet = text[max(0, start-60):min(len(text), end+60)].replace("\n", " ")
-        results.append({
-            "raw": raw,
-            "type_class": type_class,
-            "hardness_tensile": hard_tens,
-            "polymer": polymer,
-            "context": snippet
-        })
+        try:
+            # Find the first non-None group after group 0 (full match)
+            match_groups = [g for g in m.groups() if g is not None]
+            if not match_groups:
+                continue
+                
+            raw = match_groups[0]  # The matched pattern
+            
+            # Extract type_class using a targeted regex on the raw match
+            type_class_match = re.search(r'([A-K]{2})', raw.upper())
+            if not type_class_match:
+                continue
+                
+            type_class = type_class_match.group(1)
+            
+            # Extract hardness/tensile using pattern after type_class
+            hard_tens_match = re.search(f'{type_class}\\s*(\\d{{3}})', raw.upper())
+            hard_tens = hard_tens_match.group(1) if hard_tens_match else "000"
+            
+            # Lookup polymer type
+            polymer = _D2000_MATERIAL_TO_POLYMER.get(type_class, "Unknown / not in mapping")
+            
+            # Capture context for verification
+            start, end = m.span()
+            snippet = text[max(0, start-60):min(len(text), end+60)].strip()
+            
+            # Log successful parsing
+            logging.debug(f"Successfully parsed ASTM D2000 callout: {raw} -> Type-Class: {type_class}, " 
+                        f"Hardness/Tensile: {hard_tens}, Polymer: {polymer}")
+            
+            results.append({
+                "raw": raw,
+                "type_class": type_class,
+                "hardness_tensile": hard_tens,
+                "polymer": polymer,
+                "context": snippet
+            })
+        except Exception as e:
+            logging.warning(f"Failed to parse potential D2000 callout: {m.group(0)}, error: {e}")
+            continue
     return results
 
 def extract_text_from_pdf_with_ocr(pdf_path: str, dpi: int = 200) -> str:
