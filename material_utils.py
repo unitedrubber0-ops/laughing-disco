@@ -84,11 +84,92 @@ def _coerce_to_str_maybe_dict(val, keys_to_try=('STANDARD','standard','value','n
             return repr(val)
     return val
 
+def map_astm_d2000_grade(type_class, grade_num):
+    """
+    Map ASTM D2000 grade numbers and Type-Class combinations to MPAPS grades.
+    """
+    # Default mappings based on Type-Class
+    type_class_mappings = {
+        'CA': '1B',    # EPDM standard grade
+        'BA': '1B',    # EPDM high-temp grade
+        'DA': '1B',    # EPDM special grade
+        'BF': '1BF',   # NBR standard grade
+        'CH': '1BF',   # NBR/ECH grade
+        'BC': '1BC',   # Neoprene grade
+        'BE': '1BC',   # Neoprene grade
+    }
+    
+    # Grade number overrides (e.g., M7 -> 1B)
+    grade_num_mappings = {
+        '7': '1B',     # Standard EPDM grade
+        '6': '1BF',    # Standard NBR grade
+        '5': '1BC',    # Standard Neoprene grade
+    }
+    
+    # Try grade number mapping first
+    if grade_num and grade_num in grade_num_mappings:
+        return grade_num_mappings[grade_num]
+        
+    # Fall back to Type-Class mapping
+    if type_class in type_class_mappings:
+        return type_class_mappings[type_class]
+        
+    return "1B"  # Default grade if no specific mapping found
+
+def map_astm_d2000_to_mpaps(std):
+    """
+    Map ASTM D2000 specifications to MPAPS standards.
+    Example: "ASTM D2000 M7 CA 807" -> ("MPAPS F-30/F-1", "1B")
+    Returns tuple of (mapped_standard, mapped_grade)
+    """
+    if not std:
+        return (std, "Not Found")
+        
+    std_upper = str(std).upper()
+    if "ASTM" not in std_upper or "D2000" not in std_upper:
+        return (std, "Not Found")
+        
+    try:
+        # Extract components from ASTM D2000 spec
+        match = re.search(r'(?:M?(\d*))?\s*([A-K]{2})\s*(\d{3})', std_upper)
+        if not match:
+            return (std, "Not Found")
+            
+        grade_num = match.group(1)  # M7 -> 7
+        type_class = match.group(2)  # CA
+        hardness = match.group(3)    # 807
+        
+        # Map based on Type-Class
+        if type_class in ['CA', 'BA', 'DA']:  # EPDM types
+            mapped_std = "MPAPS F-30/F-1"
+        elif type_class in ['BF', 'CH']:      # NBR types
+            mapped_std = "MPAPS F-48"
+        elif type_class in ['BC', 'BE']:      # Neoprene types
+            mapped_std = "MPAPS F-42"
+        else:
+            mapped_std = "MPAPS F-30/F-1"     # Default to EPDM spec
+            
+        # Get mapped grade
+        mapped_grade = map_astm_d2000_grade(type_class, grade_num)
+        
+        logging.info(f"Mapped ASTM D2000 '{std}' to MPAPS standard='{mapped_std}' grade='{mapped_grade}'")
+        return (mapped_std, mapped_grade)
+        
+    except Exception as e:
+        logging.error(f"Error mapping ASTM D2000 spec '{std}': {e}")
+        return (std, "Not Found")
+
 def normalize_standard(std):
     try:
         std = _coerce_to_str_maybe_dict(std, keys_to_try=('STANDARD','standard','std'))
         std = std.upper().strip()
-        # apply existing cleanup rules (example)
+        
+        # Map ASTM D2000 to MPAPS if needed
+        if "ASTM" in std and "D2000" in std:
+            mapped_std, _ = map_astm_d2000_to_mpaps(std)
+            std = mapped_std
+            
+        # Apply existing cleanup rules
         std = re.sub(r'MPAPS\s*F\s*[-_]?\s*(\d+)', r'MPAPS F-\1', std)
         std = re.sub(r'\s+', ' ', std).strip()
         return std
@@ -96,10 +177,23 @@ def normalize_standard(std):
         logging.exception("normalize_standard failed for input: %r; returning empty string", std)
         return ''
 
-def normalize_grade(grd):
+def normalize_grade(grd, std=None):
+    """
+    Normalize grade values, with optional standard context for ASTM D2000 mapping.
+    """
     try:
         grd = _coerce_to_str_maybe_dict(grd, keys_to_try=('GRADE','grade','grd'))
         grd = grd.upper().strip()
+        
+        # If we have an ASTM D2000 standard, try to map its grade
+        if std:
+            std_upper = str(std).upper()
+            if "ASTM" in std_upper and "D2000" in std_upper:
+                _, mapped_grade = map_astm_d2000_to_mpaps(f"{std} {grd}")
+                if mapped_grade != "Not Found":
+                    return mapped_grade
+                    
+        # Standard grade normalization
         grd = re.sub(r'[^A-Z0-9\-]', '', grd)       # remove weird punctuation
         grd = re.sub(r'GRADE|TYPE|CLASS', '', grd)
         grd = grd.replace(' ', '').replace('_', '').replace('/', '')
