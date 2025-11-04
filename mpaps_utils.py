@@ -15,9 +15,75 @@ _MPAPS_ID_TOLS_MM     = [0.4,  0.4,  0.4,  0.4,  0.4,  0.4,  0.58, 0.79, 0.79, 0
 _MPAPS_OD_NOMINALS_MM = [9.3,  10.3, 11.3, 12.25, 13.5, 15.37, 20.3, 24.62, 28.35, 34.9]
 _MPAPS_OD_TOLS_MM     = [0.6,  0.6,  0.6,  0.6,   0.6,  0.6,   0.8,  0.8,   0.8,   1.0]
 
+# Grade 1B/1BF data tables from specification
+_GRADE_1BF_ID_NOMINALS_MM = [15.1, 18.4, 21.3, 24.6, 62.7]
+_GRADE_1BF_ID_TOLS_MM = [0.5, 0.5, 0.5, 0.5, 0.5]
+_GRADE_1BF_OD_NOMINALS_MM = [25.0, 28.3, 29.9, 34.5, 73.4]
+_GRADE_1BF_WALL_THICKNESS_MM = [4.95, 4.95, 4.95, 4.95, 5.35]
+_GRADE_1BF_WALL_TOLS_MM = [0.8, 0.8, 0.8, 0.8, 0.8]
+
+# Range data for Grade 1BF
+_GRADE_1BF_RANGES = [
+    (26.0, 50.8, 4.95, 0.8),   # min_id, max_id, wall_thickness, wall_tolerance
+    (50.8, 63.5, 5.35, 0.8)    # min_id, max_id, wall_thickness, wall_tolerance
+]
+
 def get_burst_pressure() -> float:
     """Get the standard burst pressure for MPAPS F-6032 materials."""
     return MPAPS_F6032_BURST_PRESSURE_MPA
+
+def is_grade_1bf(grade: str) -> bool:
+    """Check if grade specification matches Grade 1B or 1BF."""
+    if not grade:
+        return False
+        
+    grade_str = str(grade).upper().strip()
+    return any(pattern in grade_str for pattern in ['1B', '1BF', 'GRADE 1B', 'GRADE 1BF'])
+
+def get_grade_1bf_tolerance(id_value: float) -> Optional[Dict[str, Any]]:
+    """
+    Get Grade 1B/1BF tolerance and wall thickness based on ID.
+    """
+    try:
+        id_val = _parse_dimension(id_value)
+        if id_val is None:
+            return None
+            
+        # Find nearest nominal ID
+        diffs = [abs(n - id_val) for n in _GRADE_1BF_ID_NOMINALS_MM]
+        idx = min(range(len(diffs)), key=lambda i: diffs[i])
+        nearest_id = _GRADE_1BF_ID_NOMINALS_MM[idx]
+        
+        # Check if ID falls within any range
+        wall_thickness = None
+        wall_tolerance = None
+        od_reference = None
+        
+        for range_min, range_max, range_wall, range_tol in _GRADE_1BF_RANGES:
+            if range_min <= id_val <= range_max:
+                wall_thickness = range_wall
+                wall_tolerance = range_tol
+                break
+        
+        # If not in range, use nearest nominal values
+        if wall_thickness is None:
+            wall_thickness = _GRADE_1BF_WALL_THICKNESS_MM[idx]
+            wall_tolerance = _GRADE_1BF_WALL_TOLS_MM[idx]
+            od_reference = _GRADE_1BF_OD_NOMINALS_MM[idx]
+        
+        id_tolerance = _GRADE_1BF_ID_TOLS_MM[idx]
+        
+        return {
+            'id_tolerance': f"{id_val:.1f} ± {id_tolerance:.1f} mm",
+            'wall_thickness': wall_thickness,
+            'wall_thickness_tolerance': f"± {wall_tolerance:.1f} mm",
+            'od_reference': od_reference,
+            'nearest_id': nearest_id
+        }
+        
+    except Exception as e:
+        logging.error(f"Error in Grade 1BF tolerance lookup: {e}")
+        return None
 
 def _parse_dimension(value: Any) -> Optional[float]:
     """Extract numeric value from dimension string or number."""
@@ -127,25 +193,10 @@ def is_mpaps_f6032(material: str) -> bool:
     
     return any(pattern.replace('-', '') in mat for pattern in patterns)
 
-def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
+def _apply_mpaps_specific_rules(results: Dict[str, Any]) -> None:
     """
-    Apply MPAPS F-6032 rules to analysis results.
-    Modifies results dict in place to add tolerances and burst pressure.
+    Apply specific MPAPS F-6032 rules.
     """
-    # Check multiple fields for MPAPS F-6032 indication
-    material = results.get('material')
-    standard = results.get('standard')
-    specification = results.get('specification')
-    
-    is_mpaps = (material and is_mpaps_f6032(material)) or \
-               (standard and is_mpaps_f6032(standard)) or \
-               (specification and is_mpaps_f6032(specification))
-    
-    if not is_mpaps:
-        return
-        
-    logging.info("Applying MPAPS F-6032 rules to results")
-    
     # Get dimensions from all possible locations
     dimensions = results.get('dimensions', {})
     
@@ -205,5 +256,76 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
     results['burst_pressure_mpa'] = 2.0  # Standard MPAPS F-6032 value
     results['burst_pressure_psi'] = round(2.0 * 145.038, 2)  # Convert to PSI
     results['burst_pressure'] = 20.0  # 2.0 MPa = 20 bar
-    
     logging.info("Set burst pressure values: 2.0 MPa, %.2f PSI, 20.0 bar", results['burst_pressure_psi'])
+
+def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
+    """
+    Apply Grade 1B/1BF rules to analysis results.
+    """
+    dimensions = results.get('dimensions', {})
+    
+    # Get ID for tolerance lookup
+    id_val = None
+    for id_key in ['id1', 'ID1', 'ID']:
+        val = str(dimensions.get(id_key, '') or results.get(id_key, '')).strip()
+        if val and val.lower() != 'not found':
+            try:
+                id_val = float(re.sub(r'[^\d.-]', '', val))
+                logging.info(f"Found valid ID value {id_val} from key {id_key}")
+                break
+            except (ValueError, TypeError):
+                continue
+    
+    if id_val is not None:
+        grade_1bf_info = get_grade_1bf_tolerance(id_val)
+        if grade_1bf_info:
+            # Set tolerances and dimensions
+            results['id_tolerance'] = grade_1bf_info['id_tolerance']
+            results['wall_thickness'] = grade_1bf_info['wall_thickness']
+            results['wall_thickness_tolerance'] = grade_1bf_info['wall_thickness_tolerance']
+            
+            # Set OD reference if available and OD not found
+            if grade_1bf_info['od_reference']:
+                if not dimensions.get('od1') or dimensions['od1'] == 'Not Found':
+                    dimensions['od1'] = grade_1bf_info['od_reference']
+                    dimensions['od2'] = grade_1bf_info['od_reference']
+                    logging.info(f"Set OD reference: {grade_1bf_info['od_reference']} mm")
+            
+            # Set material and reinforcement for Grade 1B/1BF
+            results['material'] = "EPDM"
+            results['reinforcement'] = "STEEL WIRE"  # Based on suffix BF
+            
+            logging.info(f"Grade 1B/1BF rules applied: ID={id_val}, Wall={grade_1bf_info['wall_thickness']}mm")
+        else:
+            results['id_tolerance'] = "N/A"
+            results['wall_thickness_tolerance'] = "N/A"
+            logging.warning("Could not calculate Grade 1B/1BF tolerances")
+    else:
+        logging.warning("No valid ID value found for Grade 1B/1BF tolerance calculation")
+
+def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
+    """
+    Apply MPAPS F-6032 rules to analysis results.
+    Modifies results dict in place to add tolerances and burst pressure.
+    """
+    # Check multiple fields for MPAPS F-6032 indication
+    material = results.get('material')
+    standard = results.get('standard')
+    specification = results.get('specification')
+    
+    is_mpaps = (material and is_mpaps_f6032(material)) or \
+               (standard and is_mpaps_f6032(standard)) or \
+               (specification and is_mpaps_f6032(specification))
+    
+    # Check for Grade 1B/1BF
+    grade = results.get('grade', '')
+    is_grade_1bf_spec = is_grade_1bf(grade)
+    
+    if is_mpaps:
+        logging.info("Applying MPAPS F-6032 rules to results")
+        _apply_mpaps_specific_rules(results)
+    elif is_grade_1bf_spec:
+        logging.info("Applying Grade 1B/1BF rules to results")
+        apply_grade_1bf_rules(results)
+    else:
+        return
