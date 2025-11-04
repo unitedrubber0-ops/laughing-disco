@@ -193,6 +193,11 @@ def is_mpaps_f6032(material: str) -> bool:
     
     return any(pattern.replace('-', '') in mat for pattern in patterns)
 
+# Expose key functions at module level
+__all__ = ['get_burst_pressure', 'is_grade_1bf', 'get_grade_1bf_tolerance', 
+           'get_mpaps_f6032_tolerance', 'is_mpaps_f6032', 'apply_mpaps_f6032_rules',
+           'apply_grade_1bf_rules']
+
 def _apply_mpaps_specific_rules(results: Dict[str, Any]) -> None:
     """
     Apply specific MPAPS F-6032 rules.

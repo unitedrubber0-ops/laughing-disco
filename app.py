@@ -14,7 +14,7 @@ from material_utils import (
     extract_diameter, development_length_from_diameter, are_rings_empty
 )
 from material_mappings import map_tms_to_mpaps_standard, debug_material_lookup
-from mpaps_utils import apply_mpaps_f6032_rules
+from mpaps_utils import apply_mpaps_f6032_rules, apply_grade_1bf_rules
 from rings_cleaning import clean_rings_text
 from rings_extraction_enhanced import extract_rings_from_text_specific
 from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
@@ -2106,7 +2106,6 @@ def analyze_drawing(pdf_bytes):
             
             if is_mpaps_f6032:
                 logging.info("MPAPS F-6032 detected, applying rules early")
-                from mpaps_utils import apply_mpaps_f6032_rules            # Ensure dimensions are available for tolerance calculation
             if 'dimensions' not in results:
                 results['dimensions'] = {}
             
@@ -3144,7 +3143,6 @@ def upload_and_analyze():
 
         # Apply MPAPS F-6032 rules for tolerances and burst pressure
         try:
-            from mpaps_utils import apply_mpaps_f6032_rules
             apply_mpaps_f6032_rules(final_results)
         except Exception as e:
             logging.error(f"Error applying MPAPS F-6032 rules: {e}", exc_info=True)
