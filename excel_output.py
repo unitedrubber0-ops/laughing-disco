@@ -38,11 +38,13 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             'POLYMER TYPE',                                      # For ASTM D2000 materials
             'REINFORCEMENT',                                     # Additional info
             'RINGS',                                            # Rings information
-            'VOLUME AS PER 2D',                                 # Volume calculation
             'ID1 AS PER 2D (MM)',                              # First ID measurement
+            'ID TOLERANCE (MM)',                                # MPAPS F-6032 ID tolerance
             'ID2 AS PER 2D (MM)',                              # Second ID measurement
             'OD1 AS PER 2D (MM)',                              # First OD measurement
+            'OD TOLERANCE (MM)',                                # MPAPS F-6032 OD tolerance
             'OD2 AS PER 2D (MM)',                              # Second OD measurement
+            'BURST PRESSURE (MPA)',                             # MPAPS F-6032 burst pressure
             'THICKNESS AS PER 2D (MM)',                        # Direct thickness
             'THICKNESS AS PER ID OD DIFFERENCE',               # Calculated thickness
             'CENTERLINE LENGTH AS PER 2D (MM)',                # From drawing
@@ -115,11 +117,13 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             'POLYMER TYPE': analysis_results.get('polymer_type', 'Not Applicable'),
             'REINFORCEMENT': analysis_results.get('reinforcement', 'Not Found'),
             'RINGS': analysis_results.get('rings', 'Not Found'),
-            'VOLUME AS PER 2D': analysis_results.get('volume', 'Not Found'),
             'ID1 AS PER 2D (MM)': dimensions.get('id1', 'Not Found'),
+            'ID TOLERANCE (MM)': analysis_results.get('id_tolerance', 'N/A'),
             'ID2 AS PER 2D (MM)': dimensions.get('id2', 'Not Found'),
             'OD1 AS PER 2D (MM)': dimensions.get('od1', 'Not Found'),
+            'OD TOLERANCE (MM)': analysis_results.get('od_tolerance', 'N/A'),
             'OD2 AS PER 2D (MM)': dimensions.get('od2', 'Not Found'),
+            'BURST PRESSURE (MPA)': analysis_results.get('burst_pressure_mpa', 'N/A'),
             'THICKNESS AS PER 2D (MM)': dimensions.get('thickness', 'Not Found'),
             'THICKNESS AS PER ID OD DIFFERENCE': thickness_calculated,
             'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),

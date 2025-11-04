@@ -14,6 +14,7 @@ from material_utils import (
     extract_diameter, development_length_from_diameter, are_rings_empty
 )
 from material_mappings import map_tms_to_mpaps_standard, debug_material_lookup
+from mpaps_utils import get_mpaps_f6032_tolerance, get_burst_pressure
 from rings_cleaning import clean_rings_text
 from rings_extraction_enhanced import extract_rings_from_text_specific
 from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
@@ -2154,6 +2155,26 @@ def analyze_drawing(pdf_bytes):
             results["rings_info"] = rings_info
             results["ring_coordinates"] = coords
             results["development_length"] = round(dev_len_final, 3) if dev_len_final is not None else None
+            
+            # Apply MPAPS F-6032 specific processing
+            if results.get('standard') == 'MPAPS F-6032':
+                dimensions = results.get('dimensions', {})
+                id1 = dimensions.get('id1')
+                od1 = dimensions.get('od1')
+                
+                # Add tolerances if dimensions available
+                if id1 and isinstance(id1, (int, float)):
+                    id_tol = get_mpaps_f6032_tolerance(id1, 'ID')
+                    if id_tol:
+                        results['id_tolerance'] = id_tol['formatted']
+                
+                if od1 and isinstance(od1, (int, float)):
+                    od_tol = get_mpaps_f6032_tolerance(od1, 'OD') 
+                    if od_tol:
+                        results['od_tolerance'] = od_tol['formatted']
+                
+                # Add burst pressure for MPAPS F-6032
+                results['burst_pressure_mpa'] = str(get_burst_pressure())
         
         logger.info("Drawing analysis completed successfully")
         return results
@@ -3096,6 +3117,13 @@ def upload_and_analyze():
         except Exception as e:
             logging.error(f"Error in data validation: {e}")
             final_results["validation_warnings"] = [f"Validation error: {str(e)}"]
+
+        # Apply MPAPS F-6032 rules for tolerances and burst pressure
+        try:
+            from mpaps_utils import apply_mpaps_f6032_rules
+            apply_mpaps_f6032_rules(final_results)
+        except Exception as e:
+            logging.error(f"Error applying MPAPS F-6032 rules: {e}", exc_info=True)
 
         # Initialize development length
         dev_length = 0
