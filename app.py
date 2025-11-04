@@ -2085,6 +2085,35 @@ def analyze_drawing(pdf_bytes):
         if "coordinates" in best_result and isinstance(best_result["coordinates"], list):
             results["coordinates"] = best_result["coordinates"]
             
+            # Apply MPAPS F-6032 rules EARLY - before material lookup
+            # Check for MPAPS F-6032 in multiple fields with normalized comparison
+            standard = str(best_result.get('standard', '')).upper().strip()
+            material = str(best_result.get('material', '')).upper().strip()
+            specification = str(best_result.get('specification', '')).upper().strip()
+            
+            # Remove spaces, underscores, and dashes for comparison
+            mpaps_f6032_variants = [
+                'MPAPSF6032', 'MPAPSF-6032', 'MPAPS F6032', 'MPAPS F-6032',
+                'MPAPS F 6032', 'MPAPS-F-6032', 'MPAPS_F_6032'
+            ]
+            
+            is_mpaps_f6032 = any(
+                variant in standard.replace(' ', '').replace('_', '').replace('-', '') or
+                variant in material.replace(' ', '').replace('_', '').replace('-', '') or
+                variant in specification.replace(' ', '').replace('_', '').replace('-', '')
+                for variant in mpaps_f6032_variants
+            )
+            
+            if is_mpaps_f6032:
+                logging.info("MPAPS F-6032 detected, applying rules early")
+                from mpaps_utils import apply_mpaps_f6032_rules            # Ensure dimensions are available for tolerance calculation
+            if 'dimensions' not in results:
+                results['dimensions'] = {}
+            
+            # Set material temporarily for MPAPS rule application
+            results['material'] = 'MPAPS F-6032'
+            apply_mpaps_f6032_rules(results)
+            
         # Extract rings and coordinate information
         if "extracted_text" in best_result:
             extracted_text = best_result["extracted_text"]
@@ -2169,8 +2198,7 @@ def analyze_drawing(pdf_bytes):
             results["ring_coordinates"] = coords
             results["development_length"] = round(dev_len_final, 3) if dev_len_final is not None else None
             
-            # Apply MPAPS F-6032 rules for tolerances and burst pressure
-            apply_mpaps_f6032_rules(results)
+            # Note: MPAPS F-6032 rules are already applied early in the process
         
         logger.info("Drawing analysis completed successfully")
         return results

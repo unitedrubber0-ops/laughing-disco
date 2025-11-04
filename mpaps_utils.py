@@ -116,42 +116,94 @@ def is_mpaps_f6032(material: str) -> bool:
         
     mat = str(material).upper().strip()
     mat = re.sub(r'[\s_-]+', '', mat)  # Remove spaces, underscores, dashes
-    return 'MPAPSF6032' in mat
+    
+    # Check for various MPAPS F-6032 patterns
+    patterns = [
+        'MPAPSF6032',
+        'MPAPSF-6032', 
+        'MPAPS F6032',
+        'MPAPS F-6032'
+    ]
+    
+    return any(pattern.replace('-', '') in mat for pattern in patterns)
 
 def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
     """
     Apply MPAPS F-6032 rules to analysis results.
     Modifies results dict in place to add tolerances and burst pressure.
     """
+    # Check multiple fields for MPAPS F-6032 indication
     material = results.get('material')
-    if not material or not is_mpaps_f6032(material):
+    standard = results.get('standard')
+    specification = results.get('specification')
+    
+    is_mpaps = (material and is_mpaps_f6032(material)) or \
+               (standard and is_mpaps_f6032(standard)) or \
+               (specification and is_mpaps_f6032(specification))
+    
+    if not is_mpaps:
         return
         
     logging.info("Applying MPAPS F-6032 rules to results")
     
-    # Get dimensions from either top level or dimensions dict
+    # Get dimensions from all possible locations
     dimensions = results.get('dimensions', {})
     
-    # Get ID tolerance if available
-    id_val = results.get('id1') or dimensions.get('id1') or results.get('ID')
-    if id_val is not None and id_val != "Not Found":
+    # Check for ID in multiple locations with type conversion
+    id_val = None
+    for id_key in ['id1', 'ID1', 'ID']:
+        val = str(dimensions.get(id_key, '') or results.get(id_key, '')).strip()
+        if val and val.lower() != 'not found':
+            try:
+                id_val = float(re.sub(r'[^\d.-]', '', val))
+                logging.info(f"Found valid ID value {id_val} from key {id_key}")
+                break
+            except (ValueError, TypeError):
+                continue
+    
+    # Check for OD in multiple locations with type conversion
+    od_val = None
+    for od_key in ['od1', 'OD1', 'OD']:
+        val = str(dimensions.get(od_key, '') or results.get(od_key, '')).strip()
+        if val and val.lower() != 'not found':
+            try:
+                od_val = float(re.sub(r'[^\d.-]', '', val))
+                logging.info(f"Found valid OD value {od_val} from key {od_key}")
+                break
+            except (ValueError, TypeError):
+                continue
+    
+    # Process ID tolerance if value found
+    if id_val is not None:
         id_tol = get_mpaps_f6032_tolerance(id_val, 'ID')
         if id_tol:
             results['id_tolerance'] = id_tol['formatted']
             results['id_nearest_nominal'] = id_tol['nearest_mm']
+            logging.info(f"Set ID tolerance: {id_tol['formatted']}")
         else:
-            results['id_tolerance'] = "Not Available"
+            results['id_tolerance'] = "N/A"
+            logging.warning(f"Could not calculate ID tolerance for value: {id_val}")
+    else:
+        results['id_tolerance'] = "N/A"
+        logging.warning("No valid ID value found for tolerance calculation")
             
-    # Get OD tolerance if available  
-    od_val = results.get('od1') or dimensions.get('od1') or results.get('OD')
-    if od_val is not None and od_val != "Not Found":
+    # Process OD tolerance if value found
+    if od_val is not None:
         od_tol = get_mpaps_f6032_tolerance(od_val, 'OD')
         if od_tol:
             results['od_tolerance'] = od_tol['formatted']
             results['od_nearest_nominal'] = od_tol['nearest_mm']
+            logging.info(f"Set OD tolerance: {od_tol['formatted']}")
         else:
-            results['od_tolerance'] = "Not Available"
+            results['od_tolerance'] = "N/A"
+            logging.warning(f"Could not calculate OD tolerance for value: {od_val}")
+    else:
+        results['od_tolerance'] = "N/A"
+        logging.warning("No valid OD value found for tolerance calculation")
             
-    # Set burst pressure
-    results['burst_pressure_mpa'] = 2.0
-    results['burst_pressure_psi'] = 290
+    # Set burst pressure with units
+    results['burst_pressure_mpa'] = 2.0  # Standard MPAPS F-6032 value
+    results['burst_pressure_psi'] = round(2.0 * 145.038, 2)  # Convert to PSI
+    results['burst_pressure'] = 20.0  # 2.0 MPa = 20 bar
+    
+    logging.info("Set burst pressure values: 2.0 MPa, %.2f PSI, 20.0 bar", results['burst_pressure_psi'])
