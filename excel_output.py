@@ -44,9 +44,10 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             'OD1 AS PER 2D (MM)',                              # First OD measurement
             'OD TOLERANCE (MM)',                                # MPAPS F-6032 OD tolerance
             'OD2 AS PER 2D (MM)',                              # Second OD measurement
-            'BURST PRESSURE (MPA)',                             # MPAPS F-6032 burst pressure
             'THICKNESS AS PER 2D (MM)',                        # Direct thickness
+            'WALL THICKNESS TOLERANCE (MM)',                   # Wall thickness tolerance from standards
             'THICKNESS AS PER ID OD DIFFERENCE',               # Calculated thickness
+            'BURST PRESSURE (MPA)',                           # MPAPS F-6032 burst pressure
             'CENTERLINE LENGTH AS PER 2D (MM)',                # From drawing
             'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)',      # Calculated length
             'BURST PRESSURE AS PER 2D (BAR)',                  # From drawing
@@ -105,6 +106,13 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             except (ValueError, TypeError):
                 pass
 
+        # Get wall thickness from either direct measurement or calculated
+        wall_thickness = analysis_results.get('wall_thickness')  # From Grade 1B/1BF rules
+        if wall_thickness is None:
+            wall_thickness = dimensions.get('thickness', 'Not Found')
+        if wall_thickness == 'Not Found' and thickness_calculated != 'Not Found':
+            wall_thickness = thickness_calculated
+
         # Build the row data dictionary
         row_data = {
             'child part': part_number.lower(),
@@ -123,9 +131,10 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             'OD1 AS PER 2D (MM)': dimensions.get('od1', 'Not Found'),
             'OD TOLERANCE (MM)': analysis_results.get('od_tolerance', 'N/A'),
             'OD2 AS PER 2D (MM)': dimensions.get('od2', 'Not Found'),
-            'BURST PRESSURE (MPA)': analysis_results.get('burst_pressure_mpa', 'N/A'),
-            'THICKNESS AS PER 2D (MM)': dimensions.get('thickness', 'Not Found'),
+            'THICKNESS AS PER 2D (MM)': wall_thickness,
+            'WALL THICKNESS TOLERANCE (MM)': analysis_results.get('wall_thickness_tolerance', 'N/A'),
             'THICKNESS AS PER ID OD DIFFERENCE': thickness_calculated,
+            'BURST PRESSURE (MPA)': analysis_results.get('burst_pressure_mpa', 'N/A'),
             'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),
             'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)': development_length,
             'BURST PRESSURE AS PER 2D (BAR)': analysis_results.get('burst_pressure', 'Not Found'),
@@ -144,7 +153,18 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
         # Check for specification conversion
         if standard.startswith('MPAPS F 1'):
             remarks.append('Drawing specifies MPAPS F 1, considered as MPAPS F 30.')
-
+            
+        # Check for Grade 1B/1BF information
+        grade = analysis_results.get('grade', '')
+        from mpaps_utils import is_grade_1bf
+        if is_grade_1bf(grade):
+            if analysis_results.get('wall_thickness'):
+                remarks.append(f"Using Grade 1B/1BF wall thickness: {analysis_results['wall_thickness']} mm")
+                if analysis_results.get('wall_thickness_tolerance'):
+                    remarks.append(f"Wall thickness tolerance: {analysis_results['wall_thickness_tolerance']}")
+            if analysis_results.get('od_reference'):
+                remarks.append(f"Using Grade 1B/1BF reference OD: {analysis_results['od_reference']} mm")
+                
         # Check for ID mismatch
         id1 = dimensions.get('id1', 'Not Found')
         id2 = dimensions.get('id2', 'Not Found')

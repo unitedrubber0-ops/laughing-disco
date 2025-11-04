@@ -76,7 +76,9 @@ def get_grade_1bf_tolerance(id_value: float) -> Optional[Dict[str, Any]]:
         return {
             'id_tolerance': f"{id_val:.1f} ± {id_tolerance:.1f} mm",
             'wall_thickness': wall_thickness,
-            'wall_thickness_tolerance': f"± {wall_tolerance:.1f} mm",
+            'wall_thickness_value': wall_thickness,  # Keep numeric value for calculations
+            'wall_thickness_tolerance': f"{wall_thickness:.2f} ± {wall_tolerance:.1f} mm",  # Format: "4.95 ± 0.8 mm"
+            'wall_tolerance_value': wall_tolerance,  # Keep numeric value
             'od_reference': od_reference,
             'nearest_id': nearest_id
         }
