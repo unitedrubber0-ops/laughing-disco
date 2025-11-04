@@ -84,6 +84,9 @@ def get_mpaps_f6032_tolerance(value: Any, dimension_type: str) -> Optional[Dict[
             raise ValueError(f"Invalid dimension type '{dimension_type}', must be 'ID' or 'OD'")
             
         # Find nearest nominal value
+        if not nominals:  # Handle empty lists
+            return None
+            
         diffs = [abs(n - value_mm) for n in nominals]
         idx = min(range(len(diffs)), key=lambda i: diffs[i])
         nearest = nominals[idx]
@@ -126,21 +129,28 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
         
     logging.info("Applying MPAPS F-6032 rules to results")
     
+    # Get dimensions from either top level or dimensions dict
+    dimensions = results.get('dimensions', {})
+    
     # Get ID tolerance if available
-    id_val = results.get('id1') or results.get('ID')
-    if id_val is not None:
+    id_val = results.get('id1') or dimensions.get('id1') or results.get('ID')
+    if id_val is not None and id_val != "Not Found":
         id_tol = get_mpaps_f6032_tolerance(id_val, 'ID')
         if id_tol:
             results['id_tolerance'] = id_tol['formatted']
             results['id_nearest_nominal'] = id_tol['nearest_mm']
+        else:
+            results['id_tolerance'] = "Not Available"
             
     # Get OD tolerance if available  
-    od_val = results.get('od1') or results.get('OD')
-    if od_val is not None:
+    od_val = results.get('od1') or dimensions.get('od1') or results.get('OD')
+    if od_val is not None and od_val != "Not Found":
         od_tol = get_mpaps_f6032_tolerance(od_val, 'OD')
         if od_tol:
             results['od_tolerance'] = od_tol['formatted']
             results['od_nearest_nominal'] = od_tol['nearest_mm']
+        else:
+            results['od_tolerance'] = "Not Available"
             
     # Set burst pressure
     results['burst_pressure_mpa'] = 2.0
