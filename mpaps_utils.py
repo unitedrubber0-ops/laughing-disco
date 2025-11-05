@@ -478,34 +478,37 @@ def is_mpaps_f6032(material: str) -> bool:
 # Expose key functions at module level
 __all__ = ['get_burst_pressure', 'is_grade_1bf', 'get_grade_1bf_tolerance', 
            'get_mpaps_f6032_tolerance', 'is_mpaps_f6032', 'apply_mpaps_f6032_rules',
-           'apply_grade_1bf_rules', 'get_burst_pressure_from_tables', 'apply_burst_pressure_rules', 
-           'is_mpaps_f30']
+           'apply_grade_1bf_rules', 'get_burst_pressure_from_tables', 'apply_burst_pressure_rules',
+           'get_mpaps_f6032_dimensions_from_table', 'apply_mpaps_f30_f1_rules']
 
-def _apply_mpaps_specific_rules(results: Dict[str, Any]) -> None:
+def apply_mpaps_f30_f1_rules(results: Dict[str, Any]) -> None:
     """
-    Apply specific MPAPS F-6032 rules using TABLE 1 for dimensions.
+    Apply MPAPS F-30/F-1 rules to analysis results.
+    Uses TABLE III and IV for burst pressure and existing tolerance rules.
     """
-    # Get dimensions from all possible locations
-    dimensions = results.get('dimensions', {})
+    standard = results.get('standard', '')
+    grade = results.get('grade', '')
     
-    # Check for ID in multiple locations with type conversion
-    id_val = None
-    for id_key in ['id1', 'ID1', 'ID', 'id']:
-        val = dimensions.get(id_key) or results.get(id_key)
-        if val and str(val).strip().lower() != 'not found':
-            try:
-                # Extract numeric value from string if needed
-                if isinstance(val, str):
-                    # Remove non-numeric characters except decimal point and minus
-                    val_clean = re.sub(r'[^\d.-]', '', val)
-                    id_val = float(val_clean)
-                else:
-                    id_val = float(val)
-                logging.info(f"Found valid ID value {id_val} from key {id_key}")
-                break
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Failed to parse ID value '{val}': {e}")
-                continue
+    # Only apply if it's MPAPS F-30 or F-1
+    is_f30_f1 = is_mpaps_f30(standard) or 'F-1' in str(standard).upper()
+    
+    if not is_f30_f1:
+        return
+        
+    logging.info("Applying MPAPS F-30/F-1 rules to results")
+    
+    # Check for MPAPS F-30 GRADE 1B
+    if is_mpaps_f30(standard) and '1B' in str(grade).upper():
+        logging.info("Applying MPAPS F-30 GRADE 1B rules to results")
+        apply_mpaps_f30_grade_1b_rules(results)
+    
+    # Check for Grade 1B/1BF in any standard
+    elif is_grade_1bf(grade):
+        logging.info("Applying Grade 1B/1BF rules to results")
+        apply_grade_1bf_rules(results)
+    
+    # Apply table-based burst pressure for all F-30/F-1 standards
+    apply_burst_pressure_rules(results)
     
     # Check for OD in multiple locations with type conversion
     od_val = None
@@ -648,46 +651,98 @@ def apply_mpaps_f30_grade_1b_rules(results: Dict[str, Any]) -> None:
 def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
     """
     Apply MPAPS F-6032 rules to analysis results.
-    Modifies results dict in place to add tolerances and burst pressure.
+    Uses TABLE 1 for dimensions and tolerances, and fixed 2.0 MPa burst pressure.
     """
     # Check multiple fields for MPAPS F-6032 indication
     material = results.get('material')
     standard = results.get('standard')
     specification = results.get('specification')
-    grade = results.get('grade', '')
     
-    # Check for MPAPS F-6032
-    if (material and is_mpaps_f6032(material)) or \
-       (standard and is_mpaps_f6032(standard)) or \
-       (specification and is_mpaps_f6032(specification)):
-        logging.info("Applying MPAPS F-6032 rules to results")
-        _apply_mpaps_specific_rules(results)
-        
-        # For MPAPS F-6032, set default burst pressure of 2.0 MPa
-        results['burst_pressure_mpa'] = MPAPS_F6032_BURST_PRESSURE_MPA
-        results['burst_pressure_psi'] = round(MPAPS_F6032_BURST_PRESSURE_MPA * 145.038, 2)
-        results['burst_pressure'] = MPAPS_F6032_BURST_PRESSURE_MPA * 10.0  # 2.0 MPa = 20 bar
-        results['burst_pressure_source'] = "MPAPS F-6032 default (2.0 MPa)"
-        logging.info("Set MPAPS F-6032 default burst pressure: 2.0 MPa")
+    # Only apply if it's MPAPS F-6032
+    is_f6032 = (material and is_mpaps_f6032(material)) or \
+               (standard and is_mpaps_f6032(standard)) or \
+               (specification and is_mpaps_f6032(specification))
     
-    # Check for MPAPS F-30 GRADE 1B
-    elif is_mpaps_f30(standard) and '1B' in str(grade).upper():
-        logging.info("Applying MPAPS F-30 GRADE 1B rules to results")
-        apply_mpaps_f30_grade_1b_rules(results)
-        # Apply table-based burst pressure for F-30
-        apply_burst_pressure_rules(results)
-    
-    # Check for Grade 1B/1BF in any standard
-    elif is_grade_1bf(grade):
-        logging.info("Applying Grade 1B/1BF rules to results")
-        apply_grade_1bf_rules(results)
-        # Apply table-based burst pressure if standard is F-30/F-1
-        if standard and (is_mpaps_f30(str(standard)) or 'F-1' in str(standard).upper()):
-            apply_burst_pressure_rules(results)
-    
-    # For other MPAPS F-30/F-1 standards, apply table-based burst pressure
-    elif standard and (is_mpaps_f30(str(standard)) or 'F-1' in str(standard).upper()):
-        logging.info("Applying MPAPS F-30/F-1 table-based burst pressure rules")
-        apply_burst_pressure_rules(results)
-    else:
+    if not is_f6032:
         return
+        
+    logging.info("Applying MPAPS F-6032 rules to results")
+    
+    # Get dimensions from all possible locations
+    dimensions = results.get('dimensions', {})
+    
+    # Check for ID in multiple locations with type conversion
+    id_val = None
+    for id_key in ['id1', 'ID1', 'ID', 'id']:
+        val = dimensions.get(id_key) or results.get(id_key)
+        if val and str(val).strip().lower() != 'not found':
+            try:
+                if isinstance(val, str):
+                    val_clean = re.sub(r'[^\d.-]', '', val)
+                    id_val = float(val_clean)
+                else:
+                    id_val = float(val)
+                logging.info(f"Found valid ID value {id_val} from key {id_key}")
+                break
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Failed to parse ID value '{val}': {e}")
+                continue
+    
+    # Check for OD in multiple locations with type conversion
+    od_val = None
+    for od_key in ['od1', 'OD1', 'OD']:
+        val = str(dimensions.get(od_key, '') or results.get(od_key, '')).strip()
+        if val and val.lower() != 'not found':
+            try:
+                od_val = float(re.sub(r'[^\d.-]', '', val))
+                logging.info(f"Found valid OD value {od_val} from key {od_key}")
+                break
+            except (ValueError, TypeError):
+                continue
+    
+    # For MPAPS F-6032, use TABLE 1 for dimensions and tolerances
+    if id_val is not None:
+        logging.info(f"Processing MPAPS F-6032 dimensions for ID: {id_val}mm")
+        
+        # Get dimensions from TABLE 1
+        table_data = get_mpaps_f6032_dimensions_from_table(id_val)
+        
+        if table_data:
+            # Set ID tolerance from TABLE 1
+            results['id_tolerance'] = table_data['id_formatted']
+            logging.info(f"Set ID tolerance from TABLE 1: {table_data['id_formatted']}")
+            
+            # Set OD tolerance from TABLE 1
+            results['od_tolerance'] = table_data['od_formatted']
+            logging.info(f"Set OD tolerance from TABLE 1: {table_data['od_formatted']}")
+            
+            # Update dimensions with nominal values from TABLE 1 if not already set
+            if not dimensions.get('id1') or dimensions['id1'] == 'Not Found':
+                dimensions['id1'] = table_data['nominal_id_mm']
+                dimensions['id2'] = table_data['nominal_id_mm']
+                logging.info(f"Updated ID dimensions with nominal: {table_data['nominal_id_mm']}mm")
+            
+            if (not dimensions.get('od1') or dimensions['od1'] == 'Not Found') and od_val is None:
+                dimensions['od1'] = table_data['nominal_od_mm']
+                dimensions['od2'] = table_data['nominal_od_mm']
+                logging.info(f"Updated OD dimensions with nominal: {table_data['nominal_od_mm']}mm")
+            
+            # Add nominal reference
+            results['nominal_id_inches'] = table_data['nominal_id_inches']
+            results['nominal_id_mm'] = table_data['nominal_id_mm']
+            results['dimension_source'] = "MPAPS F-6032 TABLE 1"
+        else:
+            results['id_tolerance'] = "N/A"
+            results['od_tolerance'] = "N/A"
+            logging.warning(f"Could not find MPAPS F-6032 dimensions for ID: {id_val}mm")
+    else:
+        results['id_tolerance'] = "N/A"
+        results['od_tolerance'] = "N/A"
+        logging.warning("No valid ID value found for MPAPS F-6032 dimension calculation")
+            
+    # Set burst pressure for MPAPS F-6032 (default 2.0 MPa = 20 bar)
+    results['burst_pressure_mpa'] = MPAPS_F6032_BURST_PRESSURE_MPA
+    results['burst_pressure_psi'] = round(MPAPS_F6032_BURST_PRESSURE_MPA * 145.038, 2)
+    results['burst_pressure'] = MPAPS_F6032_BURST_PRESSURE_MPA * 10.0  # Convert to bar
+    results['burst_pressure_source'] = "MPAPS F-6032 default (2.0 MPa)"
+    logging.info("Set MPAPS F-6032 default burst pressure: 2.0 MPa")

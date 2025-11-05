@@ -14,7 +14,7 @@ from material_utils import (
     extract_diameter, development_length_from_diameter, are_rings_empty
 )
 from material_mappings import map_tms_to_mpaps_standard, debug_material_lookup
-from mpaps_utils import apply_mpaps_f6032_rules, apply_grade_1bf_rules
+from mpaps_utils import apply_mpaps_f6032_rules, apply_mpaps_f30_f1_rules, apply_grade_1bf_rules
 from rings_cleaning import clean_rings_text
 from rings_extraction_enhanced import extract_rings_from_text_specific
 from development_length import calculate_vector_magnitude, calculate_dot_product, calculate_angle
@@ -3195,7 +3195,16 @@ def upload_and_analyze():
             debug_tolerance_lookup(final_results)
             
             # Apply rules
-            apply_mpaps_f6032_rules(final_results)
+            # Apply MPAPS rules - SEPARATE implementations
+            try:
+                # Apply MPAPS F-6032 rules (TABLE 1 + fixed burst pressure)
+                apply_mpaps_f6032_rules(final_results)
+                
+                # Apply MPAPS F-30/F-1 rules (TABLE III/IV burst pressure + existing tolerances)
+                apply_mpaps_f30_f1_rules(final_results)
+                
+            except Exception as e:
+                logging.error(f"Error applying MPAPS rules: {e}", exc_info=True)
             
             # Debug tolerance lookup after applying rules
             debug_tolerance_lookup(final_results)
