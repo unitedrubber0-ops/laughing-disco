@@ -240,12 +240,6 @@ def apply_burst_pressure_rules(results: Dict[str, Any]) -> None:
     except Exception as e:
         logging.error(f"Error applying burst pressure rules: {e}")
 
-def is_mpaps_f30(standard: str) -> bool:
-    """Check if the standard is MPAPS F-30."""
-    if not standard:
-        return False
-    return 'F-30' in str(standard).upper()
-
 def is_grade_1bf(grade: str) -> bool:
     """Check if grade specification matches Grade 1B or 1BF."""
     if not grade:
@@ -332,8 +326,7 @@ def _parse_dimension(value: Any) -> Optional[float]:
             
     except Exception as e:
         logging.warning(f"Failed to parse dimension value '{value}': {e}")
-        
-    return None
+        return None
 
 def _convert_to_mm(value: float) -> Tuple[float, bool]:
     """Convert value to mm if it appears to be in inches (< 3.0)."""
@@ -436,21 +429,21 @@ def get_mpaps_f6032_tolerance(value: Any, dimension_type: str) -> Optional[Dict[
         tolerance = tolerances[closest_idx]
         
         # Build result
-        result = {
-            'original': dim_num,
-            'value_mm': value_mm,
-            'nearest_mm': nearest,
-            'tol_mm': tolerance,
-            'was_inches': was_inches,
-            'formatted': f"{value_mm:.1f} ± {tolerance:.1f} mm"
-        }
-        
-        logging.debug(f"MPAPS F-6032 {dimension_type} tolerance lookup: {result}")
-        return result
-        
-    except Exception as e:
-        logging.error(f"Error in MPAPS F-6032 tolerance lookup: {e}")
-        return None
+        try:
+            result = {
+                'original': dim_num,
+                'value_mm': value_mm,
+                'nearest_mm': nearest,
+                'tol_mm': tolerance,
+                'was_inches': was_inches,
+                'formatted': f"{value_mm:.1f} ± {tolerance:.1f} mm"
+            }
+            
+            logging.debug(f"MPAPS F-6032 {dimension_type} tolerance lookup: {result}")
+            return result
+        except Exception as e:
+            logging.error(f"Error building result dict: {e}")
+            return None
 
 def is_mpaps_f30(standard: Optional[str]) -> bool:
     """Check if standard specification matches MPAPS F-30."""
@@ -526,59 +519,48 @@ def _apply_mpaps_specific_rules(results: Dict[str, Any]) -> None:
             except (ValueError, TypeError):
                 continue
     
-    # Process ID tolerance if value found
+    # Use TABLE 1 to get dimensions and tolerances
     if id_val is not None:
-        logging.info(f"Processing ID tolerance for value: {id_val}mm")
+        logging.info(f"Looking up MPAPS F-6032 dimensions for ID: {id_val}mm")
         
-        # Try Grade 1BF tolerance first (for MPAPS F-30 GRADE 1B)
-        logging.info("Attempting Grade 1BF tolerance lookup...")
-        id_tol_info = get_grade_1bf_tolerance(id_val)
-        if id_tol_info:
-            id_tol = {'formatted': id_tol_info['id_tolerance']}
-            logging.info(f"Grade 1BF tolerance found: {id_tol['formatted']} (wall thickness: {id_tol_info.get('wall_thickness')}mm)")
-        else:
-            # Fall back to MPAPS F-6032 tolerance
-            logging.info("Grade 1BF lookup failed, trying MPAPS F-6032 tolerance...")
-            id_tol = get_mpaps_f6032_tolerance(id_val, 'ID')
-            if id_tol:
-                logging.info(f"MPAPS F-6032 tolerance found: {id_tol['formatted']} (nearest nominal: {id_tol['nearest_mm']}mm)")
-            else:
-                logging.warning("Both Grade 1BF and MPAPS F-6032 tolerance lookups failed")
+        # Get dimensions from TABLE 1
+        table_dimensions = get_mpaps_f6032_dimensions_from_table(id_val)
         
-        if id_tol:
-            results['id_tolerance'] = id_tol['formatted']
-            logging.info(f"Set ID tolerance: {id_tol['formatted']}")
+        if table_dimensions:
+            # Set ID tolerance
+            results['id_tolerance'] = table_dimensions['id_formatted']
+            logging.info(f"Set ID tolerance from TABLE 1: {table_dimensions['id_formatted']}")
             
-            # Also set wall thickness if available from Grade 1BF
-            if id_tol_info and 'wall_thickness' in id_tol_info:
-                results['wall_thickness'] = id_tol_info['wall_thickness']
-                results['wall_thickness_tolerance'] = id_tol_info['wall_thickness_tolerance']
+            # Set OD tolerance and nominal value
+            results['od_tolerance'] = table_dimensions['od_formatted']
+            results['od_nearest_nominal'] = table_dimensions['nominal_od_mm']
+            
+            # Update dimensions dictionary to use TABLE 1 values
+            dimensions = results.get('dimensions', {})
+            dimensions['id1'] = table_dimensions['nominal_id_mm']
+            dimensions['od1'] = table_dimensions['nominal_od_mm']
+            dimensions['od2'] = table_dimensions['nominal_od_mm']  # Same as od1 for consistency
+            results['dimensions'] = dimensions
+            
+            logging.info(f"Set OD tolerance and nominal from TABLE 1: {table_dimensions['od_formatted']}")
+            logging.info(f"Updated dimensions to use TABLE 1 values: ID={table_dimensions['nominal_id_mm']}mm, OD={table_dimensions['nominal_od_mm']}mm")
         else:
+            # Fall back to existing tolerance calculation if TABLE 1 lookup fails
+            logging.warning(f"No matching dimensions found in TABLE 1 for ID {id_val}mm")
             results['id_tolerance'] = "N/A"
-            logging.warning(f"Could not calculate ID tolerance for value: {id_val}")
+            results['od_tolerance'] = "N/A"
     else:
         results['id_tolerance'] = "N/A"
-        logging.warning("No valid ID value found for tolerance calculation")
-            
-    # Process OD tolerance if value found
-    if od_val is not None:
-        od_tol = get_mpaps_f6032_tolerance(od_val, 'OD')
-        if od_tol:
-            results['od_tolerance'] = od_tol['formatted']
-            results['od_nearest_nominal'] = od_tol['nearest_mm']
-            logging.info(f"Set OD tolerance: {od_tol['formatted']}")
-        else:
-            results['od_tolerance'] = "N/A"
-            logging.warning(f"Could not calculate OD tolerance for value: {od_val}")
-    else:
         results['od_tolerance'] = "N/A"
-        logging.warning("No valid OD value found for tolerance calculation")
+        logging.warning("No valid ID value found for dimension lookup")
             
-    # Set burst pressure with units
-    results['burst_pressure_mpa'] = 2.0  # Standard MPAPS F-6032 value
-    results['burst_pressure_psi'] = round(2.0 * 145.038, 2)  # Convert to PSI
-    results['burst_pressure'] = 20.0  # 2.0 MPa = 20 bar
-    logging.info("Set burst pressure values: 2.0 MPa, %.2f PSI, 20.0 bar", results['burst_pressure_psi'])
+    # Set burst pressure with units (always 2.0 MPa for F-6032)
+    results['burst_pressure_mpa'] = MPAPS_F6032_BURST_PRESSURE_MPA
+    results['burst_pressure_psi'] = round(MPAPS_F6032_BURST_PRESSURE_MPA * 145.038, 2)  # Convert to PSI
+    results['burst_pressure'] = MPAPS_F6032_BURST_PRESSURE_MPA * 10.0  # 2.0 MPa = 20 bar
+    results['burst_pressure_source'] = "MPAPS F-6032 default (2.0 MPa)"
+    logging.info("Set burst pressure values: %.1f MPa, %.2f PSI, %.1f bar", 
+                 results['burst_pressure_mpa'], results['burst_pressure_psi'], results['burst_pressure'])
 
 def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
     """
