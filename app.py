@@ -3153,25 +3153,40 @@ def upload_and_analyze():
         # Calculate development length with improved handling
         try:
             coordinates = final_results.get("coordinates", [])
-            logger.debug("Raw coordinates (first 6): %s", coordinates[:6] if coordinates else [])
+            dimensions = final_results.get("dimensions", {})
+            centerline_length = dimensions.get("centerline_length")
             
-            if coordinates:
+            logger.info(f"Available coordinates: {len(coordinates) if coordinates else 0} points")
+            logger.info(f"Centerline length from drawing: {centerline_length}")
+            
+            # Priority 1: Use centerline length from drawing if available
+            if centerline_length and centerline_length != "Not Found":
+                try:
+                    dev_length = float(str(centerline_length))
+                    logger.info(f"Using centerline length as development length: {dev_length}mm")
+                except (ValueError, TypeError):
+                    pass
+            
+            # Priority 2: Calculate from coordinates if centerline not available
+            elif coordinates and len(coordinates) >= 2:
                 try:
                     dev_length = calculate_development_length_safe(coordinates)
-                    final_results["development_length_mm"] = f"{dev_length:.2f}"
-                    logger.debug("Development length computed: %s", final_results["development_length_mm"])
-                except ValueError as ve:
-                    final_results["development_length_mm"] = "Not Found"
-                    logger.warning(f"Could not compute development length: {ve}")
+                    logger.info(f"Calculated development length from coordinates: {dev_length:.2f}mm")
                 except Exception as exc:
-                    final_results["development_length_mm"] = "Not Found"
-                    logger.exception("Error computing development length: %s", exc)
+                    logger.warning(f"Coordinate-based development length calculation failed: {exc}")
+                    dev_length = 0
+            
+            # Update results
+            if dev_length > 0:
+                final_results["development_length_mm"] = f"{dev_length:.2f}"
             else:
                 final_results["development_length_mm"] = "Not Found"
-                logger.info("No coordinates found for development length calculation")
+                logger.info("No valid development length calculated")
+                
         except Exception as e:
             final_results["development_length_mm"] = "Not Found"
             logger.exception("Error in development length calculation: %s", e)
+            logger.info("No coordinates found for development length calculation")
         
         # Generate Excel report if helper function exists
         try:

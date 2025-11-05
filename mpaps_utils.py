@@ -177,6 +177,18 @@ def get_mpaps_f6032_tolerance(value: Any, dimension_type: str) -> Optional[Dict[
         logging.error(f"Error in MPAPS F-6032 tolerance lookup: {e}")
         return None
 
+def is_mpaps_f30(standard: Optional[str]) -> bool:
+    """Check if standard specification matches MPAPS F-30."""
+    if not standard:
+        return False
+        
+    try:
+        std = str(standard).upper().strip()
+        std = re.sub(r'[\s_-]+', '', std)
+        return 'MPAPSF30' in std
+    except (AttributeError, TypeError):
+        return False
+
 def is_mpaps_f6032(material: str) -> bool:
     """Check if material specification matches MPAPS F-6032."""
     if not material:
@@ -310,6 +322,44 @@ def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
     else:
         logging.warning("No valid ID value found for Grade 1B/1BF tolerance calculation")
 
+def apply_mpaps_f30_grade_1b_rules(results: Dict[str, Any]) -> None:
+    """
+    Apply MPAPS F-30 GRADE 1B rules to analysis results.
+    Uses the Grade 1B table for dimensions and tolerances.
+    """
+    standard = results.get('standard', '')
+    grade = results.get('grade', '')
+    
+    if not (is_mpaps_f30(standard) and '1B' in str(grade).upper()):
+        return
+        
+    logging.info("Applying MPAPS F-30 GRADE 1B rules to results")
+    
+    # Get dimensions from either top level or dimensions dict
+    dimensions = results.get('dimensions', {})
+    
+    # Get ID for tolerance lookup
+    id_val = results.get('id1') or dimensions.get('id1') or results.get('ID')
+    if id_val is not None and id_val != "Not Found":
+        grade_1b_info = get_grade_1bf_tolerance(id_val)
+        if grade_1b_info:
+            results['id_tolerance'] = grade_1b_info['id_tolerance']
+            results['wall_thickness'] = grade_1b_info['wall_thickness']
+            results['wall_thickness_tolerance'] = grade_1b_info['wall_thickness_tolerance']
+            
+            # Set OD reference if available and OD not found
+            if grade_1b_info['od_reference']:
+                results['od1'] = grade_1b_info['od_reference']
+                if 'dimensions' in results:
+                    results['dimensions']['od1'] = grade_1b_info['od_reference']
+                    results['dimensions']['od2'] = grade_1b_info['od_reference']
+            
+            logging.info(f"MPAPS F-30 GRADE 1B rules applied: ID={id_val}, Wall={grade_1b_info['wall_thickness']}mm")
+    
+    # Set burst pressure for MPAPS F-30 (typically 2.0 MPa = 20 bar)
+    results['burst_pressure_mpa'] = 2.0
+    results['burst_pressure'] = 20.0
+
 def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
     """
     Apply MPAPS F-6032 rules to analysis results.
@@ -319,19 +369,22 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
     material = results.get('material')
     standard = results.get('standard')
     specification = results.get('specification')
-    
-    is_mpaps = (material and is_mpaps_f6032(material)) or \
-               (standard and is_mpaps_f6032(standard)) or \
-               (specification and is_mpaps_f6032(specification))
-    
-    # Check for Grade 1B/1BF
     grade = results.get('grade', '')
-    is_grade_1bf_spec = is_grade_1bf(grade)
     
-    if is_mpaps:
+    # Check for MPAPS F-6032
+    if (material and is_mpaps_f6032(material)) or \
+       (standard and is_mpaps_f6032(standard)) or \
+       (specification and is_mpaps_f6032(specification)):
         logging.info("Applying MPAPS F-6032 rules to results")
         _apply_mpaps_specific_rules(results)
-    elif is_grade_1bf_spec:
+    
+    # Check for MPAPS F-30 GRADE 1B
+    elif is_mpaps_f30(standard) and '1B' in str(grade).upper():
+        logging.info("Applying MPAPS F-30 GRADE 1B rules to results")
+        apply_mpaps_f30_grade_1b_rules(results)
+    
+    # Check for Grade 1B/1BF in any standard
+    elif is_grade_1bf(grade):
         logging.info("Applying Grade 1B/1BF rules to results")
         apply_grade_1bf_rules(results)
     else:
