@@ -488,6 +488,7 @@ def apply_mpaps_f30_f1_rules(results: Dict[str, Any]) -> None:
     """
     standard = results.get('standard', '')
     grade = results.get('grade', '')
+    dimensions = results.get('dimensions', {})
     
     # Only apply if it's MPAPS F-30 or F-1
     is_f30_f1 = is_mpaps_f30(standard) or 'F-1' in str(standard).upper()
@@ -496,6 +497,27 @@ def apply_mpaps_f30_f1_rules(results: Dict[str, Any]) -> None:
         return
         
     logging.info("Applying MPAPS F-30/F-1 rules to results")
+    
+    # Get ID for tolerance lookup
+    id_val = None
+    for id_key in ['id1', 'ID1', 'ID', 'id']:
+        val = dimensions.get(id_key) or results.get(id_key)
+        if val and str(val).strip().lower() != 'not found':
+            try:
+                if isinstance(val, str):
+                    val_clean = re.sub(r'[^\d.-]', '', val)
+                    id_val = float(val_clean)
+                else:
+                    id_val = float(val)
+                logging.info(f"Found valid ID value {id_val} from key {id_key}")
+                break
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Failed to parse ID value '{val}': {e}")
+                continue
+    
+    if id_val is None:
+        logging.warning("No valid ID value found for F-30/F-1 rules")
+        return
     
     # Check for MPAPS F-30 GRADE 1B
     if is_mpaps_f30(standard) and '1B' in str(grade).upper():
