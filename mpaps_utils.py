@@ -12,11 +12,22 @@ MPAPS_F6032_BURST_PRESSURE_MPA = 2.0
 MAX_ACCEPT_DIFF_MM = 0.5  # Allow up to 0.5mm difference for practical measurements
 
 # Burst pressure tables for MPAPS F-30/F-1
+# Grade lookup guide for TABLE IV:
+# - Grade 1BF: Use "Suffix F, Grade 1" column (column 6)
+# - Grade 2B:  Use "Suffix B, Grade 2" column (column 3)
+# - Grade 1B/3B: Use "Suffix B, Grade 1&3" column (column 2)
+# - For Grade 1A/2A/3A: Use TABLE III instead (fixed values)
 TABLE_IV_BURST_PRESSURE = [
-    # Over, Thru, Suffix B Grade 1&3, Suffix B Grade 2, 
-    # Suffix C Grade 1, Suffix C Grade 2, Suffix F Grade 1, Suffix F Grade 2
-    (0, 24, 1.72, 1.72, 2.10, 1.72, 2.5, 2.25),
-    (24, 32, 1.38, 1.21, 1.90, 1.38, 2.1, 2.25),
+    # Column indices and what they contain:
+    # [0] Over (mm), [1] Thru (mm)
+    # [2] Suffix B Grade 1&3: For grades 1B and 3B
+    # [3] Suffix B Grade 2:   For grade 2B
+    # [4] Suffix C Grade 1:   For grade 1C
+    # [5] Suffix C Grade 2:   For grade 2C
+    # [6] Suffix F Grade 1:   For grade 1BF
+    # [7] Suffix F Grade 2:   For grade 2F
+    (0, 24, 1.72, 1.72, 2.10, 1.72, 2.5, 2.25),   # e.g. for 15mm ID: 1BF->2.5 MPa, 2B->1.72 MPa
+    (24, 32, 1.38, 1.21, 1.90, 1.38, 2.1, 2.25),  # e.g. for 25mm ID: 1B->1.38 MPa, 2B->1.21 MPa
     (32, 44, 1.21, 1.21, 1.72, 1.38, 2.1, 2.25),
     (44, 50.8, 1.00, 1.21, 1.38, 1.21, 1.55, 2.25),
     (51, 65, 0.90, 0.69, 1.38, 1.21, 1.38, 1.21),
@@ -39,15 +50,19 @@ TABLE_1_DATA = [
     ('1', 24.6, 0.79, 34.9, 1.0)
 ]
 
-# Grade 1B/1BF data tables from specification
-_GRADE_1BF_ID_NOMINALS_MM = [15.1, 18.4, 21.3, 24.6, 62.7]
-_GRADE_1BF_ID_TOLS_MM = [0.5, 0.5, 0.5, 0.5, 0.5]
-_GRADE_1BF_OD_NOMINALS_MM = [25.0, 28.3, 29.9, 34.5, 73.4]
-_GRADE_1BF_WALL_THICKNESS_MM = [4.95, 4.95, 4.95, 4.95, 5.35]
-_GRADE_1BF_WALL_TOLS_MM = [0.8, 0.8, 0.8, 0.8, 0.8]
+# TABLE VII-B: SUFFIX BF HOSE ID AND WALL DIMENSIONS AND TOLERANCES (MPAPS F-30/F-1 only)
+_F30_BF_TABLE = [
+    # (nominal ID inches, actual ID mm, ID tolerance mm, OD mm, wall thickness mm, wall tolerance mm)
+    ('5/8', 15.1, 0.8, 25.0, 4.95, 0.8),
+    ('3/4', 18.4, 0.8, 28.3, 4.95, 0.8),
+    ('7/8', 21.3, 0.8, 29.9, 4.95, 0.8),
+    ('1', 24.6, 0.8, 34.5, 4.95, 0.8),
+    ('>1.0 < 2.0', None, 0.8, None, 4.95, 0.8),   # For ID range 26 - 50.8 mm
+    ('>2.0', None, 0.8, None, 5.35, 0.8)          # For ID range >50.8 - 63.5 mm
+]
 
-# Range data for Grade 1BF
-_GRADE_1BF_RANGES = [
+# Range data for MPAPS F-30/F-1 Suffix BF dimensions
+_F30_BF_RANGES = [
     (26.0, 50.8, 4.95, 0.8),   # min_id, max_id, wall_thickness, wall_tolerance
     (50.8, 63.5, 5.35, 0.8)    # min_id, max_id, wall_thickness, wall_tolerance
 ]
@@ -106,6 +121,7 @@ def get_mpaps_f6032_dimensions_from_table(id_value: float) -> Optional[Dict[str,
 def get_burst_pressure_from_tables(grade: str, id_value: float) -> Optional[float]:
     """
     Get burst pressure from tables based on grade and ID value for MPAPS F-30/F-1.
+    Uses TABLE III for Suffix A and TABLE IV for Suffix B, C and F.
     
     Args:
         grade: Grade specification (e.g., '1BF', '2B', '1A', etc.)
@@ -118,38 +134,47 @@ def get_burst_pressure_from_tables(grade: str, id_value: float) -> Optional[floa
         grade_str = str(grade).upper().strip()
         id_val = float(id_value)
         
-        logging.info(f"Burst pressure lookup: Grade='{grade_str}', ID={id_val}mm")
+        logging.info(f"MPAPS F-30/F-1 burst pressure lookup: Grade='{grade_str}', ID={id_val}mm")
         
-        # TABLE III: BURST STRENGTH FOR SUFFIX A (Grades 1A, 2A, 3A)
+        # TABLE III: BURST STRENGTH FOR SUFFIX A (fixed values regardless of ID)
         if grade_str in ['1A', '2A', '3A']:
             if grade_str == '1A':
-                return 4.1  # MPa
-            elif grade_str in ['2A', '3A']:
-                return 2.1  # MPa
+                logging.info("Using TABLE III: Grade 1A = 4.1 MPa")
+                return 4.1  # MPa (600 psi)
+            else:  # 2A or 3A
+                logging.info("Using TABLE III: Grade 2A/3A = 2.1 MPa")
+                return 2.1  # MPa (300 psi)
         
         # TABLE IV: BURST STRENGTH FOR SUFFIX B, C and F
         elif 'BF' in grade_str or 'B' in grade_str or 'C' in grade_str or 'F' in grade_str:
             # Determine which column to use based on grade
-            column_index = None
-            
-            # Grade 1BF -> Suffix F, Grade 1 (column index 6)
             if '1BF' in grade_str:
-                column_index = 6
-            # Grade 2B -> Suffix B, Grade 2 (column index 3)  
+                # Grade 1BF -> Look in Suffix F, Grade 1 column
+                column_name = "Suffix F, Grade 1"
+                column_index = 6  # 7th column (0-based index)
             elif '2B' in grade_str:
-                column_index = 3
-            # Grade 1B or 3B -> Suffix B, Grade 1&3 (column index 2)
-            elif any(g in grade_str for g in ['1B', '3B']):
-                column_index = 2
-            # Grade 1C -> Suffix C, Grade 1 (column index 4)
+                # Grade 2B -> Look in Suffix B, Grade 2 column
+                column_name = "Suffix B, Grade 2"
+                column_index = 3  # 4th column (0-based index)
+            elif '1B' in grade_str or '3B' in grade_str:
+                # Grade 1B or 3B -> Look in Suffix B, Grade 1&3 column
+                column_name = "Suffix B, Grade 1&3"
+                column_index = 2  # 3rd column (0-based index)
             elif '1C' in grade_str:
+                # Grade 1C -> Look in Suffix C, Grade 1 column
+                column_name = "Suffix C, Grade 1"
                 column_index = 4
-            # Grade 2C -> Suffix C, Grade 2 (column index 5)
             elif '2C' in grade_str:
+                # Grade 2C -> Look in Suffix C, Grade 2 column
+                column_name = "Suffix C, Grade 2"
                 column_index = 5
-            # Grade 2F -> Suffix F, Grade 2 (column index 7)
             elif '2F' in grade_str:
+                # Grade 2F -> Look in Suffix F, Grade 2 column
+                column_name = "Suffix F, Grade 2"
                 column_index = 7
+            else:
+                logging.warning(f"Unrecognized grade pattern: {grade_str}")
+                return None
             
             if column_index is not None:
                 # Find the appropriate row based on ID
@@ -248,54 +273,53 @@ def is_grade_1bf(grade: str) -> bool:
     grade_str = str(grade).upper().strip()
     return any(pattern in grade_str for pattern in ['1B', '1BF', 'GRADE 1B', 'GRADE 1BF'])
 
-def get_grade_1bf_tolerance(id_value: float) -> Optional[Dict[str, Any]]:
+def get_f30_bf_dimensions(id_value: float) -> Optional[Dict[str, Any]]:
     """
-    Get Grade 1B/1BF tolerance and wall thickness based on ID.
+    Get Suffix BF dimensions and tolerances from TABLE VII-B for MPAPS F-30/F-1 standards.
+    Uses exact matches for standard sizes (5/8" to 1") and range-based lookup for larger sizes.
+    
+    Args:
+        id_value: Inside diameter in mm
+        
+    Returns:
+        Dict with dimension info (tolerances, wall thickness, etc.) or None if not found
     """
     try:
         id_val = _parse_dimension(id_value)
         if id_val is None:
             return None
             
-        logging.info(f"Grade 1BF tolerance lookup for ID: {id_val}mm")
-        logging.info(f"Available Grade 1BF ID nominals: {_GRADE_1BF_ID_NOMINALS_MM}")
+        logging.info(f"MPAPS F-30/F-1 Suffix BF dimension lookup for ID: {id_val}mm")
         
-        # Find nearest nominal ID in Grade 1BF table
-        closest_idx = None
-        min_diff = float('inf')
+        # First check exact matches in TABLE VII-B
+        for row in _F30_BF_TABLE:
+            nominal_in, actual_id_mm, id_tol_mm, od_mm, wall_mm, wall_tol_mm = row
+            if actual_id_mm is not None and abs(actual_id_mm - id_val) <= MAX_ACCEPT_DIFF_MM:
+                logging.info(f"Found exact match in TABLE VII-B: {nominal_in} inch nominal")
+                return {
+                    'id_tolerance': f"{id_val:.1f} ± {id_tol_mm} mm",
+                    'wall_thickness': wall_mm,
+                    'wall_thickness_value': wall_mm,
+                    'wall_thickness_tolerance': f"{wall_mm:.2f} ± {wall_tol_mm} mm",
+                    'nominal_inches': nominal_in,
+                    'od_reference': od_mm,
+                    'nearest_id': actual_id_mm
+                }
         
-        for i, nominal_id in enumerate(_GRADE_1BF_ID_NOMINALS_MM):
-            diff = abs(nominal_id - id_val)
-            if diff < min_diff:
-                min_diff = diff
-                closest_idx = i
-        
-        # Allow a reasonable matching window
-        if closest_idx is None:
-            logging.warning(f"No Grade 1BF nominal values available for lookup")
-            return None
-        if min_diff > MAX_ACCEPT_DIFF_MM:
-            logging.warning(f"Nearest Grade 1BF nominal for ID {id_val}mm is {min_diff:.2f}mm away; "
-                          f"accepting nearest value {_GRADE_1BF_ID_NOMINALS_MM[closest_idx]}mm but double-check if this is expected.")
-        
-        # Use the matched values
-        wall_thickness = _GRADE_1BF_WALL_THICKNESS_MM[closest_idx]
-        wall_tolerance = _GRADE_1BF_WALL_TOLS_MM[closest_idx]
-        od_reference = _GRADE_1BF_OD_NOMINALS_MM[closest_idx]
-        id_tolerance = _GRADE_1BF_ID_TOLS_MM[closest_idx]
-        nearest_id = _GRADE_1BF_ID_NOMINALS_MM[closest_idx]
-        
-        id_tolerance = _GRADE_1BF_ID_TOLS_MM[closest_idx]
-        
-        return {
-            'id_tolerance': f"{id_val:.1f} ± {id_tolerance:.1f} mm",
-            'wall_thickness': wall_thickness,
-            'wall_thickness_value': wall_thickness,  # Keep numeric value for calculations
-            'wall_thickness_tolerance': f"{wall_thickness:.2f} ± {wall_tolerance:.1f} mm",  # Format: "4.95 ± 0.8 mm"
-            'wall_tolerance_value': wall_tolerance,  # Keep numeric value
-            'od_reference': od_reference,
-            'nearest_id': nearest_id
-        }
+        # If no exact match, check ranges
+        for min_id, max_id, wall_mm, wall_tol_mm in _F30_BF_RANGES:
+            if min_id <= id_val <= max_id:
+                logging.info(f"Found range match in TABLE VII-B: {min_id}-{max_id}mm")
+                return {
+                    'id_tolerance': f"{id_val:.1f} ± 0.8 mm",  # Fixed tolerance per table
+                    'wall_thickness': wall_mm,
+                    'wall_thickness_value': wall_mm,
+                    'wall_thickness_tolerance': f"{wall_mm:.2f} ± {wall_tol_mm} mm",
+                    'nominal_inches': f">{min_id/25.4:.1f}",  # Convert to inches for display
+                    'od_reference': None,  # No fixed OD for range-based sizes
+                    'nearest_id': id_val,  # Use actual ID as no nominal exists
+                    'wall_tolerance_value': wall_tol_mm  # Keep numeric value
+                }
         
     except Exception as e:
         logging.error(f"Error in Grade 1BF tolerance lookup: {e}")
@@ -476,7 +500,7 @@ def is_mpaps_f6032(material: str) -> bool:
     return any(pattern.replace('-', '') in mat for pattern in patterns)
 
 # Expose key functions at module level
-__all__ = ['get_burst_pressure', 'is_grade_1bf', 'get_grade_1bf_tolerance', 
+__all__ = ['get_burst_pressure', 'is_grade_1bf', 'get_f30_bf_dimensions', 
            'get_mpaps_f6032_tolerance', 'is_mpaps_f6032', 'apply_mpaps_f6032_rules',
            'apply_grade_1bf_rules', 'get_burst_pressure_from_tables', 'apply_burst_pressure_rules',
            'get_mpaps_f6032_dimensions_from_table', 'apply_mpaps_f30_f1_rules']
@@ -606,7 +630,7 @@ def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
                 continue
     
     if id_val is not None:
-        grade_1bf_info = get_grade_1bf_tolerance(id_val)
+        grade_1bf_info = get_f30_bf_dimensions(id_val)
         if grade_1bf_info:
             # Set tolerances and dimensions
             results['id_tolerance'] = grade_1bf_info['id_tolerance']
@@ -651,7 +675,7 @@ def apply_mpaps_f30_grade_1b_rules(results: Dict[str, Any]) -> None:
     # Get ID for tolerance lookup
     id_val = results.get('id1') or dimensions.get('id1') or results.get('ID')
     if id_val is not None and id_val != "Not Found":
-        grade_1b_info = get_grade_1bf_tolerance(id_val)
+        grade_1b_info = get_f30_bf_dimensions(id_val)
         if grade_1b_info:
             results['id_tolerance'] = grade_1b_info['id_tolerance']
             results['wall_thickness'] = grade_1b_info['wall_thickness']
