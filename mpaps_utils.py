@@ -8,6 +8,9 @@ from typing import Optional, Dict, Any, Tuple
 # Constants for burst pressure
 MPAPS_F6032_BURST_PRESSURE_MPA = 2.0
 
+# Maximum acceptable difference for nominal value matching (mm)
+MAX_ACCEPT_DIFF_MM = 0.5  # Allow up to 0.5mm difference for practical measurements
+
 # MPAPS F-6032 ID nominal values (mm) and tolerances (mm) from spec table
 _MPAPS_ID_NOMINALS_MM = [3.97, 4.76, 5.56, 5.95, 7.14, 9.00, 12.00, 15.10, 18.40, 24.60]
 _MPAPS_ID_TOLS_MM     = [0.4,  0.4,  0.4,  0.4,  0.4,  0.4,  0.58, 0.79, 0.79, 0.79]
@@ -62,10 +65,13 @@ def get_grade_1bf_tolerance(id_value: float) -> Optional[Dict[str, Any]]:
                 min_diff = diff
                 closest_idx = i
         
-        # Check if we have a reasonable match (within 0.1mm tolerance for exact matches)
-        if closest_idx is None or min_diff > 0.1:
-            logging.warning(f"No close Grade 1BF match found for ID {id_val}mm (min_diff: {min_diff})")
+        # Allow a reasonable matching window
+        if closest_idx is None:
+            logging.warning(f"No Grade 1BF nominal values available for lookup")
             return None
+        if min_diff > MAX_ACCEPT_DIFF_MM:
+            logging.warning(f"Nearest Grade 1BF nominal for ID {id_val}mm is {min_diff:.2f}mm away; "
+                          f"accepting nearest value {_GRADE_1BF_ID_NOMINALS_MM[closest_idx]}mm but double-check if this is expected.")
         
         # Use the matched values
         wall_thickness = _GRADE_1BF_WALL_THICKNESS_MM[closest_idx]
@@ -168,11 +174,14 @@ def get_mpaps_f6032_tolerance(value: Any, dimension_type: str) -> Optional[Dict[
                 min_diff = diff
                 closest_idx = i
         
-        # Allow very tight tolerance for matching (0.01mm for exact matches)
-        if closest_idx is None or min_diff > 0.01:
-            logging.warning(f"No close MPAPS F-6032 match found for {dimension_type} value {value_mm}mm (min_diff: {min_diff})")
-            logging.info(f"Available {dimension_type} nominals: {nominals}")
+        # Accept nearest nominal and warn when the match is relatively far
+        if closest_idx is None:
+            logging.warning(f"No MPAPS F-6032 nominals available for lookup")
             return None
+        if min_diff > MAX_ACCEPT_DIFF_MM:
+            logging.warning(f"No close MPAPS F-6032 match found for {dimension_type} value {value_mm}mm "
+                          f"(nearest {nominals[closest_idx]} mm, diff {min_diff:.3f}mm). "
+                          "Returning nearest nominal — please verify.")
             
         nearest = nominals[closest_idx]
         tolerance = tolerances[closest_idx]
@@ -272,15 +281,19 @@ def _apply_mpaps_specific_rules(results: Dict[str, Any]) -> None:
         logging.info(f"Processing ID tolerance for value: {id_val}mm")
         
         # Try Grade 1BF tolerance first (for MPAPS F-30 GRADE 1B)
+        logging.info("Attempting Grade 1BF tolerance lookup...")
         id_tol_info = get_grade_1bf_tolerance(id_val)
         if id_tol_info:
             id_tol = {'formatted': id_tol_info['id_tolerance']}
-            logging.info(f"Grade 1BF tolerance found: {id_tol['formatted']}")
+            logging.info(f"Grade 1BF tolerance found: {id_tol['formatted']} (wall thickness: {id_tol_info.get('wall_thickness')}mm)")
         else:
             # Fall back to MPAPS F-6032 tolerance
+            logging.info("Grade 1BF lookup failed, trying MPAPS F-6032 tolerance...")
             id_tol = get_mpaps_f6032_tolerance(id_val, 'ID')
             if id_tol:
-                logging.info(f"MPAPS F-6032 tolerance found: {id_tol['formatted']}")
+                logging.info(f"MPAPS F-6032 tolerance found: {id_tol['formatted']} (nearest nominal: {id_tol['nearest_mm']}mm)")
+            else:
+                logging.warning("Both Grade 1BF and MPAPS F-6032 tolerance lookups failed")
         
         if id_tol:
             results['id_tolerance'] = id_tol['formatted']
