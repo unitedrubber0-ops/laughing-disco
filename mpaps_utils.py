@@ -49,29 +49,29 @@ def get_grade_1bf_tolerance(id_value: float) -> Optional[Dict[str, Any]]:
         if id_val is None:
             return None
             
-        # Find nearest nominal ID
-        diffs = [abs(n - id_val) for n in _GRADE_1BF_ID_NOMINALS_MM]
-        idx = min(range(len(diffs)), key=lambda i: diffs[i])
-        nearest_id = _GRADE_1BF_ID_NOMINALS_MM[idx]
+        # Find nearest nominal ID in Grade 1BF table
+        closest_idx = None
+        min_diff = float('inf')
         
-        # Check if ID falls within any range
-        wall_thickness = None
-        wall_tolerance = None
-        od_reference = None
+        for i, nominal_id in enumerate(_GRADE_1BF_ID_NOMINALS_MM):
+            diff = abs(nominal_id - id_val)
+            if diff < min_diff:
+                min_diff = diff
+                closest_idx = i
         
-        for range_min, range_max, range_wall, range_tol in _GRADE_1BF_RANGES:
-            if range_min <= id_val <= range_max:
-                wall_thickness = range_wall
-                wall_tolerance = range_tol
-                break
+        # Check if we have a reasonable match (within 1mm)
+        if closest_idx is None or min_diff > 1.0:
+            logging.warning(f"No close Grade 1BF match found for ID {id_val}mm")
+            return None
         
-        # If not in range, use nearest nominal values
-        if wall_thickness is None:
-            wall_thickness = _GRADE_1BF_WALL_THICKNESS_MM[idx]
-            wall_tolerance = _GRADE_1BF_WALL_TOLS_MM[idx]
-            od_reference = _GRADE_1BF_OD_NOMINALS_MM[idx]
+        # Use the matched values
+        wall_thickness = _GRADE_1BF_WALL_THICKNESS_MM[closest_idx]
+        wall_tolerance = _GRADE_1BF_WALL_TOLS_MM[closest_idx]
+        od_reference = _GRADE_1BF_OD_NOMINALS_MM[closest_idx]
+        id_tolerance = _GRADE_1BF_ID_TOLS_MM[closest_idx]
+        nearest_id = _GRADE_1BF_ID_NOMINALS_MM[closest_idx]
         
-        id_tolerance = _GRADE_1BF_ID_TOLS_MM[idx]
+        id_tolerance = _GRADE_1BF_ID_TOLS_MM[closest_idx]
         
         return {
             'id_tolerance': f"{id_val:.1f} ± {id_tolerance:.1f} mm",
@@ -151,14 +151,26 @@ def get_mpaps_f6032_tolerance(value: Any, dimension_type: str) -> Optional[Dict[
         else:
             raise ValueError(f"Invalid dimension type '{dimension_type}', must be 'ID' or 'OD'")
             
-        # Find nearest nominal value
+        # Find nearest nominal value with tolerance
         if not nominals:  # Handle empty lists
             return None
             
-        diffs = [abs(n - value_mm) for n in nominals]
-        idx = min(range(len(diffs)), key=lambda i: diffs[i])
-        nearest = nominals[idx]
-        tolerance = tolerances[idx]
+        # Find the closest nominal value
+        closest_idx = None
+        min_diff = float('inf')
+        
+        for i, nominal in enumerate(nominals):
+            diff = abs(nominal - value_mm)
+            if diff < min_diff:
+                min_diff = diff
+                closest_idx = i
+        
+        if closest_idx is None or min_diff > 2.0:  # Allow 2mm tolerance for matching
+            logging.warning(f"No close nominal match found for {dimension_type} value {value_mm}mm")
+            return None
+            
+        nearest = nominals[closest_idx]
+        tolerance = tolerances[closest_idx]
         
         # Build result
         result = {
@@ -167,7 +179,7 @@ def get_mpaps_f6032_tolerance(value: Any, dimension_type: str) -> Optional[Dict[
             'nearest_mm': nearest,
             'tol_mm': tolerance,
             'was_inches': was_inches,
-            'formatted': f"{dim_num:.2f} ± {tolerance:.2f} mm"
+            'formatted': f"{value_mm:.1f} ± {tolerance:.1f} mm"
         }
         
         logging.debug(f"MPAPS F-6032 {dimension_type} tolerance lookup: {result}")
@@ -221,14 +233,21 @@ def _apply_mpaps_specific_rules(results: Dict[str, Any]) -> None:
     
     # Check for ID in multiple locations with type conversion
     id_val = None
-    for id_key in ['id1', 'ID1', 'ID']:
-        val = str(dimensions.get(id_key, '') or results.get(id_key, '')).strip()
-        if val and val.lower() != 'not found':
+    for id_key in ['id1', 'ID1', 'ID', 'id']:
+        val = dimensions.get(id_key) or results.get(id_key)
+        if val and str(val).strip().lower() != 'not found':
             try:
-                id_val = float(re.sub(r'[^\d.-]', '', val))
+                # Extract numeric value from string if needed
+                if isinstance(val, str):
+                    # Remove non-numeric characters except decimal point and minus
+                    val_clean = re.sub(r'[^\d.-]', '', val)
+                    id_val = float(val_clean)
+                else:
+                    id_val = float(val)
                 logging.info(f"Found valid ID value {id_val} from key {id_key}")
                 break
-            except (ValueError, TypeError):
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Failed to parse ID value '{val}': {e}")
                 continue
     
     # Check for OD in multiple locations with type conversion
@@ -245,10 +264,16 @@ def _apply_mpaps_specific_rules(results: Dict[str, Any]) -> None:
     
     # Process ID tolerance if value found
     if id_val is not None:
+        # Try MPAPS F-6032 tolerance first
         id_tol = get_mpaps_f6032_tolerance(id_val, 'ID')
+        if not id_tol:
+            # Fall back to Grade 1BF tolerance
+            id_tol_info = get_grade_1bf_tolerance(id_val)
+            if id_tol_info:
+                id_tol = {'formatted': id_tol_info['id_tolerance']}
+        
         if id_tol:
             results['id_tolerance'] = id_tol['formatted']
-            results['id_nearest_nominal'] = id_tol['nearest_mm']
             logging.info(f"Set ID tolerance: {id_tol['formatted']}")
         else:
             results['id_tolerance'] = "N/A"
