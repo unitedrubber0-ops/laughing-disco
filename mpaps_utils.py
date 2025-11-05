@@ -24,12 +24,20 @@ TABLE_IV_BURST_PRESSURE = [
     (76, 102, None, 0.55, 1.38, 0.86, 1.38, 1.03)
 ]
 
-# MPAPS F-6032 ID nominal values (mm) and tolerances (mm) from spec table
-_MPAPS_ID_NOMINALS_MM = [3.97, 4.76, 5.56, 5.95, 7.14, 9.00, 12.00, 15.10, 18.40, 24.60]
-_MPAPS_ID_TOLS_MM     = [0.4,  0.4,  0.4,  0.4,  0.4,  0.4,  0.58, 0.79, 0.79, 0.79]
-
-_MPAPS_OD_NOMINALS_MM = [9.3,  10.3, 11.3, 12.25, 13.5, 15.37, 20.3, 24.62, 28.35, 34.9]
-_MPAPS_OD_TOLS_MM     = [0.6,  0.6,  0.6,  0.6,   0.6,  0.6,   0.8,  0.8,   0.8,   1.0]
+# TABLE 1: DIMENSIONS TYPE I (Bulk Hose) - MPAPS F-6032
+TABLE_1_DATA = [
+    # Nominal ID, ID (mm), ID Tolerance, OD (mm), OD Tolerance
+    ('5/32', 3.97, 0.4, 9.3, 0.6),
+    ('3/16', 4.76, 0.4, 10.3, 0.6),
+    ('7/32', 5.56, 0.4, 11.3, 0.6),
+    ('1/4', 5.9, 0.4, 12.25, 0.6),
+    ('5/16', 7.14, 0.4, 13.5, 0.6),
+    ('3/8', 9.0, 0.4, 15.37, 0.6),
+    ('1/2', 12.0, 0.58, 20.3, 0.8),
+    ('5/8', 15.1, 0.79, 24.62, 0.8),
+    ('3/4', 18.4, 0.79, 28.35, 0.8),
+    ('1', 24.6, 0.79, 34.9, 1.0)
+]
 
 # Grade 1B/1BF data tables from specification
 _GRADE_1BF_ID_NOMINALS_MM = [15.1, 18.4, 21.3, 24.6, 62.7]
@@ -43,6 +51,57 @@ _GRADE_1BF_RANGES = [
     (26.0, 50.8, 4.95, 0.8),   # min_id, max_id, wall_thickness, wall_tolerance
     (50.8, 63.5, 5.35, 0.8)    # min_id, max_id, wall_thickness, wall_tolerance
 ]
+
+def get_mpaps_f6032_dimensions_from_table(id_value: float) -> Optional[Dict[str, Any]]:
+    """
+    Get MPAPS F-6032 dimensions and tolerances from TABLE 1.
+    Uses only the mm values in square brackets.
+    
+    Args:
+        id_value: Inside diameter in mm
+        
+    Returns:
+        Dict with dimension info or None if not found
+    """
+    try:
+        id_val = float(id_value)
+        logging.info(f"MPAPS F-6032 dimension lookup for ID: {id_val}mm")
+        
+        # Find the closest nominal ID
+        closest_match = None
+        min_diff = float('inf')
+        
+        for row in TABLE_1_DATA:
+            nominal_id, nominal_id_mm, id_tol, nominal_od_mm, od_tol = row
+            diff = abs(nominal_id_mm - id_val)
+            
+            if diff < min_diff:
+                min_diff = diff
+                closest_match = {
+                    'nominal_id_inches': nominal_id,
+                    'nominal_id_mm': nominal_id_mm,
+                    'id_tolerance_mm': id_tol,
+                    'nominal_od_mm': nominal_od_mm,
+                    'od_tolerance_mm': od_tol,
+                    'id_formatted': f"{nominal_id_mm:.2f} ± {id_tol:.2f} mm",
+                    'od_formatted': f"{nominal_od_mm:.2f} ± {od_tol:.2f} mm",
+                    'difference_mm': diff
+                }
+        
+        if closest_match and min_diff <= MAX_ACCEPT_DIFF_MM:
+            logging.info(f"Found MPAPS F-6032 dimension match: {closest_match}")
+            return closest_match
+        elif closest_match:
+            logging.warning(f"Nearest MPAPS F-6032 nominal for ID {id_val}mm is {min_diff:.2f}mm away")
+            logging.info(f"Using nearest match: {closest_match}")
+            return closest_match
+        else:
+            logging.warning(f"No MPAPS F-6032 dimension match found for ID {id_val}mm")
+            return None
+            
+    except Exception as e:
+        logging.error(f"Error in MPAPS F-6032 dimension lookup: {e}")
+        return None
 
 def get_burst_pressure_from_tables(grade: str, id_value: float) -> Optional[float]:
     """
@@ -284,7 +343,7 @@ def _convert_to_mm(value: float) -> Tuple[float, bool]:
 
 def get_mpaps_f6032_tolerance(value: Any, dimension_type: str) -> Optional[Dict[str, Any]]:
     """
-    Get MPAPS F-6032 tolerance for a dimension value.
+    Get MPAPS F-6032 tolerance for a dimension value from TABLE 1.
     
     Args:
         value: Numeric value or string containing a number
@@ -298,6 +357,44 @@ def get_mpaps_f6032_tolerance(value: Any, dimension_type: str) -> Optional[Dict[
         dim_num = _parse_dimension(value)
         if dim_num is None:
             return None
+
+        is_id = dimension_type.upper().strip() == 'ID'
+        lookup_val = dim_num
+        
+        # For OD lookup, find by matching ID first
+        if not is_id:
+            # Find best matching row by OD
+            min_diff = float('inf')
+            for row in TABLE_1_DATA:
+                _, nominal_id_mm, _, nominal_od_mm, _ = row
+                diff = abs(nominal_od_mm - dim_num)
+                if diff < min_diff:
+                    min_diff = diff
+                    lookup_val = nominal_id_mm
+        
+        # Get data from TABLE 1
+        table_data = get_mpaps_f6032_dimensions_from_table(lookup_val)
+        
+        if table_data:
+            if is_id:
+                return {
+                    'nominal': table_data['nominal_id_mm'],
+                    'tolerance': table_data['id_tolerance_mm'],
+                    'formatted': table_data['id_formatted'],
+                    'nominal_inches': table_data['nominal_id_inches']
+                }
+            else:
+                return {
+                    'nominal': table_data['nominal_od_mm'],
+                    'tolerance': table_data['od_tolerance_mm'],
+                    'formatted': table_data['od_formatted']
+                }
+                
+        return None
+                
+    except Exception as e:
+        logging.error(f"Error in MPAPS F-6032 tolerance lookup: {e}")
+        return None
             
         # Convert to mm if needed
         value_mm, was_inches = _convert_to_mm(dim_num)
@@ -393,7 +490,7 @@ __all__ = ['get_burst_pressure', 'is_grade_1bf', 'get_grade_1bf_tolerance',
 
 def _apply_mpaps_specific_rules(results: Dict[str, Any]) -> None:
     """
-    Apply specific MPAPS F-6032 rules.
+    Apply specific MPAPS F-6032 rules using TABLE 1 for dimensions.
     """
     # Get dimensions from all possible locations
     dimensions = results.get('dimensions', {})
