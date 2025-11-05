@@ -326,6 +326,94 @@ def get_burst_pressure_from_tables(grade: str, id_mm: float) -> Optional[float]:
         logging.error(f"Error in burst pressure lookup: {e}")
         return None
 
+def is_grade_1bf(grade: str) -> bool:
+    """
+    Check if a grade string indicates Grade 1BF.
+    
+    Args:
+        grade: Grade string to check
+        
+    Returns:
+        True if grade indicates 1BF, False otherwise
+    """
+    if not grade:
+        return False
+        
+    grade_upper = str(grade).upper()
+    return any(g in grade_upper for g in ['1BF', 'BF'])
+
+def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
+    """
+    Apply Grade 1BF specific rules to the results.
+    Uses TABLE VII-B for dimensions and tolerances.
+    """
+    grade = results.get('grade', '')
+    if not is_grade_1bf(grade):
+        return  # Exit early if not Grade 1BF
+        
+    logging.info("Applying Grade 1BF rules to results")
+    
+    # Get dimensions
+    dimensions = results.get('dimensions', {})
+    id_val = None
+    
+    for id_key in ['id1', 'ID1', 'ID', 'id']:
+        val = dimensions.get(id_key) or results.get(id_key)
+        if val and str(val).strip().lower() != 'not found':
+            try:
+                if isinstance(val, str):
+                    val_clean = re.sub(r'[^\d.-]', '', val)
+                    id_val = float(val_clean)
+                else:
+                    id_val = float(val)
+                logging.info(f"Found valid ID value {id_val} from key {id_key}")
+                break
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Failed to parse ID value '{val}': {e}")
+                continue
+    
+    if id_val is not None:
+        logging.info(f"Processing Grade 1BF dimensions for ID: {id_val}mm")
+        
+        # First check exact matches in TABLE VII-B
+        match_found = False
+        for row in _F30_BF_TABLE:
+            nom_in, nom_mm, id_tol, od_mm, wall_mm, wall_tol = row
+            
+            # Skip range entries (which have None for nom_mm)
+            if nom_mm is None:
+                continue
+                
+            if abs(nom_mm - id_val) <= MAX_ACCEPT_DIFF_MM:
+                results['id_tolerance'] = f"{nom_mm:.2f} ± {id_tol:.2f} mm"
+                results['wall_thickness'] = wall_mm
+                results['wall_thickness_tolerance'] = wall_tol
+                
+                if od_mm:
+                    results['od_reference'] = od_mm
+                    results['od_tolerance'] = f"{od_mm:.2f} mm"
+                
+                logging.info(f"Found matching ID in TABLE VII-B: {nom_in}\" ({nom_mm}mm)")
+                match_found = True
+                break
+        
+        # If no exact match found, check ranges
+        if not match_found:
+            for min_id, max_id, wall_mm, wall_tol in _F30_BF_RANGES:
+                if min_id <= id_val <= max_id:
+                    results['wall_thickness'] = wall_mm
+                    results['wall_thickness_tolerance'] = wall_tol
+                    results['id_tolerance'] = "± 0.8 mm"  # Standard tolerance for range entries
+                    
+                    logging.info(f"ID {id_val}mm falls in range {min_id}-{max_id}mm")
+                    match_found = True
+                    break
+                    
+            if not match_found:
+                logging.warning(f"No Grade 1BF dimension match found for ID {id_val}mm")
+    else:
+        logging.warning("No valid ID value found for Grade 1BF dimension calculation")
+
 def get_burst_pressure() -> float:
     """Get the standard burst pressure for MPAPS F-6032 materials."""
     return MPAPS_F6032_BURST_PRESSURE_MPA
