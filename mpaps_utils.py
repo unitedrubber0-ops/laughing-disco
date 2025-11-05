@@ -1,15 +1,28 @@
 """
-MPAPS F-6032 tolerance and burst pressure handling.
+MPAPS F-6032 and F-30 tolerance and burst pressure handling.
 """
 import re
 import logging
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 # Constants for burst pressure
 MPAPS_F6032_BURST_PRESSURE_MPA = 2.0
 
 # Maximum acceptable difference for nominal value matching (mm)
 MAX_ACCEPT_DIFF_MM = 0.5  # Allow up to 0.5mm difference for practical measurements
+
+# Burst pressure tables for MPAPS F-30/F-1
+TABLE_IV_BURST_PRESSURE = [
+    # Over, Thru, Suffix B Grade 1&3, Suffix B Grade 2, 
+    # Suffix C Grade 1, Suffix C Grade 2, Suffix F Grade 1, Suffix F Grade 2
+    (0, 24, 1.72, 1.72, 2.10, 1.72, 2.5, 2.25),
+    (24, 32, 1.38, 1.21, 1.90, 1.38, 2.1, 2.25),
+    (32, 44, 1.21, 1.21, 1.72, 1.38, 2.1, 2.25),
+    (44, 50.8, 1.00, 1.21, 1.38, 1.21, 1.55, 2.25),
+    (51, 65, 0.90, 0.69, 1.38, 1.21, 1.38, 1.21),
+    (65, 76, 0.62, 0.69, 1.38, 1.03, 1.38, 1.21),
+    (76, 102, None, 0.55, 1.38, 0.86, 1.38, 1.03)
+]
 
 # MPAPS F-6032 ID nominal values (mm) and tolerances (mm) from spec table
 _MPAPS_ID_NOMINALS_MM = [3.97, 4.76, 5.56, 5.95, 7.14, 9.00, 12.00, 15.10, 18.40, 24.60]
@@ -31,9 +44,148 @@ _GRADE_1BF_RANGES = [
     (50.8, 63.5, 5.35, 0.8)    # min_id, max_id, wall_thickness, wall_tolerance
 ]
 
+def get_burst_pressure_from_tables(grade: str, id_value: float) -> Optional[float]:
+    """
+    Get burst pressure from tables based on grade and ID value for MPAPS F-30/F-1.
+    
+    Args:
+        grade: Grade specification (e.g., '1BF', '2B', '1A', etc.)
+        id_value: Inside diameter in mm
+        
+    Returns:
+        Burst pressure in MPa or None if not found
+    """
+    try:
+        grade_str = str(grade).upper().strip()
+        id_val = float(id_value)
+        
+        logging.info(f"Burst pressure lookup: Grade='{grade_str}', ID={id_val}mm")
+        
+        # TABLE III: BURST STRENGTH FOR SUFFIX A (Grades 1A, 2A, 3A)
+        if grade_str in ['1A', '2A', '3A']:
+            if grade_str == '1A':
+                return 4.1  # MPa
+            elif grade_str in ['2A', '3A']:
+                return 2.1  # MPa
+        
+        # TABLE IV: BURST STRENGTH FOR SUFFIX B, C and F
+        elif 'BF' in grade_str or 'B' in grade_str or 'C' in grade_str or 'F' in grade_str:
+            # Determine which column to use based on grade
+            column_index = None
+            
+            # Grade 1BF -> Suffix F, Grade 1 (column index 6)
+            if '1BF' in grade_str:
+                column_index = 6
+            # Grade 2B -> Suffix B, Grade 2 (column index 3)  
+            elif '2B' in grade_str:
+                column_index = 3
+            # Grade 1B or 3B -> Suffix B, Grade 1&3 (column index 2)
+            elif any(g in grade_str for g in ['1B', '3B']):
+                column_index = 2
+            # Grade 1C -> Suffix C, Grade 1 (column index 4)
+            elif '1C' in grade_str:
+                column_index = 4
+            # Grade 2C -> Suffix C, Grade 2 (column index 5)
+            elif '2C' in grade_str:
+                column_index = 5
+            # Grade 2F -> Suffix F, Grade 2 (column index 7)
+            elif '2F' in grade_str:
+                column_index = 7
+            
+            if column_index is not None:
+                # Find the appropriate row based on ID
+                for row in TABLE_IV_BURST_PRESSURE:
+                    over, thru = row[0], row[1]
+                    # Handle the special case for 51mm (inclusive of 51)
+                    if over == 51 and id_val >= 51 and id_val <= thru:
+                        burst_pressure = row[column_index]
+                        if burst_pressure is not None:
+                            logging.info(f"Found burst pressure {burst_pressure} MPa for ID {id_val}mm in range {over}-{thru}mm")
+                            return burst_pressure
+                    # Normal range lookup (over < id_val <= thru)
+                    elif over < id_val <= thru:
+                        burst_pressure = row[column_index]
+                        if burst_pressure is not None:
+                            logging.info(f"Found burst pressure {burst_pressure} MPa for ID {id_val}mm in range {over}-{thru}mm")
+                            return burst_pressure
+                
+                logging.warning(f"No burst pressure found for Grade {grade_str} with ID {id_val}mm")
+        
+        logging.warning(f"Grade {grade_str} not found in burst pressure tables")
+        return None
+        
+    except Exception as e:
+        logging.error(f"Error in burst pressure lookup: {e}")
+        return None
+
 def get_burst_pressure() -> float:
     """Get the standard burst pressure for MPAPS F-6032 materials."""
     return MPAPS_F6032_BURST_PRESSURE_MPA
+
+def apply_burst_pressure_rules(results: Dict[str, Any]) -> None:
+    """
+    Apply burst pressure rules based on grade and ID using tables.
+    This should only be called for MPAPS F-30/F-1 standards.
+    For MPAPS F-6032, burst pressure remains 2.0 MPa by default.
+    """
+    try:
+        standard = results.get('standard', '')
+        grade = results.get('grade', '')
+        dimensions = results.get('dimensions', {})
+        
+        # Only apply table-based burst pressure for MPAPS F-30/F-1
+        if not (is_mpaps_f30(str(standard).upper()) or 'F-1' in str(standard).upper()):
+            logging.info(f"Skipping table-based burst pressure for standard: {standard}")
+            return
+            
+        if not grade:
+            logging.warning("No grade specified for burst pressure lookup")
+            return
+            
+        # Get ID value for lookup
+        id_val = None
+        for id_key in ['id1', 'ID1', 'ID']:
+            val = dimensions.get(id_key) or results.get(id_key)
+            if val and str(val).strip().lower() != 'not found':
+                try:
+                    if isinstance(val, str):
+                        val_clean = re.sub(r'[^\d.-]', '', val)
+                        id_val = float(val_clean)
+                    else:
+                        id_val = float(val)
+                    break
+                except (ValueError, TypeError):
+                    continue
+        
+        if id_val is None:
+            logging.warning("No valid ID value found for burst pressure lookup")
+            return
+            
+        # Get burst pressure from tables
+        burst_pressure_mpa = get_burst_pressure_from_tables(grade, id_val)
+        
+        if burst_pressure_mpa is not None:
+            # Update results with table-based burst pressure
+            results['burst_pressure_mpa'] = burst_pressure_mpa
+            results['burst_pressure_psi'] = round(burst_pressure_mpa * 145.038, 2)
+            results['burst_pressure'] = burst_pressure_mpa * 10.0  # Convert MPa to bar
+            
+            # Add note about source
+            results['burst_pressure_source'] = f"Table lookup for MPAPS F-30/F-1 Grade {grade}, ID {id_val}mm"
+            
+            logging.info(f"Applied burst pressure from tables: {burst_pressure_mpa} MPa "
+                        f"({results['burst_pressure_psi']} PSI, {results['burst_pressure']} bar)")
+        else:
+            logging.info(f"No table-based burst pressure found for Grade {grade}, using existing values")
+            
+    except Exception as e:
+        logging.error(f"Error applying burst pressure rules: {e}")
+
+def is_mpaps_f30(standard: str) -> bool:
+    """Check if the standard is MPAPS F-30."""
+    if not standard:
+        return False
+    return 'F-30' in str(standard).upper()
 
 def is_grade_1bf(grade: str) -> bool:
     """Check if grade specification matches Grade 1B or 1BF."""
@@ -236,7 +388,8 @@ def is_mpaps_f6032(material: str) -> bool:
 # Expose key functions at module level
 __all__ = ['get_burst_pressure', 'is_grade_1bf', 'get_grade_1bf_tolerance', 
            'get_mpaps_f6032_tolerance', 'is_mpaps_f6032', 'apply_mpaps_f6032_rules',
-           'apply_grade_1bf_rules']
+           'apply_grade_1bf_rules', 'get_burst_pressure_from_tables', 'apply_burst_pressure_rules', 
+           'is_mpaps_f30']
 
 def _apply_mpaps_specific_rules(results: Dict[str, Any]) -> None:
     """
@@ -430,15 +583,32 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
        (specification and is_mpaps_f6032(specification)):
         logging.info("Applying MPAPS F-6032 rules to results")
         _apply_mpaps_specific_rules(results)
+        
+        # For MPAPS F-6032, set default burst pressure of 2.0 MPa
+        results['burst_pressure_mpa'] = MPAPS_F6032_BURST_PRESSURE_MPA
+        results['burst_pressure_psi'] = round(MPAPS_F6032_BURST_PRESSURE_MPA * 145.038, 2)
+        results['burst_pressure'] = MPAPS_F6032_BURST_PRESSURE_MPA * 10.0  # 2.0 MPa = 20 bar
+        results['burst_pressure_source'] = "MPAPS F-6032 default (2.0 MPa)"
+        logging.info("Set MPAPS F-6032 default burst pressure: 2.0 MPa")
     
     # Check for MPAPS F-30 GRADE 1B
     elif is_mpaps_f30(standard) and '1B' in str(grade).upper():
         logging.info("Applying MPAPS F-30 GRADE 1B rules to results")
         apply_mpaps_f30_grade_1b_rules(results)
+        # Apply table-based burst pressure for F-30
+        apply_burst_pressure_rules(results)
     
     # Check for Grade 1B/1BF in any standard
     elif is_grade_1bf(grade):
         logging.info("Applying Grade 1B/1BF rules to results")
         apply_grade_1bf_rules(results)
+        # Apply table-based burst pressure if standard is F-30/F-1
+        if standard and (is_mpaps_f30(str(standard)) or 'F-1' in str(standard).upper()):
+            apply_burst_pressure_rules(results)
+    
+    # For other MPAPS F-30/F-1 standards, apply table-based burst pressure
+    elif standard and (is_mpaps_f30(str(standard)) or 'F-1' in str(standard).upper()):
+        logging.info("Applying MPAPS F-30/F-1 table-based burst pressure rules")
+        apply_burst_pressure_rules(results)
     else:
         return
