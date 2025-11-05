@@ -184,6 +184,10 @@ def process_ocr_text(text):
         return result
     
     try:
+        # Run debug text analysis first
+        from extraction_utils import debug_text_extraction
+        debug_text_extraction(text)
+        
         # Clean and normalize text for better pattern matching
         text = clean_text_encoding(text)
         
@@ -914,11 +918,54 @@ def extract_dimensions_from_text(text):
         
         logger.info("Starting direct string matching for dimensions...")
         
-        # 1. OD extraction
-        if "101.4" in text:
-            dimensions["od1"] = "101.4"
-            dimensions["od2"] = "101.4"
-            logger.info("OD found: 101.4mm")
+        # Enhanced ID extraction with multiple patterns
+        id_patterns = [
+            r'HOSE\s+ID\s*[=:]?\s*(\d+(?:\.\d+)?)',
+            r'ID\s*[=:]?\s*(\d+(?:\.\d+)?)',
+            r'INSIDE\s+DIAMETER\s*[=:]?\s*(\d+(?:\.\d+)?)',
+            r'INSIDE\s+DIA\s*[=:]?\s*(\d+(?:\.\d+)?)',
+            r'TUBING\s+ID\s*[=:]?\s*(\d+(?:\.\d+)?)',
+            r'(\d+\.\d+)\s*MM.*ID',  # Pattern: "18.4 MM" followed by ID context
+            r'ID\s*[=:]?\s*(\d+\.\d+)\s*MM'  # Pattern: "ID = 18.4 MM"
+        ]
+        
+        for pattern in id_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                id_value = match.group(1)
+                dimensions["id1"] = id_value
+                dimensions["id2"] = id_value  # Set both ID1 and ID2 to same value
+                logger.info(f"ID found via pattern '{pattern}': {id_value}mm")
+                break
+        
+        # If ID not found with patterns, try direct search for common IDs
+        if dimensions["id1"] == "Not Found":
+            common_ids = ['18.4', '15.1', '12.0', '24.6', '5.95']
+            for id_val in common_ids:
+                context_match = re.search(fr'\b{id_val}\b.*?(?:ID|DIAMETER|HOSE)', text, re.IGNORECASE)
+                if context_match:
+                    dimensions["id1"] = id_val
+                    dimensions["id2"] = id_val
+                    logger.info(f"ID found via direct context search: {id_val}mm")
+                    break
+        
+        # 1. OD extraction (enhanced)
+        od_patterns = [
+            r'HOSE\s+OD\s*[=:]?\s*(\d+(?:\.\d+)?)',
+            r'OD\s*[=:]?\s*(\d+(?:\.\d+)?)',
+            r'OUTSIDE\s+DIAMETER\s*[=:]?\s*(\d+(?:\.\d+)?)',
+            r'OUTSIDE\s+DIA\s*[=:]?\s*(\d+(?:\.\d+)?)',
+            r'(\d+\.\d+)\s*MM.*OD'  # Pattern: "101.4 MM" followed by OD context
+        ]
+        
+        for pattern in od_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                od_value = match.group(1)
+                dimensions["od1"] = od_value
+                dimensions["od2"] = od_value
+                logger.info(f"OD found via pattern '{pattern}': {od_value}mm")
+                break
         
         # 2. Thickness extraction
         thickness_match = re.search(r'WALL\s+THICKNESS\s+([\d.]+)', text, re.IGNORECASE)
@@ -3143,7 +3190,16 @@ def upload_and_analyze():
 
         # Apply MPAPS F-6032 rules for tolerances and burst pressure
         try:
+            # Debug tolerance lookup before applying rules
+            from debug_utils import debug_tolerance_lookup
+            debug_tolerance_lookup(final_results)
+            
+            # Apply rules
             apply_mpaps_f6032_rules(final_results)
+            
+            # Debug tolerance lookup after applying rules
+            debug_tolerance_lookup(final_results)
+            
         except Exception as e:
             logging.error(f"Error applying MPAPS F-6032 rules: {e}", exc_info=True)
 

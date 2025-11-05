@@ -236,3 +236,36 @@ def snippet_around(text: str, match_pat: str) -> Optional[str]:
     start = max(0, m.start() - 120)
     end = min(len(text), m.end() + 120)
     return text[start:end]
+
+def debug_text_extraction(text: str) -> None:
+    """Debug function to see what text is available for extraction"""
+    logger.info("=== DEBUG TEXT EXTRACTION ===")
+    logger.info(f"Full text length: {len(text)}")
+    
+    # Look for ID-related patterns
+    id_indicators = [
+        'HOSE ID', 'ID', 'DIAMETER', '18.4', 'INSIDE'
+    ]
+    
+    for indicator in id_indicators:
+        if indicator in text.upper():
+            # Find context around the indicator
+            start = text.upper().find(indicator.upper())
+            if start != -1:
+                context = text[max(0, start-50):min(len(text), start+50)]
+                logger.info(f"Found '{indicator}' in context: ...{context}...")
+    
+    # Look for numeric values that could be dimensions
+    number_matches = re.finditer(r'\b\d+\.\d+\b', text)
+    numbers_found = []
+    for match in number_matches:
+        start = match.start()
+        context = text[max(0, start-25):min(len(text), start+25)]
+        numbers_found.append((match.group(0), context))
+    
+    if numbers_found:
+        logger.info("Found numeric values with context:")
+        for num, context in numbers_found:
+            logger.info(f"  {num}: ...{context.strip()}...")
+            
+    logger.info("=== END DEBUG ===")

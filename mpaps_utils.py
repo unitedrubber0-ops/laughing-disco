@@ -49,6 +49,9 @@ def get_grade_1bf_tolerance(id_value: float) -> Optional[Dict[str, Any]]:
         if id_val is None:
             return None
             
+        logging.info(f"Grade 1BF tolerance lookup for ID: {id_val}mm")
+        logging.info(f"Available Grade 1BF ID nominals: {_GRADE_1BF_ID_NOMINALS_MM}")
+        
         # Find nearest nominal ID in Grade 1BF table
         closest_idx = None
         min_diff = float('inf')
@@ -59,9 +62,9 @@ def get_grade_1bf_tolerance(id_value: float) -> Optional[Dict[str, Any]]:
                 min_diff = diff
                 closest_idx = i
         
-        # Check if we have a reasonable match (within 1mm)
-        if closest_idx is None or min_diff > 1.0:
-            logging.warning(f"No close Grade 1BF match found for ID {id_val}mm")
+        # Check if we have a reasonable match (within 0.1mm tolerance for exact matches)
+        if closest_idx is None or min_diff > 0.1:
+            logging.warning(f"No close Grade 1BF match found for ID {id_val}mm (min_diff: {min_diff})")
             return None
         
         # Use the matched values
@@ -165,8 +168,10 @@ def get_mpaps_f6032_tolerance(value: Any, dimension_type: str) -> Optional[Dict[
                 min_diff = diff
                 closest_idx = i
         
-        if closest_idx is None or min_diff > 2.0:  # Allow 2mm tolerance for matching
-            logging.warning(f"No close nominal match found for {dimension_type} value {value_mm}mm")
+        # Allow very tight tolerance for matching (0.01mm for exact matches)
+        if closest_idx is None or min_diff > 0.01:
+            logging.warning(f"No close MPAPS F-6032 match found for {dimension_type} value {value_mm}mm (min_diff: {min_diff})")
+            logging.info(f"Available {dimension_type} nominals: {nominals}")
             return None
             
         nearest = nominals[closest_idx]
@@ -264,17 +269,27 @@ def _apply_mpaps_specific_rules(results: Dict[str, Any]) -> None:
     
     # Process ID tolerance if value found
     if id_val is not None:
-        # Try MPAPS F-6032 tolerance first
-        id_tol = get_mpaps_f6032_tolerance(id_val, 'ID')
-        if not id_tol:
-            # Fall back to Grade 1BF tolerance
-            id_tol_info = get_grade_1bf_tolerance(id_val)
-            if id_tol_info:
-                id_tol = {'formatted': id_tol_info['id_tolerance']}
+        logging.info(f"Processing ID tolerance for value: {id_val}mm")
+        
+        # Try Grade 1BF tolerance first (for MPAPS F-30 GRADE 1B)
+        id_tol_info = get_grade_1bf_tolerance(id_val)
+        if id_tol_info:
+            id_tol = {'formatted': id_tol_info['id_tolerance']}
+            logging.info(f"Grade 1BF tolerance found: {id_tol['formatted']}")
+        else:
+            # Fall back to MPAPS F-6032 tolerance
+            id_tol = get_mpaps_f6032_tolerance(id_val, 'ID')
+            if id_tol:
+                logging.info(f"MPAPS F-6032 tolerance found: {id_tol['formatted']}")
         
         if id_tol:
             results['id_tolerance'] = id_tol['formatted']
             logging.info(f"Set ID tolerance: {id_tol['formatted']}")
+            
+            # Also set wall thickness if available from Grade 1BF
+            if id_tol_info and 'wall_thickness' in id_tol_info:
+                results['wall_thickness'] = id_tol_info['wall_thickness']
+                results['wall_thickness_tolerance'] = id_tol_info['wall_thickness_tolerance']
         else:
             results['id_tolerance'] = "N/A"
             logging.warning(f"Could not calculate ID tolerance for value: {id_val}")
