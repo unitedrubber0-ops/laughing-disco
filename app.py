@@ -3194,14 +3194,36 @@ def upload_and_analyze():
             from debug_utils import debug_tolerance_lookup
             debug_tolerance_lookup(final_results)
             
-            # Apply rules
-            # Apply MPAPS rules - SEPARATE implementations
+            # Apply MPAPS rules - COMPLETELY SEPARATE implementations
             try:
-                # Apply MPAPS F-6032 rules (TABLE 1 + fixed burst pressure)
-                apply_mpaps_f6032_rules(final_results)
+                # First determine which standard we're dealing with
+                standard = final_results.get('standard', '')
+                material = final_results.get('material', '')
                 
-                # Apply MPAPS F-30/F-1 rules (TABLE III/IV burst pressure + existing tolerances)
-                apply_mpaps_f30_f1_rules(final_results)
+                is_f6032 = False
+                is_f30_f1 = False
+                
+                # Strict checking for F-6032
+                if standard and ('MPAPS F-6032' in str(standard).upper() or 'MPAPSF6032' in str(standard).upper()):
+                    is_f6032 = True
+                elif material and ('MPAPS F-6032' in str(material).upper() or 'MPAPSF6032' in str(material).upper()):
+                    is_f6032 = True
+                    
+                # Strict checking for F-30/F-1  
+                if standard and ('MPAPS F-30' in str(standard).upper() or 'MPAPS F-1' in str(standard).upper() or 'MPAPSF30' in str(standard).upper()):
+                    is_f30_f1 = True
+                
+                logging.info(f"Standard detection - F-6032: {is_f6032}, F-30/F-1: {is_f30_f1}")
+                
+                # Apply ONLY one set of rules based on strict detection
+                if is_f6032:
+                    logging.info("Applying MPAPS F-6032 rules (TABLE 1 + 2.0 MPa burst)")
+                    apply_mpaps_f6032_rules(final_results)
+                elif is_f30_f1:
+                    logging.info("Applying MPAPS F-30/F-1 rules (TABLE III/IV burst pressure)")
+                    apply_mpaps_f30_f1_rules(final_results)
+                else:
+                    logging.info("No MPAPS standard detected, skipping MPAPS rules")
                 
             except Exception as e:
                 logging.error(f"Error applying MPAPS rules: {e}", exc_info=True)
