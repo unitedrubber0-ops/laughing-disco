@@ -1,12 +1,35 @@
 """
-MPAPS F-6032 and F-30 tolerance and burst pressure handling.
+Tolerance and burst pressure handling for MPAPS standards.
 """
 import re
 import logging
 from typing import Optional, Dict, Any, Tuple, List
 
-# Constants for burst pressure
+#######################
+# MPAPS F-6032 Tables
+#######################
+
+# Burst pressure constant for MPAPS F-6032
 MPAPS_F6032_BURST_PRESSURE_MPA = 2.0
+
+# TABLE 1: DIMENSIONS TYPE I (Bulk Hose) - MPAPS F-6032
+TABLE_1_DATA = [
+    # Nominal ID, ID (mm), ID Tolerance, OD (mm), OD Tolerance
+    ('5/32', 3.97, 0.4, 9.3, 0.6),
+    ('3/16', 4.76, 0.4, 10.3, 0.6),
+    ('7/32', 5.56, 0.4, 11.3, 0.6),
+    ('1/4', 5.9, 0.4, 12.25, 0.6),
+    ('5/16', 7.14, 0.4, 13.5, 0.6),
+    ('3/8', 9.0, 0.4, 15.37, 0.6),
+    ('1/2', 12.0, 0.58, 20.3, 0.8),
+    ('5/8', 15.1, 0.79, 24.62, 0.8),
+    ('3/4', 18.4, 0.79, 28.35, 0.8),
+    ('1', 24.6, 0.79, 34.9, 1.0)
+]
+
+#######################
+# MPAPS F-30/F-1 Tables 
+#######################
 
 # Maximum acceptable difference for nominal value matching (mm)
 MAX_ACCEPT_DIFF_MM = 0.5  # Allow up to 0.5mm difference for practical measurements
@@ -35,37 +58,102 @@ TABLE_IV_BURST_PRESSURE = [
     (76, 102, None, 0.55, 1.38, 0.86, 1.38, 1.03)
 ]
 
-# TABLE 1: DIMENSIONS TYPE I (Bulk Hose) - MPAPS F-6032
-TABLE_1_DATA = [
-    # Nominal ID, ID (mm), ID Tolerance, OD (mm), OD Tolerance
-    ('5/32', 3.97, 0.4, 9.3, 0.6),
-    ('3/16', 4.76, 0.4, 10.3, 0.6),
-    ('7/32', 5.56, 0.4, 11.3, 0.6),
-    ('1/4', 5.9, 0.4, 12.25, 0.6),
-    ('5/16', 7.14, 0.4, 13.5, 0.6),
-    ('3/8', 9.0, 0.4, 15.37, 0.6),
-    ('1/2', 12.0, 0.58, 20.3, 0.8),
-    ('5/8', 15.1, 0.79, 24.62, 0.8),
-    ('3/4', 18.4, 0.79, 28.35, 0.8),
-    ('1', 24.6, 0.79, 34.9, 1.0)
+# TABLE 4: Grade 1 (EPDM/Premium) Formed Hose Dimensions - MPAPS F-30/F-1
+TABLE_4_GRADE_1_DATA = [
+    # (nominal_id_in, id_mm, id_tol_mm, wall_mm, wall_tol_mm)
+    ('1/4', 5.9, 0.5, 4.95, 0.65),
+    ('3/8', 9.0, 0.5, 4.95, 0.65),
+    ('1/2', 12.0, 0.5, 4.95, 0.65),
+    ('5/8', 15.1, 0.5, 4.95, 0.65),
+    ('3/4', 18.4, 0.5, 4.95, 0.65),
+    ('7/8', 21.3, 0.5, 4.95, 0.65),
+    ('1', 24.6, 0.5, 4.95, 0.65),
+    ('>1.0-2.0', None, 0.5, 4.95, 0.65),  # For ID range >25.4 - 50.8 mm
+    ('>2.0-2.5', None, 0.5, 4.95, 0.65)   # For ID range >50.8 - 62.7 mm
 ]
 
-# TABLE VII-B: SUFFIX BF HOSE ID AND WALL DIMENSIONS AND TOLERANCES (MPAPS F-30/F-1 only)
-_F30_BF_TABLE = [
-    # (nominal ID inches, actual ID mm, ID tolerance mm, OD mm, wall thickness mm, wall tolerance mm)
-    ('5/8', 15.1, 0.8, 25.0, 4.95, 0.8),
-    ('3/4', 18.4, 0.8, 28.3, 4.95, 0.8),
-    ('7/8', 21.3, 0.8, 29.9, 4.95, 0.8),
-    ('1', 24.6, 0.8, 34.5, 4.95, 0.8),
-    ('>1.0 < 2.0', None, 0.8, None, 4.95, 0.8),   # For ID range 26 - 50.8 mm
-    ('>2.0', None, 0.8, None, 5.35, 0.8)          # For ID range >50.8 - 63.5 mm
+# Grade 1 (EPDM/Premium) ranges for IDs larger than 1 inch
+TABLE_4_GRADE_1_RANGES = [
+    (25.4, 50.8, 4.95, 0.65),  # min_id_mm, max_id_mm, wall_mm, wall_tol_mm
+    (50.8, 62.7, 4.95, 0.65)
 ]
 
-# Range data for MPAPS F-30/F-1 Suffix BF dimensions
-_F30_BF_RANGES = [
-    (26.0, 50.8, 4.95, 0.8),   # min_id, max_id, wall_thickness, wall_tolerance
-    (50.8, 63.5, 5.35, 0.8)    # min_id, max_id, wall_thickness, wall_tolerance
+# TABLE 8: Grade 1 (EPDM/Premium) Suffix BF Hose Dimensions - MPAPS F-30/F-1
+TABLE_8_GRADE_1BF_DATA = [
+    # (nominal_id_in, id_mm, id_tol_mm, od_mm, wall_mm, wall_tol_mm)
+    ('5/8', 15.1, 0.5, 28.3, 4.95, 0.195),
+    ('3/4', 18.4, 0.5, 28.3, 4.95, 0.195),
+    ('7/8', 21.3, 0.5, 29.7, 4.95, 0.195),
+    ('1', 24.6, 0.5, 34.5, 4.95, 0.195),
+    ('>1.0-2.0', None, 0.5, None, 5.35, 0.211),  # For ID range >25.4 - 50.8 mm
+    ('>2.0-2.5', None, 0.5, None, 5.35, 0.211)   # For ID range >50.8 - 62.7 mm
 ]
+
+# Grade 1BF ranges for IDs larger than 1 inch
+TABLE_8_GRADE_1BF_RANGES = [
+    (25.4, 50.8, 5.35, 0.211),  # min_id_mm, max_id_mm, wall_mm, wall_tol_mm
+    (50.8, 62.7, 5.35, 0.211)
+]
+
+# TABLE 8-A: Grade 2 (Silicone) Suffix BF Hose Dimensions - MPAPS F-30/F-1
+TABLE_8A_GRADE_2BF_DATA = [
+    # (nominal_id_in, id_mm, id_tol_mm, wall_mm, wall_tol_mm)
+    ('1/2', 12.0, 0.7, 6.35, 0.95),
+    ('5/8', 15.1, 0.7, 6.35, 0.95),
+    ('3/4', 18.4, 0.8, 6.35, 0.95),
+    ('7/8', 21.3, 0.5, 6.35, 0.95),
+    ('1', 24.6, 0.8, 7.3, 1.10),
+    ('>1.0-2.5', None, 0.8, 7.3, 1.10)  # For ID range >25.4 - 63.5 mm
+]
+
+# Grade 2BF range for IDs larger than 1 inch
+TABLE_8A_GRADE_2BF_RANGES = [
+    (25.4, 63.5, 7.3, 1.10)  # min_id_mm, max_id_mm, wall_mm, wall_tol_mm
+]
+
+# TABLE 4-A: Grade 2 (Silicone) Formed Hose Dimensions - MPAPS F-30/F-1
+TABLE_4A_GRADE_2_DATA = [
+    # (nominal_id_in, id_mm, id_tol_mm, wall_mm, wall_tol_mm)
+    ('1/4', 5.9, 0.5, 4.95, 0.65),
+    ('3/8', 9.0, 0.5, 4.95, 0.65),
+    ('1/2', 12.0, 0.5, 4.95, 0.65),
+    ('5/8', 15.1, 0.5, 4.95, 0.65),
+    ('3/4', 18.4, 0.5, 4.95, 0.65),
+    ('7/8', 21.3, 0.5, 4.95, 0.65),
+    ('1', 24.6, 0.5, 4.95, 0.65),
+    ('>1.0 - 2.0', None, 0.5, 4.95, 0.65),  # For ID range >25.4 - 50.8 mm
+    ('>2.0', None, 0.5, 4.95, 0.65)         # For ID range >50.8 - 62.7 mm
+]
+
+# Grade 2 (Silicone) ranges for IDs larger than 1 inch
+TABLE_4A_GRADE_2_RANGES = [
+    (25.4, 50.8, 4.95, 0.65),  # min_id_mm, max_id_mm, wall_mm, wall_tol_mm
+    (50.8, 62.7, 4.95, 0.65)
+]
+
+# TABLE 8: Grade 1 (EPDM/Premium) Suffix BF Hose Dimensions (MPAPS F-30/F-1)
+TABLE_8A_GRADE_2BF_DATA = [
+    # (nominal ID inches, ID mm, ID tol mm, wall mm, wall tol mm)
+    ('1/2', 12.0, 0.7, 6.35, 0.95),
+    ('5/8', 15.1, 0.7, 6.35, 0.95),
+    ('3/4', 18.4, 0.8, 6.35, 0.95),
+    ('7/8', 21.3, 0.5, 6.35, 0.95),
+    ('1', 24.6, 0.8, 7.3, 1.10),
+    ('>1.0-2.5', None, 0.8, 7.3, 1.10)     # For ID range >26-63.5 mm
+]
+
+# Grade 2BF ranges for IDs larger than 1 inch
+TABLE_8A_GRADE_2BF_RANGES = [
+    (26.0, 63.5, 7.3, 1.10)   # min_id_mm, max_id_mm, wall_mm, wall_tol_mm
+]
+
+#######################
+# MPAPS F-6032 Functions
+#######################
+
+def get_burst_pressure() -> float:
+    """Get the standard burst pressure for MPAPS F-6032 materials."""
+    return MPAPS_F6032_BURST_PRESSURE_MPA
 
 def get_mpaps_f6032_dimensions_from_table(id_value: float) -> Optional[Dict[str, Any]]:
     """
@@ -204,11 +292,15 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
         logging.warning("No valid ID value found for MPAPS F-6032 dimension calculation")
             
     # Set burst pressure for MPAPS F-6032 (default 2.0 MPa = 20 bar)
-    results['burst_pressure_mpa'] = 2.0
-    results['burst_pressure_psi'] = round(2.0 * 145.038, 2)
-    results['burst_pressure'] = 20.0
-    results['burst_pressure_source'] = "MPAPS F-6032 default (2.0 MPa)"
-    logging.info("Set MPAPS F-6032 default burst pressure: 2.0 MPa")
+    results['burst_pressure_mpa'] = MPAPS_F6032_BURST_PRESSURE_MPA
+    results['burst_pressure_psi'] = round(MPAPS_F6032_BURST_PRESSURE_MPA * 145.038, 2)
+    results['burst_pressure'] = MPAPS_F6032_BURST_PRESSURE_MPA * 10  # Convert to bar
+    results['burst_pressure_source'] = f"MPAPS F-6032 default ({MPAPS_F6032_BURST_PRESSURE_MPA} MPa)"
+    logging.info(f"Set MPAPS F-6032 default burst pressure: {MPAPS_F6032_BURST_PRESSURE_MPA} MPa")
+
+#######################
+# MPAPS F-30/F-1 Functions
+#######################
 
 def apply_mpaps_f30_f1_rules(results: Dict[str, Any]) -> None:
     """
@@ -345,7 +437,7 @@ def is_grade_1bf(grade: str) -> bool:
 def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
     """
     Apply Grade 1BF specific rules to the results.
-    Uses TABLE VII-B for dimensions and tolerances.
+    Uses TABLE 8 for dimensions and tolerances.
     """
     grade = results.get('grade', '')
     if not is_grade_1bf(grade):
@@ -375,9 +467,9 @@ def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
     if id_val is not None:
         logging.info(f"Processing Grade 1BF dimensions for ID: {id_val}mm")
         
-        # First check exact matches in TABLE VII-B
+        # First check exact matches in TABLE 8
         match_found = False
-        for row in _F30_BF_TABLE:
+        for row in TABLE_8_GRADE_1BF_DATA:
             nom_in, nom_mm, id_tol, od_mm, wall_mm, wall_tol = row
             
             # Skip range entries (which have None for nom_mm)
@@ -393,17 +485,17 @@ def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
                     results['od_reference'] = od_mm
                     results['od_tolerance'] = f"{od_mm:.2f} mm"
                 
-                logging.info(f"Found matching ID in TABLE VII-B: {nom_in}\" ({nom_mm}mm)")
+                logging.info(f"Found matching ID in TABLE 8: {nom_in}\" ({nom_mm}mm)")
                 match_found = True
                 break
         
         # If no exact match found, check ranges
         if not match_found:
-            for min_id, max_id, wall_mm, wall_tol in _F30_BF_RANGES:
+            for min_id, max_id, wall_mm, wall_tol in TABLE_8_GRADE_1BF_RANGES:
                 if min_id <= id_val <= max_id:
                     results['wall_thickness'] = wall_mm
                     results['wall_thickness_tolerance'] = wall_tol
-                    results['id_tolerance'] = "± 0.8 mm"  # Standard tolerance for range entries
+                    results['id_tolerance'] = "± 0.5 mm"  # Standard tolerance for range entries from TABLE 8
                     
                     logging.info(f"ID {id_val}mm falls in range {min_id}-{max_id}mm")
                     match_found = True
@@ -413,6 +505,240 @@ def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
                 logging.warning(f"No Grade 1BF dimension match found for ID {id_val}mm")
     else:
         logging.warning("No valid ID value found for Grade 1BF dimension calculation")
+
+def apply_grade_1b_rules(results: Dict[str, Any]) -> None:
+    """
+    Apply Grade 1B specific rules to the results.
+    Uses TABLE 4 for dimensions and tolerances.
+    """
+    grade = results.get('grade', '')
+    if not any(g in str(grade).upper() for g in ['1B', 'B1']):
+        return  # Exit early if not Grade 1B
+        
+    logging.info("Applying Grade 1B rules to results")
+    
+    # Get dimensions
+    dimensions = results.get('dimensions', {})
+    id_val = None
+    
+    for id_key in ['id1', 'ID1', 'ID', 'id']:
+        val = dimensions.get(id_key) or results.get(id_key)
+        if val and str(val).strip().lower() != 'not found':
+            try:
+                if isinstance(val, str):
+                    val_clean = re.sub(r'[^\d.-]', '', val)
+                    id_val = float(val_clean)
+                else:
+                    id_val = float(val)
+                logging.info(f"Found valid ID value {id_val} from key {id_key}")
+                break
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Failed to parse ID value '{val}': {e}")
+                continue
+    
+    if id_val is not None:
+        logging.info(f"Processing Grade 1B dimensions for ID: {id_val}mm")
+        
+        # First check exact matches in TABLE 4
+        match_found = False
+        for row in TABLE_4_GRADE_1_DATA:
+            nom_in, nom_mm, id_tol, wall_mm, wall_tol = row
+            
+            # Skip range entries (which have None for nom_mm)
+            if nom_mm is None:
+                continue
+                
+            if abs(nom_mm - id_val) <= MAX_ACCEPT_DIFF_MM:
+                results['id_tolerance'] = f"{nom_mm:.2f} ± {id_tol:.2f} mm"
+                results['wall_thickness'] = wall_mm
+                results['wall_thickness_tolerance'] = wall_tol
+                
+                # Calculate OD from ID and wall thickness
+                od_mm = nom_mm + (2 * wall_mm)
+                results['od_reference'] = od_mm
+                results['od_tolerance'] = f"{od_mm:.2f} mm"
+                
+                logging.info(f"Found matching ID in TABLE 4: {nom_in}\" ({nom_mm}mm)")
+                match_found = True
+                break
+        
+        # If no exact match found, check ranges
+        if not match_found:
+            for min_id, max_id, wall_mm, wall_tol in TABLE_4_GRADE_1_RANGES:
+                if min_id <= id_val <= max_id:
+                    results['wall_thickness'] = wall_mm
+                    results['wall_thickness_tolerance'] = wall_tol
+                    results['id_tolerance'] = "± 0.5 mm"  # Standard tolerance for range entries
+                    
+                    # Calculate OD from ID and wall thickness for range entries
+                    od_mm = id_val + (2 * wall_mm)
+                    results['od_reference'] = od_mm
+                    results['od_tolerance'] = f"{od_mm:.2f} mm"
+                    
+                    logging.info(f"ID {id_val}mm falls in range {min_id}-{max_id}mm")
+                    match_found = True
+                    break
+                    
+            if not match_found:
+                logging.warning(f"No Grade 1B dimension match found for ID {id_val}mm")
+    else:
+        logging.warning("No valid ID value found for Grade 1B dimension calculation")
+
+def apply_grade_2b_rules(results: Dict[str, Any]) -> None:
+    """
+    Apply Grade 2B specific rules to the results.
+    Uses TABLE 4-A for dimensions and tolerances.
+    """
+    grade = results.get('grade', '')
+    if not any(g in str(grade).upper() for g in ['2B', 'B2']):
+        return  # Exit early if not Grade 2B
+        
+    logging.info("Applying Grade 2B rules to results")
+    
+    # Get dimensions
+    dimensions = results.get('dimensions', {})
+    id_val = None
+    
+    for id_key in ['id1', 'ID1', 'ID', 'id']:
+        val = dimensions.get(id_key) or results.get(id_key)
+        if val and str(val).strip().lower() != 'not found':
+            try:
+                if isinstance(val, str):
+                    val_clean = re.sub(r'[^\d.-]', '', val)
+                    id_val = float(val_clean)
+                else:
+                    id_val = float(val)
+                logging.info(f"Found valid ID value {id_val} from key {id_key}")
+                break
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Failed to parse ID value '{val}': {e}")
+                continue
+    
+    if id_val is not None:
+        logging.info(f"Processing Grade 2B dimensions for ID: {id_val}mm")
+        
+        # First check exact matches in TABLE 4-A
+        match_found = False
+        for row in TABLE_4A_GRADE_2_DATA:
+            nom_in, nom_mm, id_tol, wall_mm, wall_tol = row
+            
+            # Skip range entries (which have None for nom_mm)
+            if nom_mm is None:
+                continue
+                
+            if abs(nom_mm - id_val) <= MAX_ACCEPT_DIFF_MM:
+                results['id_tolerance'] = f"{nom_mm:.2f} ± {id_tol:.2f} mm"
+                results['wall_thickness'] = wall_mm
+                results['wall_thickness_tolerance'] = wall_tol
+                
+                # Calculate OD based on ID and wall thickness for Grade 2
+                od_mm = nom_mm + (2 * wall_mm)
+                results['od_reference'] = od_mm
+                results['od_tolerance'] = f"{od_mm:.2f} mm"
+                
+                logging.info(f"Found matching ID in TABLE 4-A: {nom_in}\" ({nom_mm}mm)")
+                match_found = True
+                break
+        
+        # If no exact match found, check ranges
+        if not match_found:
+            for min_id, max_id, wall_mm, wall_tol in TABLE_4A_GRADE_2_RANGES:
+                if min_id <= id_val <= max_id:
+                    results['wall_thickness'] = wall_mm
+                    results['wall_thickness_tolerance'] = wall_tol
+                    results['id_tolerance'] = "± 0.5 mm"  # Standard tolerance for range entries
+                    
+                    # Calculate OD based on ID and wall thickness for range entries
+                    od_mm = id_val + (2 * wall_mm)
+                    results['od_reference'] = od_mm
+                    results['od_tolerance'] = f"{od_mm:.2f} mm"
+                    
+                    logging.info(f"ID {id_val}mm falls in range {min_id}-{max_id}mm")
+                    match_found = True
+                    break
+                    
+            if not match_found:
+                logging.warning(f"No Grade 2B dimension match found for ID {id_val}mm")
+    else:
+        logging.warning("No valid ID value found for Grade 2B dimension calculation")
+
+def apply_grade_2bf_rules(results: Dict[str, Any]) -> None:
+    """
+    Apply Grade 2BF specific rules to the results.
+    Uses TABLE 8-A for dimensions and tolerances.
+    """
+    grade = results.get('grade', '')
+    if not any(g in str(grade).upper() for g in ['2BF', 'BF2']):
+        return  # Exit early if not Grade 2BF
+        
+    logging.info("Applying Grade 2BF rules to results")
+    
+    # Get dimensions
+    dimensions = results.get('dimensions', {})
+    id_val = None
+    
+    for id_key in ['id1', 'ID1', 'ID', 'id']:
+        val = dimensions.get(id_key) or results.get(id_key)
+        if val and str(val).strip().lower() != 'not found':
+            try:
+                if isinstance(val, str):
+                    val_clean = re.sub(r'[^\d.-]', '', val)
+                    id_val = float(val_clean)
+                else:
+                    id_val = float(val)
+                logging.info(f"Found valid ID value {id_val} from key {id_key}")
+                break
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Failed to parse ID value '{val}': {e}")
+                continue
+    
+    if id_val is not None:
+        logging.info(f"Processing Grade 2BF dimensions for ID: {id_val}mm")
+        
+        # First check exact matches in TABLE 8-A
+        match_found = False
+        for row in TABLE_8A_GRADE_2BF_DATA:
+            nom_in, nom_mm, id_tol, wall_mm, wall_tol = row
+            
+            # Skip range entries (which have None for nom_mm)
+            if nom_mm is None:
+                continue
+                
+            if abs(nom_mm - id_val) <= MAX_ACCEPT_DIFF_MM:
+                results['id_tolerance'] = f"{nom_mm:.2f} ± {id_tol:.2f} mm"
+                results['wall_thickness'] = wall_mm
+                results['wall_thickness_tolerance'] = wall_tol
+                
+                # Calculate OD based on ID and wall thickness for Grade 2BF
+                od_mm = nom_mm + (2 * wall_mm)
+                results['od_reference'] = od_mm
+                results['od_tolerance'] = f"{od_mm:.2f} mm"
+                
+                logging.info(f"Found matching ID in TABLE 8-A: {nom_in}\" ({nom_mm}mm)")
+                match_found = True
+                break
+        
+        # If no exact match found, check ranges
+        if not match_found:
+            for min_id, max_id, wall_mm, wall_tol in TABLE_8A_GRADE_2BF_RANGES:
+                if min_id <= id_val <= max_id:
+                    results['wall_thickness'] = wall_mm
+                    results['wall_thickness_tolerance'] = wall_tol
+                    results['id_tolerance'] = "± 0.8 mm"  # Standard tolerance for range entries
+                    
+                    # Calculate OD based on ID and wall thickness for range entries
+                    od_mm = id_val + (2 * wall_mm)
+                    results['od_reference'] = od_mm
+                    results['od_tolerance'] = f"{od_mm:.2f} mm"
+                    
+                    logging.info(f"ID {id_val}mm falls in range {min_id}-{max_id}mm")
+                    match_found = True
+                    break
+                    
+            if not match_found:
+                logging.warning(f"No Grade 2BF dimension match found for ID {id_val}mm")
+    else:
+        logging.warning("No valid ID value found for Grade 2BF dimension calculation")
 
 def get_burst_pressure() -> float:
     """Get the standard burst pressure for MPAPS F-6032 materials."""
