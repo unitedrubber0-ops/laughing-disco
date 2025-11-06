@@ -193,10 +193,12 @@ def get_mpaps_f6032_dimensions_from_table(id_value: float) -> Optional[Dict[str,
         
         if closest_match and min_diff <= MAX_ACCEPT_DIFF_MM:
             logging.info(f"Found MPAPS F-6032 dimension match: {closest_match}")
+            logging.info(f"Exact match found within {MAX_ACCEPT_DIFF_MM}mm tolerance (diff={min_diff:.3f}mm)")
             return closest_match
         elif closest_match:
-            logging.warning(f"Nearest MPAPS F-6032 nominal for ID {id_val}mm is {min_diff:.2f}mm away")
+            logging.warning(f"Nearest MPAPS F-6032 nominal for ID {id_val}mm is {min_diff:.3f}mm away (tolerance={MAX_ACCEPT_DIFF_MM}mm)")
             logging.info(f"Using nearest match: {closest_match}")
+            logging.debug(f"Match details - Nominal: {closest_match['nominal_id_mm']}mm, ID Tol: ±{closest_match['id_tolerance_mm']}mm")
             return closest_match
         else:
             logging.warning(f"No MPAPS F-6032 dimension match found for ID {id_val}mm")
@@ -233,6 +235,11 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
         return  # Exit early if not F-6032
         
     logging.info("Applying MPAPS F-6032 rules to results")
+    logging.info("DEBUG MPAPS F-6032: standard=%r, material=%r, dimension_source=%r",
+                 results.get('standard'),
+                 results.get('material'),
+                 results.get('dimension_source'))
+    logging.info("DEBUG DIMENSIONS: %r", results.get('dimensions', {}))
     
     # Get dimensions from all possible locations
     dimensions = results.get('dimensions', {})
@@ -253,6 +260,18 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
             except (ValueError, TypeError) as e:
                 logging.warning(f"Failed to parse ID value '{val}': {e}")
                 continue
+    
+    # fallback: try to parse from raw_text if id_val is None
+    if id_val is None:
+        raw_text = results.get('raw_text') or results.get('ocr_text') or results.get('text')
+        if raw_text:
+            m = re.search(r'HOSE\s+ID\s*[=:]?\s*([\d.]+)', raw_text, re.IGNORECASE)
+            if m:
+                try:
+                    id_val = float(m.group(1))
+                    logging.info(f"Fallback parsed ID from raw text: {id_val}mm")
+                except Exception as e:
+                    logging.warning(f"Fallback parse failed for ID value {m.group(1)}: {e}")
     
     # For MPAPS F-6032, use TABLE 1 for dimensions and tolerances
     if id_val is not None:
@@ -323,11 +342,16 @@ def apply_mpaps_f30_f1_rules(results: Dict[str, Any]) -> None:
         
     logging.info("Applying MPAPS F-30/F-1 rules to results")
     
-    # Clear any MPAPS F-6032 tolerances that might have been set
-    if 'id_tolerance' in results and 'TABLE 1' in str(results.get('dimension_source', '')):
-        results['id_tolerance'] = "N/A"
-        results['od_tolerance'] = "N/A" 
-        logging.info("Cleared MPAPS F-6032 tolerances for F-30/F-1 part")
+    # Clear MPAPS F-6032 tolerances only when appropriate
+    if 'id_tolerance' in results and results.get('dimension_source') == "MPAPS F-6032 TABLE 1":
+        # clear only if current standard is definitely F-30/F-1 and NOT F-6032
+        std = str(results.get('standard','')).upper()
+        if ('MPAPS F-30' in std or 'MPAPS F-1' in std) and 'F-6032' not in std:
+            results['id_tolerance'] = "N/A"
+            results['od_tolerance'] = "N/A"
+            logging.info("Cleared MPAPS F-6032 tolerances because standard is F-30/F-1")
+        else:
+            logging.info("Retaining MPAPS F-6032 tolerances (dimension_source indicates TABLE 1)")
     
     # Get ID value for burst pressure lookup
     dimensions = results.get('dimensions', {})
