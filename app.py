@@ -306,6 +306,33 @@ def process_ocr_text(text):
 app = Flask(__name__)
 CORS(app)
 
+# Configure max content length (25MB)
+app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
+
+# Configure timeouts and server settings to avoid HTTP/2 issues
+app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+app.config['PERMANENT_SESSION_LIFETIME'] = 1800  # 30 minutes
+
+# Force HTTP/1.1 to avoid HTTP/2 protocol issues
+from werkzeug.serving import WSGIRequestHandler
+WSGIRequestHandler.protocol_version = "HTTP/1.1"
+
+# Configure request handling
+app.config['UPLOAD_FOLDER'] = os.path.join(os.getcwd(), 'uploads')
+if not os.path.exists(app.config['UPLOAD_FOLDER']):
+    os.makedirs(app.config['UPLOAD_FOLDER'])
+
+@app.after_request
+def add_header(response):
+    """Add headers to prevent caching and enforce HTTP/1.1"""
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    # Force HTTP/1.1
+    response.headers['Connection'] = 'keep-alive'
+    return response
+
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -313,10 +340,11 @@ logger = logging.getLogger(__name__)
 # --- API Key Configuration ---
 api_key = os.environ.get("GEMINI_API_KEY")
 is_test_mode = os.environ.get("TEST_MODE", "").lower() == "true"
+is_development = os.environ.get("FLASK_ENV") == "development" or app.debug
 
-if not api_key and not is_test_mode:
-    logging.error("GEMINI_API_KEY environment variable not set and not in test mode")
-    raise ValueError("GEMINI_API_KEY environment variable must be set to use Gemini AI features")
+if not api_key and not (is_test_mode or is_development):
+    logging.error("GEMINI_API_KEY environment variable not set and not in test/development mode")
+    raise ValueError("GEMINI_API_KEY environment variable must be set in production")
 
 if api_key:
     try:
@@ -3024,6 +3052,9 @@ def upload_and_analyze():
             
         # 4. Analyze drawing
         final_results = analyze_drawing(pdf_bytes)
+    except Exception as e:
+        logging.error(f"Error reading PDF file: {e}", exc_info=True)
+        return jsonify({"error": f"Error reading PDF file: {str(e)}"}), 500
         
         # 5. Response validation and return
         if not isinstance(final_results, dict):
@@ -3188,60 +3219,111 @@ def upload_and_analyze():
             logging.error(f"Error in data validation: {e}")
             final_results["validation_warnings"] = [f"Validation error: {str(e)}"]
 
-        # Apply MPAPS F-6032 rules for tolerances and burst pressure
+        # Apply MPAPS rules for tolerances and burst pressure
         try:
-            # Debug tolerance lookup before applying rules
+            # Import debug utils
             from debug_utils import debug_tolerance_lookup
-            debug_tolerance_lookup(final_results)
-            
-            # Apply MPAPS rules - COMPLETELY SEPARATE implementations
-            try:
-                # First determine which standard we're dealing with
-                standard = final_results.get('standard', '')
-                material = final_results.get('material', '')
-                
-                is_f6032 = False
-                is_f30_f1 = False
-                
-                # Strict checking for F-6032
-                if standard and ('MPAPS F-6032' in str(standard).upper() or 'MPAPSF6032' in str(standard).upper()):
-                    is_f6032 = True
-                elif material and ('MPAPS F-6032' in str(material).upper() or 'MPAPSF6032' in str(material).upper()):
-                    is_f6032 = True
-                    
-                # Strict checking for F-30/F-1  
-                if standard and ('MPAPS F-30' in str(standard).upper() or 'MPAPS F-1' in str(standard).upper() or 'MPAPSF30' in str(standard).upper()):
-                    is_f30_f1 = True
-                
-                logging.info(f"Standard detection - F-6032: {is_f6032}, F-30/F-1: {is_f30_f1}")
-                
-                # Apply ONLY one set of rules based on strict detection
-                if is_f6032:
-                    logging.info("Applying MPAPS F-6032 rules (TABLE 1 + 2.0 MPa burst)")
-                    apply_mpaps_f6032_rules(final_results)
-                elif is_f30_f1:
-                    logging.info("Applying MPAPS F-30/F-1 rules (TABLE III/IV burst pressure)")
-                    apply_mpaps_f30_f1_rules(final_results)
-                else:
-                    logging.info("No MPAPS standard detected, skipping MPAPS rules")
-                
-            except Exception as e:
-                logging.error(f"Error applying MPAPS rules: {e}", exc_info=True)
-            
-            # Debug tolerance lookup after applying rules
-            debug_tolerance_lookup(final_results)
-            
-        except Exception as e:
-            logging.error(f"Error applying MPAPS F-6032 rules: {e}", exc_info=True)
+        except ImportError as e:
+            logging.error(f"Error importing debug utils: {e}", exc_info=True)
+            debug_tolerance_lookup = lambda x: None
 
-        # Initialize development length
-        dev_length = 0
+        # Debug tolerance lookup before applying rules
+        debug_tolerance_lookup(final_results)
         
+def detect_mpaps_standard(final_results):
+    """
+    Accurately detect which MPAPS standard should be applied.
+    Returns: 'f6032', 'f30_f1', or None
+    """
+    standard = final_results.get('standard', '')
+    material = final_results.get('material', '')
+    description = final_results.get('description', '')
+    
+    # Convert to uppercase for consistent comparison
+    standard_upper = str(standard).upper()
+    material_upper = str(material).upper()
+    description_upper = str(description).upper()
+    
+    # STRICT F-6032 detection - only if explicitly mentioned
+    f6032_indicators = [
+        'MPAPS F-6032', 'MPAPSF6032', 'F-6032', 
+        'TYPE I', 'TYPE II', 'TYPE III'  # F-6032 uses TYPE designations
+    ]
+    
+    # STRICT F-30/F-1 detection
+    f30_indicators = [
+        'MPAPS F-30', 'MPAPSF30', 'F-30',
+        'MPAPS F-1', 'MPAPSF1', 'F-1',
+        'GRADE 1B', 'GRADE 1BF', 'GRADE 2B', 'GRADE 1A'  # F-30 uses GRADE designations
+    ]
+    
+    # Check for F-6032
+    for indicator in f6032_indicators:
+        if (indicator in standard_upper or 
+            indicator in material_upper or 
+            indicator in description_upper):
+            return 'f6032'
+    
+    # Check for F-30/F-1  
+    for indicator in f30_indicators:
+        if (indicator in standard_upper or 
+            indicator in material_upper or 
+            indicator in description_upper):
+            return 'f30_f1'
+    
+    # Check grade patterns
+    grade = final_results.get('grade', '')
+    grade_upper = str(grade).upper()
+    
+    # F-6032 typically uses TYPE I, TYPE II, etc.
+    if any(typ in grade_upper for typ in ['TYPE I', 'TYPE II', 'TYPE III']):
+        return 'f6032'
+    
+    # F-30 typically uses GRADE 1B, 1BF, 2B, etc.
+    if any(gr in grade_upper for gr in ['GRADE 1B', 'GRADE 1BF', 'GRADE 2B', 'GRADE 1A', '1B', '1BF', '2B']):
+        return 'f30_f1'
+    
+    return None
+
+    try:
+        # Apply MPAPS rules using standard detection
+        detected_standard = detect_mpaps_standard(final_results)
+        logging.info(f"Detected MPAPS standard: {detected_standard}")
+        
+        if detected_standard == 'f6032':
+            logging.info("Applying MPAPS F-6032 rules (TABLE 1 + 2.0 MPa burst)")
+            apply_mpaps_f6032_rules(final_results)
+        elif detected_standard == 'f30_f1':
+            logging.info("Applying MPAPS F-30/F-1 rules (TABLE III/IV burst pressure)")
+            apply_mpaps_f30_f1_rules(final_results)
+            
+            # Apply grade-specific dimension rules for F-30/F-1
+            grade = final_results.get('grade', '')
+            grade_upper = str(grade).upper()
+            
+            if any(g in grade_upper for g in ['1BF', 'BF']):
+                apply_grade_1bf_rules(final_results)
+            elif any(g in grade_upper for g in ['1B', 'B1', 'GRADE IB', 'IB']):
+                apply_grade_1b_rules(final_results)
+            elif any(g in grade_upper for g in ['2B', 'B2']):
+                apply_grade_2b_rules(final_results)
+            elif any(g in grade_upper for g in ['2BF', 'BF2']):
+                apply_grade_2bf_rules(final_results)
+        else:
+            logging.info("No MPAPS standard detected, skipping MPAPS rules")
+        
+        # Debug tolerance lookup after applying rules
+        debug_tolerance_lookup(final_results)
+    except Exception as e:
+        logging.error(f"Error applying MPAPS rules: {e}", exc_info=True)
+        final_results["error"] = f"Error applying MPAPS rules: {str(e)}"
+
         # Calculate development length with improved handling
         try:
             coordinates = final_results.get("coordinates", [])
             dimensions = final_results.get("dimensions", {})
             centerline_length = dimensions.get("centerline_length")
+            dev_length = 0
             
             logger.info(f"Available coordinates: {len(coordinates) if coordinates else 0} points")
             logger.info(f"Centerline length from drawing: {centerline_length}")
@@ -3252,7 +3334,7 @@ def upload_and_analyze():
                     dev_length = float(str(centerline_length))
                     logger.info(f"Using centerline length as development length: {dev_length}mm")
                 except (ValueError, TypeError):
-                    pass
+                    logger.warning("Could not convert centerline length to float")
             
             # Priority 2: Calculate from coordinates if centerline not available
             elif coordinates and len(coordinates) >= 2:
@@ -3291,6 +3373,7 @@ def upload_and_analyze():
         logging.error(f"Error analyzing drawing: {str(e)}")
         return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
 
+# --- Route for the main webpage ---
 # --- Route for the main webpage (no change) ---
 @app.route('/')
 def index():
@@ -3349,7 +3432,10 @@ def analyze_image_with_gemini_vision(pdf_bytes):
     finally:
         # Clean up temporary file
         if temp_pdf_path and os.path.exists(temp_pdf_path):
-            # Try unlink first, then fallback to remove if necessary
+            try:
+                os.unlink(temp_pdf_path)
+            except Exception as e:
+                logging.warning(f"Failed to clean up temporary PDF file: {e}")
             try:
                 os.unlink(temp_pdf_path)
             except Exception:
