@@ -154,7 +154,7 @@ def get_grade1bf_tolerances(id_value_mm: float) -> dict:
             'wall_tolerance_mm': 0.8,
             'difference_mm': 0.0
         }
-    elif 26.0 < id_val < 50.8:
+    elif 26.0 <= id_val < 50.8:
         return {
             'nominal_in': '>1.0-2.0',
             'nominal_id_mm': id_val,  # Use actual value since it's in range
@@ -558,6 +558,7 @@ def is_grade_1bf(grade: str) -> bool:
         return False
         
     grade_upper = str(grade).upper()
+    return '1BF' in grade_upper.replace(' ', '') or 'GRADE1BF' in grade_upper.replace(' ', '') or 'GRADE1-BF' in grade_upper.replace(' ', '')
     return any(g in grade_upper for g in ['1BF', 'BF'])
 
 def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
@@ -604,6 +605,7 @@ def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
         
         # Get matching tolerances from TABLE 8
         tol_rec = get_grade1bf_tolerances(id_val)
+        logging.info(f"Grade 1BF tolerance lookup result: {tol_rec}")
         if tol_rec and tol_rec['id_tolerance_mm'] is not None:
             # Set ID tolerance with exact value for ranges or nominal value for standard sizes
             id_display = id_val if tol_rec['nominal_in'] in ['>1.0-2.0', '2.0-2.5'] else tol_rec['nominal_id_mm']
