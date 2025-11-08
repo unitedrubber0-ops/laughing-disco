@@ -240,13 +240,44 @@ TABLE_8A_GRADE_2BF_DATA = [
 ]
 
 # Grade 2BF ranges for IDs larger than 1 inch
-TABLE_8A_GRADE_2BF_RANGES = [
-    (26.0, 63.5, 7.3, 1.10)   # min_id_mm, max_id_mm, wall_mm, wall_tol_mm
-]
+# TABLE 8A_GRADE_2BF_RANGES = [
+# (26.0, 63.5, 7.3, 1.10)   # min_id_mm, max_id_mm, wall_mm, wall_tol_mm
+# ]
 
 #######################
 # MPAPS F-6032 Functions
 #######################
+
+def get_burst_pressure_from_table_iv(id_value: float, grade: str) -> Optional[float]:
+    """
+    Get burst pressure from TABLE IV based on ID and grade.
+    
+    Args:
+        id_value: ID in mm
+        grade: Grade string (e.g., "GRADE 1 B", "1B", "2B", etc.)
+        
+    Returns:
+        Burst pressure in MPa or None if not found
+    """
+    # Normalize grade 
+    grade_str = re.sub(r'\s+', '', str(grade).upper())
+    grade_str = re.sub(r'GRADE', '', grade_str)
+    
+    # Find the matching ID range in TABLE IV
+    logging.info(f"Looking up burst pressure for ID {id_value}mm with grade {grade_str}")
+    for min_id, max_id, b_1_3, b_2, c_1, c_2, f_1, f_2 in TABLE_IV_BURST_PRESSURE:
+        if min_id < id_value <= max_id:
+            logging.info(f"Found ID range {min_id}-{max_id}mm in TABLE IV")
+            # Select correct column based on grade
+            if any(g in grade_str for g in ['1B', 'B1', '3B', 'B3']):
+                return b_1_3  # Suffix B Grade 1&3 column
+            elif any(g in grade_str for g in ['2B', 'B2']):
+                return b_2   # Suffix B Grade 2 column
+            elif any(g in grade_str for g in ['1BF', 'BF1']):
+                return f_1   # Suffix F Grade 1 column
+    
+    logging.warning(f"No matching ID range found for {id_value}mm in TABLE IV")            
+    return None
 
 def get_burst_pressure() -> float:
     """Get the standard burst pressure for MPAPS F-6032 materials."""
@@ -442,7 +473,7 @@ def apply_mpaps_f30_f1_rules(results: Dict[str, Any]) -> None:
     if not is_f30_f1:
         return  # Exit early if not F-30/F-1
         
-    logging.info("Applying MPAPS F-30/F-1 rules to results")
+    logging.info("Applying MPAPS F-30/F-1 rules (TABLE III/IV burst pressure)")
     
     # Clear MPAPS F-6032 tolerances only when appropriate
     if 'id_tolerance' in results and results.get('dimension_source') == "MPAPS F-6032 TABLE 1":
@@ -454,6 +485,26 @@ def apply_mpaps_f30_f1_rules(results: Dict[str, Any]) -> None:
             logging.info("Cleared MPAPS F-6032 tolerances because standard is F-30/F-1")
         else:
             logging.info("Retaining MPAPS F-6032 tolerances (dimension_source indicates TABLE 1)")
+            
+    # Set F-30/F-1 burst pressure from TABLE IV if available
+    dimensions = results.get('dimensions', {})
+    id_val = None
+    
+    # Get ID value for burst pressure lookup
+    for id_key in ['id1', 'ID1', 'ID', 'id']:
+        val = dimensions.get(id_key) or results.get(id_key)
+        if val and str(val).strip().lower() != 'not found':
+            try:
+                if isinstance(val, str):
+                    val_clean = re.sub(r'[^\d.-]', '', val)
+                    id_val = float(val_clean)
+                else:
+                    id_val = float(val)
+                logging.info(f"Found valid ID value {id_val} from key {id_key}")
+                break
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Failed to parse ID value '{val}': {e}")
+                continue
     
     # Get ID value for burst pressure lookup
     dimensions = results.get('dimensions', {})
@@ -638,16 +689,19 @@ def apply_grade_1b_rules(results: Dict[str, Any]) -> None:
     if not grade:
         return False
         
-    grade_upper = str(grade).upper().replace(' ', '')
-    if not (any(g in grade_upper for g in ['1B', 'B1', 'GRADE1B', 'GRADE1-B', 'GRADE1B']) or
-            'GRADE1' in grade_upper and 'B' in grade_upper):
+    # Normalize grade string
+    grade_str = re.sub(r'\s+', '', str(grade).upper())  # Remove spaces
+    grade_str = re.sub(r'GRADE', '', grade_str)  # Remove "GRADE"
+    
+    if not (any(g in grade_str for g in ['1B', 'B1']) or
+            '1B' in grade_str):
         logging.info(f"Not a Grade 1B specification: {grade}")
         return  # Exit early if not Grade 1B
         
     logging.info("Applying Grade 1B rules to results")
     logging.info(f"Processing Grade 1B with grade string: {grade}")
 
-    # Get dimensions
+    # Get dimensions and burst pressure from TABLE IV
     dimensions = results.get('dimensions', {})
     id_val = None
     
@@ -668,6 +722,15 @@ def apply_grade_1b_rules(results: Dict[str, Any]) -> None:
     
     if id_val is not None:
         logging.info(f"Processing Grade 1B dimensions for ID: {id_val}mm")
+        
+        # Look up burst pressure in TABLE IV
+        burst_pressure = get_burst_pressure_from_table_iv(id_val, grade)
+        if burst_pressure is not None:
+            results['burst_pressure_mpa'] = burst_pressure
+            results['burst_pressure_psi'] = round(burst_pressure * 145.038, 2)
+            results['burst_pressure'] = burst_pressure * 10  # Convert to bar
+            results['burst_pressure_source'] = f"MPAPS F-30/F-1 TABLE IV ({burst_pressure} MPa)"
+            logging.info(f"Set burst pressure from TABLE IV: {burst_pressure} MPa")
         
         # First check ranges since they take precedence over exact matches
         match_found = False
@@ -747,7 +810,11 @@ def apply_grade_2b_rules(results: Dict[str, Any]) -> None:
     Uses TABLE 4-A for dimensions and tolerances.
     """
     grade = results.get('grade', '')
-    if not any(g in str(grade).upper() for g in ['2B', 'B2']):
+    # Normalize grade string to handle variations like "GRADE 1 B", "1B", etc.
+    grade_str = re.sub(r'\s+', '', str(grade).upper())  # Remove spaces
+    grade_str = re.sub(r'GRADE', '', grade_str)  # Remove "GRADE"
+    
+    if not any(g in grade_str for g in ['2B', 'B2']):
         return  # Exit early if not Grade 2B
         
     logging.info("Applying Grade 2B rules to results")
