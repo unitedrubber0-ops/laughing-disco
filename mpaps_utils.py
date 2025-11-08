@@ -95,6 +95,76 @@ TABLE_8_GRADE_1BF_RANGES = [
     (50.8, 62.7, 5.35, 0.211)
 ]
 
+# ---------------------------
+# Grade 1 BF tolerance helper
+# ---------------------------
+# Based on provided table (Actual Inside Diameters and tolerances)
+GRADE_1_BF_TOLERANCE_ENTRIES = [
+    # (nominal_in, actual_id_mm, id_tol_mm, wall_mm, wall_tol_mm)
+    ('5/8',  15.1, 0.5, 4.95, 0.8),
+    ('3/4',  18.4, 0.5, 4.95, 0.8),
+    ('7/8',  21.3, 0.5, 4.95, 0.8),
+    ('1',    24.6, 0.5, 4.95, 0.8),
+    # Representative midpoint for >1.0 - 2.0 range
+    ('>1.0-2.0', 38.4, 0.5, 4.95, 0.8),
+    # Representative values for >=2.0 - 2.5 range
+    ('2.0',  50.8, 0.5, 5.35, 0.8),
+    ('2.25', 57.2, 0.5, 5.35, 0.8),
+    ('2.5',  62.7, 0.5, 5.35, 0.8)
+]
+
+def get_grade1bf_tolerances(id_value_mm: float) -> dict:
+    """
+    Return a tolerance record for Grade 1 (EPDM/PREMIUM) SUFFIX BF hose
+    using nearest-match logic on the provided table.
+    Output keys:
+      - nominal_in
+      - nominal_id_mm (actual inside diameter representative)
+      - id_tolerance_mm
+      - wall_mm
+      - wall_tolerance_mm
+      - difference_mm (abs diff between id_value_mm and nominal_id_mm)
+    """
+    try:
+        id_val = float(id_value_mm)
+    except Exception:
+        return {
+            'nominal_in': None,
+            'nominal_id_mm': None,
+            'id_tolerance_mm': None,
+            'wall_mm': None,
+            'wall_tolerance_mm': None,
+            'difference_mm': None
+        }
+
+    # find nearest entry by absolute difference
+    best = None
+    best_diff = float('inf')
+    for entry in GRADE_1_BF_TOLERANCE_ENTRIES:
+        nominal_in, nominal_id_mm, id_tol, wall_mm, wall_tol = entry
+        if nominal_id_mm is None:
+            continue
+        diff = abs(nominal_id_mm - id_val)
+        if diff < best_diff:
+            best_diff = diff
+            best = {
+                'nominal_in': nominal_in,
+                'nominal_id_mm': nominal_id_mm,
+                'id_tolerance_mm': id_tol,
+                'wall_mm': wall_mm,
+                'wall_tolerance_mm': wall_tol,
+                'difference_mm': diff
+            }
+
+    return best or {
+        'nominal_in': None,
+        'nominal_id_mm': None,
+        'id_tolerance_mm': None,
+        'wall_mm': None,
+        'wall_tolerance_mm': None,
+        'difference_mm': None
+    }
+
 # TABLE 8-A: Grade 2 (Silicone) Suffix BF Hose Dimensions - MPAPS F-30/F-1
 TABLE_8A_GRADE_2BF_DATA = [
     # (nominal_id_in, id_mm, id_tol_mm, wall_mm, wall_tol_mm)
@@ -423,34 +493,22 @@ def get_burst_pressure_from_tables(grade: str, id_mm: float) -> Optional[float]:
             return None
         
         # TABLE IV: Value ranges for suffix B, C, and F grades
-        logging.info(f"Looking up burst pressure for ID={id_mm}mm, Grade={grade}")
         for row in TABLE_IV_BURST_PRESSURE:
             over, thru = row[0], row[1]
-            logging.debug(f"Checking range: {over} < {id_mm} <= {thru}")
             
             if over < id_mm <= thru:
-                logging.info(f"ID {id_mm}mm matched TABLE IV range {over}-{thru}mm")
-                
                 if any(g in grade_upper for g in ['1BF', 'BF']):
-                    logging.info(f"Grade {grade} matched 1BF/BF pattern -> {row[6]} MPa")
                     return row[6]  # Suffix F Grade 1 (1BF)
                 elif '2F' in grade_upper:
-                    logging.info(f"Grade {grade} matched 2F pattern -> {row[7]} MPa")
                     return row[7]  # Suffix F Grade 2
-                elif any(g in grade_upper for g in ['1B', '3B', 'GRADE IB', 'IB', 'GRADE 1B', 'GRADE 1 B', '1 B']):
-                    logging.info(f"Grade {grade} matched 1B pattern -> {row[2]} MPa")
+                elif any(g in grade_upper for g in ['1B', '3B', 'GRADE IB', 'IB', 'GRADE 1B']):
                     return row[2]  # Suffix B Grade 1&3
-                elif any(g in grade_upper for g in ['2B', 'GRADE 2B', 'GRADE 2 B', '2 B']):
-                    logging.info(f"Grade {grade} matched 2B pattern -> {row[3]} MPa")
+                elif any(g in grade_upper for g in ['2B', 'GRADE 2B']):
                     return row[3]  # Suffix B Grade 2
                 elif '1C' in grade_upper:
-                    logging.info(f"Grade {grade} matched 1C pattern -> {row[4]} MPa")
                     return row[4]  # Suffix C Grade 1
                 elif '2C' in grade_upper:
-                    logging.info(f"Grade {grade} matched 2C pattern -> {row[5]} MPa")
                     return row[5]  # Suffix C Grade 2
-                else:
-                    logging.warning(f"Found matching range but grade '{grade}' did not match any patterns")
                 
         logging.warning(f"No matching ID range found for {id_mm}mm in TABLE IV")
         return None
@@ -478,7 +536,7 @@ def is_grade_1bf(grade: str) -> bool:
 def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
     """
     Apply Grade 1BF specific rules to the results.
-    Uses TABLE 8 for dimensions and tolerances.
+    Uses GRADE_1_BF_TOLERANCE_ENTRIES for dimensions and tolerances with nearest-match logic.
     """
     grade = results.get('grade', '')
     if not is_grade_1bf(grade):
@@ -508,42 +566,22 @@ def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
     if id_val is not None:
         logging.info(f"Processing Grade 1BF dimensions for ID: {id_val}mm")
         
-        # First check exact matches in TABLE 8
-        match_found = False
-        for row in TABLE_8_GRADE_1BF_DATA:
-            nom_in, nom_mm, id_tol, od_mm, wall_mm, wall_tol = row
+        # Get nearest matching tolerances
+        tol_rec = get_grade1bf_tolerances(id_val)
+        if tol_rec and tol_rec['id_tolerance_mm'] is not None:
+            results['id_tolerance'] = f"{tol_rec['nominal_id_mm']:.2f} ± {tol_rec['id_tolerance_mm']:.2f} mm"
+            results['wall_thickness'] = tol_rec['wall_mm']
+            results['wall_tolerance'] = f"± {tol_rec['wall_tolerance_mm']:.2f} mm"
             
-            # Skip range entries (which have None for nom_mm)
-            if nom_mm is None:
-                continue
-                
-            if abs(nom_mm - id_val) <= MAX_ACCEPT_DIFF_MM:
-                results['id_tolerance'] = f"{nom_mm:.2f} ± {id_tol:.2f} mm"
-                results['wall_thickness'] = wall_mm
-                results['wall_thickness_tolerance'] = wall_tol
-                
-                if od_mm:
-                    results['od_reference'] = od_mm
-                    results['od_tolerance'] = f"{od_mm:.2f} mm"
-                
-                logging.info(f"Found matching ID in TABLE 8: {nom_in}\" ({nom_mm}mm)")
-                match_found = True
-                break
-        
-        # If no exact match found, check ranges
-        if not match_found:
-            for min_id, max_id, wall_mm, wall_tol in TABLE_8_GRADE_1BF_RANGES:
-                if min_id <= id_val <= max_id:
-                    results['wall_thickness'] = wall_mm
-                    results['wall_thickness_tolerance'] = wall_tol
-                    results['id_tolerance'] = "± 0.5 mm"  # Standard tolerance for range entries from TABLE 8
-                    
-                    logging.info(f"ID {id_val}mm falls in range {min_id}-{max_id}mm")
-                    match_found = True
-                    break
-                    
-            if not match_found:
-                logging.warning(f"No Grade 1BF dimension match found for ID {id_val}mm")
+            # Calculate OD based on ID and wall thickness (if needed)
+            od_mm = tol_rec['nominal_id_mm'] + (2 * tol_rec['wall_mm'])
+            results['od_reference'] = od_mm
+            results['od_tolerance'] = f"{od_mm:.2f} mm"
+            
+            logging.info(f"Grade1BF tolerances set from nearest nominal {tol_rec['nominal_in']} " +
+                        f"({tol_rec['nominal_id_mm']}mm, diff={tol_rec['difference_mm']:.2f}mm)")
+        else:
+            logging.warning(f"No Grade 1BF dimension match found for ID {id_val}mm")
     else:
         logging.warning("No valid ID value found for Grade 1BF dimension calculation")
 
