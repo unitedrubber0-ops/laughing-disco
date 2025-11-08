@@ -98,36 +98,43 @@ TABLE_8_GRADE_1BF_RANGES = [
 # ---------------------------
 # Grade 1 BF tolerance helper
 # ---------------------------
-# Based on provided table (Actual Inside Diameters and tolerances)
+# Based on TABLE 8 (Grade 1BF Dimensions and tolerances)
 GRADE_1_BF_TOLERANCE_ENTRIES = [
     # (nominal_in, actual_id_mm, id_tol_mm, wall_mm, wall_tol_mm)
     ('5/8',  15.1, 0.5, 4.95, 0.8),
     ('3/4',  18.4, 0.5, 4.95, 0.8),
     ('7/8',  21.3, 0.5, 4.95, 0.8),
     ('1',    24.6, 0.5, 4.95, 0.8),
-    # Representative midpoint for >1.0 - 2.0 range
-    ('>1.0-2.0', 38.4, 0.5, 4.95, 0.8),
-    # Representative values for >=2.0 - 2.5 range
-    ('2.0',  50.8, 0.5, 5.35, 0.8),
-    ('2.25', 57.2, 0.5, 5.35, 0.8),
-    ('2.5',  62.7, 0.5, 5.35, 0.8)
+    ('>1.0-2.0', 38.4, 0.5, 4.95, 0.8),  # For ID range >26 to <50.8 mm
+    ('2.0-2.5', 56.6, 0.5, 5.35, 0.8)     # For ID range ≥50.8 to <63.5 mm
 ]
 
 def get_grade1bf_tolerances(id_value_mm: float) -> dict:
     """
     Return a tolerance record for Grade 1 (EPDM/PREMIUM) SUFFIX BF hose
-    using nearest-match logic on the provided table.
+    using TABLE 8 logic with exact matches and ranges.
     Output keys:
-      - nominal_in
-      - nominal_id_mm (actual inside diameter representative)
-      - id_tolerance_mm
-      - wall_mm
-      - wall_tolerance_mm
-      - difference_mm (abs diff between id_value_mm and nominal_id_mm)
+      - nominal_in: Nominal size in inches or range
+      - nominal_id_mm: Actual inside diameter representative
+      - id_tolerance_mm: ID tolerance (±mm)
+      - wall_mm: Wall thickness (mm)
+      - wall_tolerance_mm: Wall thickness tolerance (±mm)
+      - difference_mm: Absolute difference between id_value_mm and nominal_id_mm
+    
+    TABLE 8 Reference:
+    | Actual ID (mm) | ID Tolerance (±mm) | Wall Thickness (mm) | Wall Thickness Tolerance (±mm) |
+    |---------------|-------------------|-------------------|------------------------------|
+    | 15.1 | 0.5 | 4.95 | 0.8 |
+    | 18.4 | 0.5 | 4.95 | 0.8 |
+    | 21.3 | 0.5 | 4.95 | 0.8 |
+    | 24.6 | 0.5 | 4.95 | 0.8 |
+    | >26 <50.8 | 0.5 | 4.95 | 0.8 |
+    | ≥50.8 <63.5 | 0.5 | 5.35 | 0.8 |
     """
     try:
         id_val = float(id_value_mm)
     except Exception:
+        logging.error(f"Invalid ID value: {id_value_mm}")
         return {
             'nominal_in': None,
             'nominal_id_mm': None,
@@ -137,7 +144,27 @@ def get_grade1bf_tolerances(id_value_mm: float) -> dict:
             'difference_mm': None
         }
 
-    # find nearest entry by absolute difference
+    # Handle special ranges first
+    if 50.8 <= id_val < 63.5:
+        return {
+            'nominal_in': '2.0-2.5',
+            'nominal_id_mm': id_val,  # Use actual value since it's in range
+            'id_tolerance_mm': 0.5,
+            'wall_mm': 5.35,
+            'wall_tolerance_mm': 0.8,
+            'difference_mm': 0.0
+        }
+    elif 26.0 < id_val < 50.8:
+        return {
+            'nominal_in': '>1.0-2.0',
+            'nominal_id_mm': id_val,  # Use actual value since it's in range
+            'id_tolerance_mm': 0.5,
+            'wall_mm': 4.95,
+            'wall_tolerance_mm': 0.8,
+            'difference_mm': 0.0
+        }
+
+    # find nearest entry by absolute difference for standard sizes
     best = None
     best_diff = float('inf')
     for entry in GRADE_1_BF_TOLERANCE_ENTRIES:
@@ -535,8 +562,17 @@ def is_grade_1bf(grade: str) -> bool:
 
 def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
     """
-    Apply Grade 1BF specific rules to the results.
-    Uses GRADE_1_BF_TOLERANCE_ENTRIES for dimensions and tolerances with nearest-match logic.
+    Apply Grade 1BF specific rules to the results using TABLE 8 dimensions and tolerances.
+    
+    TABLE 8 Reference:
+    | Actual ID (mm) | ID Tolerance (±mm) | Wall Thickness (mm) | Wall Thickness Tolerance (±mm) |
+    |---------------|-------------------|-------------------|------------------------------|
+    | 15.1 | 0.5 | 4.95 | 0.8 |
+    | 18.4 | 0.5 | 4.95 | 0.8 |
+    | 21.3 | 0.5 | 4.95 | 0.8 |
+    | 24.6 | 0.5 | 4.95 | 0.8 |
+    | >26 <50.8 | 0.5 | 4.95 | 0.8 |
+    | ≥50.8 <63.5 | 0.5 | 5.35 | 0.8 |
     """
     grade = results.get('grade', '')
     if not is_grade_1bf(grade):
@@ -566,20 +602,26 @@ def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
     if id_val is not None:
         logging.info(f"Processing Grade 1BF dimensions for ID: {id_val}mm")
         
-        # Get nearest matching tolerances
+        # Get matching tolerances from TABLE 8
         tol_rec = get_grade1bf_tolerances(id_val)
         if tol_rec and tol_rec['id_tolerance_mm'] is not None:
-            results['id_tolerance'] = f"{tol_rec['nominal_id_mm']:.2f} ± {tol_rec['id_tolerance_mm']:.2f} mm"
+            # Set ID tolerance with exact value for ranges or nominal value for standard sizes
+            id_display = id_val if tol_rec['nominal_in'] in ['>1.0-2.0', '2.0-2.5'] else tol_rec['nominal_id_mm']
+            results['id_tolerance'] = f"± {tol_rec['id_tolerance_mm']:.2f} mm"  # TABLE 8 format
+            
+            # Set wall thickness and tolerance
             results['wall_thickness'] = tol_rec['wall_mm']
-            results['wall_tolerance'] = f"± {tol_rec['wall_tolerance_mm']:.2f} mm"
+            results['wall_thickness_tolerance'] = f"± {tol_rec['wall_tolerance_mm']:.2f} mm"
             
-            # Calculate OD based on ID and wall thickness (if needed)
-            od_mm = tol_rec['nominal_id_mm'] + (2 * tol_rec['wall_mm'])
+            # Calculate OD based on ID and wall thickness
+            od_mm = id_display + (2 * tol_rec['wall_mm'])
             results['od_reference'] = od_mm
-            results['od_tolerance'] = f"{od_mm:.2f} mm"
+            results['od_tolerance'] = f"± {tol_rec['wall_tolerance_mm']:.2f} mm"
             
-            logging.info(f"Grade1BF tolerances set from nearest nominal {tol_rec['nominal_in']} " +
-                        f"({tol_rec['nominal_id_mm']}mm, diff={tol_rec['difference_mm']:.2f}mm)")
+            # Log the matched details
+            logging.info(f"TABLE 8 match: {tol_rec['nominal_in']} " +
+                        f"(ID={id_display:.2f}±{tol_rec['id_tolerance_mm']:.2f}mm, " +
+                        f"Wall={tol_rec['wall_mm']:.2f}±{tol_rec['wall_tolerance_mm']:.2f}mm)")
         else:
             logging.warning(f"No Grade 1BF dimension match found for ID {id_val}mm")
     else:
