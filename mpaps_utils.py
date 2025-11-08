@@ -226,7 +226,7 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
         if 'MPAPS F-6032' in std_upper or 'MPAPSF6032' in std_upper:
             is_f6032 = True
     
-    if material:
+    if material and not is_f6032:  # Only check material if standard didn't match
         mat_upper = str(material).upper()
         if 'MPAPS F-6032' in mat_upper or 'MPAPSF6032' in mat_upper:
             is_f6032 = True
@@ -235,6 +235,11 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
         return  # Exit early if not F-6032
         
     logging.info("Applying MPAPS F-6032 rules to results")
+    
+    # FORCEFULLY set dimension source to ensure F-6032 rules take precedence
+    results['dimension_source'] = "MPAPS F-6032 TABLE 1"
+    logging.info("Set dimension_source to MPAPS F-6032 TABLE 1")
+    
     logging.info("DEBUG MPAPS F-6032: standard=%r, material=%r, dimension_source=%r",
                  results.get('standard'),
                  results.get('material'),
@@ -426,9 +431,9 @@ def get_burst_pressure_from_tables(grade: str, id_mm: float) -> Optional[float]:
                     return row[6]  # Suffix F Grade 1 (1BF)
                 elif '2F' in grade_upper:
                     return row[7]  # Suffix F Grade 2
-                elif any(g in grade_upper for g in ['1B', '3B']):
+                elif any(g in grade_upper for g in ['1B', '3B', 'GRADE IB', 'IB', 'GRADE 1B', 'GRADE 1 B', '1 B']):
                     return row[2]  # Suffix B Grade 1&3
-                elif '2B' in grade_upper:
+                elif any(g in grade_upper for g in ['2B', 'GRADE 2B', 'GRADE 2 B', '2 B']):
                     return row[3]  # Suffix B Grade 2
                 elif '1C' in grade_upper:
                     return row[4]  # Suffix C Grade 1
