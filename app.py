@@ -983,8 +983,7 @@ def extract_dimensions_from_text(text):
             r'OD\s*[=:]?\s*(\d+(?:\.\d+)?)',
             r'OUTSIDE\s+DIAMETER\s*[=:]?\s*(\d+(?:\.\d+)?)',
             r'OUTSIDE\s+DIA\s*[=:]?\s*(\d+(?:\.\d+)?)',
-            r'(\d+\.\d+)\s*MM.*OD',  # Pattern: "101.4 MM" followed by OD context
-            r'(?<!INSIDE\s)(?<!ID\s)(\d+(?:\.\d+)?)\s*MM.*(?:OD|OUTSIDE)'  # Look for MM followed by OD context, but not preceded by "INSIDE" or "ID"
+            r'(\d+\.\d+)\s*MM.*OD'  # Pattern: "101.4 MM" followed by OD context
         ]
         
         for pattern in od_patterns:
@@ -995,39 +994,6 @@ def extract_dimensions_from_text(text):
                 dimensions["od2"] = od_value
                 logger.info(f"OD found via pattern '{pattern}': {od_value}mm")
                 break
-                
-        # Validate and potentially fix OD/ID relationship
-        if dimensions["id1"] != "Not Found" and dimensions["od1"] != "Not Found":
-            try:
-                id_val = float(dimensions["id1"])
-                od_val = float(dimensions["od1"])
-                
-                if od_val <= id_val:
-                    logger.warning(f"Invalid dimension relationship detected: OD ({od_val}mm) <= ID ({id_val}mm)")
-                    
-                    # Look for larger value in text that could be OD
-                    larger_val_pattern = fr'(?<!INSIDE\s)(?<!ID\s)(\d+(?:\.\d+)?)\s*MM'
-                    larger_matches = re.finditer(larger_val_pattern, text, re.IGNORECASE)
-                    
-                    try:
-                        # Find all numeric values larger than ID
-                        potential_ods = [
-                            float(m.group(1)) for m in larger_matches 
-                            if float(m.group(1)) > id_val
-                        ]
-                        
-                        if potential_ods:
-                            # Use the smallest value that's still larger than ID
-                            new_od = min(potential_ods)
-                            logger.info(f"Found alternative OD value: {new_od}mm")
-                            dimensions["od1"] = str(new_od)
-                            dimensions["od2"] = str(new_od)
-                        else:
-                            logger.warning("No suitable larger value found for OD, leaving as is for manual review")
-                    except (ValueError, AttributeError) as e:
-                        logger.warning(f"Error processing potential OD values: {e}")
-            except ValueError as e:
-                logger.warning(f"Error converting dimensions to float: {e}")
         
         # 2. Thickness extraction
         thickness_match = re.search(r'WALL\s+THICKNESS\s+([\d.]+)', text, re.IGNORECASE)
@@ -3086,6 +3052,276 @@ def upload_and_analyze():
             
         # 4. Analyze drawing
         final_results = analyze_drawing(pdf_bytes)
+        
+        # 5. Response validation and return
+        if not isinstance(final_results, dict):
+            logging.error(f"Invalid analyzer response type: {type(final_results)}")
+            return jsonify({"error": "Internal error: Invalid response format"}), 500
+            
+        if final_results.get("error"):
+            error_msg = final_results["error"]
+            if "PDF conversion error" in error_msg:
+                logging.warning(f"PDF conversion failed: {error_msg}")
+                return jsonify({"error": "Invalid or corrupted PDF file"}), 400
+            elif "Content policy violation" in error_msg:
+                logging.warning(f"Content policy violation: {error_msg}")
+                return jsonify({"error": "Content policy violation"}), 403
+            else:
+                logging.error(f"Analysis error: {error_msg}")
+                return jsonify({"error": error_msg}), 500
+        
+        # Process the results further
+        part_number = final_results.get('part_number', 'Unknown')
+        logging.info(f"Successfully analyzed drawing for part {part_number}")
+
+        # Enhanced dimension extraction and merging
+        # Get cleaned extracted text from multiple sources
+        extracted_text = final_results.get('extracted_text') or final_results.get('combined_text') \
+                        or final_results.get('ocr_text') or extract_text_from_pdf(pdf_bytes)
+
+        # 1) Get dimensions from the AI/previous processing safely (existing fallback)
+        ai_dims = final_results.get('dimensions', {}) if isinstance(final_results.get('dimensions'), dict) else {}
+
+        # 2) Parse dimensions from the raw text (regex-based direct extraction)
+        text_dims = extract_dimensions_from_text(extracted_text)
+
+        # 3) Merge: prefer direct text values when present (text_dims override empty ai dims)
+        merged_dims = {}
+        merged_dims.update(ai_dims)
+        for k, v in text_dims.items():
+            if v and v != "Not Found":
+                merged_dims[k] = v
+
+        # 4) Ensure normalized types for downstream code
+        # convert numeric-like strings to floats where appropriate
+        for k in ('id1', 'centerline_length', 'od1', 'id2', 'thickness'):
+            if merged_dims.get(k) not in (None, "Not Found"):
+                try:
+                    merged_dims[k] = float(str(merged_dims[k]).replace(',', '.'))
+                except Exception:
+                    pass
+
+        final_results['dimensions'] = merged_dims
+        logger.debug("dimensions after merge: %s", final_results.get('dimensions'))
+
+        # Look up material and polymer based on standard and grade
+        try:
+            # Get the initial values
+            standard = final_results.get("standard", "Not Found")
+            grade = final_results.get("grade", "Not Found")
+            logging.info(f"Initial standard: '{standard}', grade: '{grade}'")
+
+            # Combine standard and grade for ASTM D2000 specifications
+            if isinstance(standard, str) and "ASTM" in standard.upper() and "D2000" in standard.upper():
+                specification_string = f"{standard} {grade}" if grade != "Not Found" else standard
+                logging.info(f"Combined ASTM D2000 specification: '{specification_string}'")
+            else:
+                specification_string = standard
+            
+            # Use our robust D2000 callout parsing
+            from material_utils import parse_d2000_callouts_from_text
+            d2000_results = parse_d2000_callouts_from_text(specification_string)
+            
+            if d2000_results:
+                # We found a valid D2000 callout
+                d2000_info = d2000_results[0]  # Use first match
+                main_astm_callout = d2000_info["raw"]
+                type_class_code = d2000_info["type_class"]
+                polymer_type = d2000_info["polymer"]
+                
+                logging.info(f"Extracted D2000 info - Callout: '{main_astm_callout}', "
+                           f"Type-Class: '{type_class_code}', Polymer: '{polymer_type}'")
+                
+                # Set the polymer type
+                final_results["polymer_type"] = polymer_type
+                
+                # Use the clean callout for material lookup
+                lookup_standard = main_astm_callout
+            else:
+                # Not a D2000 spec or no valid callout found
+                logging.info("No valid D2000 callout found, using original standard")
+                lookup_standard = standard
+                final_results["polymer_type"] = "Not Applicable"
+            
+            # Debug and fix data types
+            lookup_standard, grade = debug_material_lookup(lookup_standard, grade)
+            
+            # Map TMS standards to MPAPS (only for non-ASTM standards)
+            if not d2000_results:  # Skip mapping for D2000 standards
+                original_standard = lookup_standard
+                lookup_standard = map_tms_to_mpaps_standard(lookup_standard)
+                if original_standard != lookup_standard:
+                    final_results["original_standard"] = original_standard
+                    final_results["mapped_standard"] = lookup_standard
+                    logger.info(f"Standard mapped from {original_standard} to {lookup_standard}")
+
+            # Handle grade extraction from your specific PDF
+            if "H-ANRX" in str(grade) or "H-ANRX" in str(final_results.get("description", "")):
+                grade = "H-ANRX"
+                logger.info(f"Using grade: {grade}")
+
+            # Try material lookup with the clean standard
+            final_results["material"] = safe_material_lookup_entry(lookup_standard, grade, material_df, get_material_from_standard)
+            logging.info(f"Material lookup result for standard='{lookup_standard}' and grade='{grade}': {final_results['material']}")
+
+            # If material not found and we have a D2000 callout, try without suffixes
+            if final_results["material"] == "Not Found" and d2000_results:
+                base_callout = re.sub(r'(M?\d?[A-K]{2}\d+).*', r'\1', main_astm_callout)
+                if base_callout != main_astm_callout:
+                    final_results["material"] = safe_material_lookup_entry(base_callout, grade, material_df, get_material_from_standard)
+                    if final_results["material"] != "Not Found":
+                        logging.info(f"Found material using base callout '{base_callout}'")
+                        final_results["material_note"] = f"Found using base callout without suffixes"
+
+            # Enhanced reinforcement lookup
+            try:
+                reinforcement_val = get_reinforcement_from_material(lookup_standard, grade, final_results.get("material", "Not Found"))
+                
+                # If not found, try to infer from rings information
+                if reinforcement_val in ["Not Found", "None", None, ""]:
+                    if "STAINLESS WIRE" in str(final_results.get("rings", "")):
+                        reinforcement_val = "STAINLESS STEEL"
+                        final_results["reinforcement_note"] = "Inferred from rings information"
+                    else:
+                        reinforcement_val = "Not Found"
+                
+                final_results["reinforcement"] = reinforcement_val
+                logging.info(f"Reinforcement resolved: {final_results['reinforcement']}")
+                
+            except Exception as e:
+                logging.warning(f"Reinforcement lookup failed: {e}", exc_info=True)
+                final_results["reinforcement"] = "Not Found"
+
+        except Exception as e:
+            logging.error(f"CRITICAL ERROR in material/polymer/reinforcement lookup block: {e}", exc_info=True)
+            final_results["material"] = "Error"
+            final_results["reinforcement"] = "Error"
+            final_results["polymer_type"] = "Error"
+
+        # Clean rings extraction - NO MANUAL FALLBACKS
+        try:
+            rings_text = extract_rings_from_text_specific(extracted_text)
+            final_results["rings"] = rings_text
+            logger.info(f"Final rings result: {rings_text}")
+                
+        except Exception as e:
+            logger.error(f"Error in rings extraction: {e}")
+            final_results["rings"] = "No Rings"
+
+        # Validate the extracted data
+        try:
+            validation_issues = validate_extracted_data(final_results)
+            if validation_issues:
+                final_results["validation_warnings"] = validation_issues
+                logging.warning(f"Validation issues found: {validation_issues}")
+        except Exception as e:
+            logging.error(f"Error in data validation: {e}")
+            final_results["validation_warnings"] = [f"Validation error: {str(e)}"]
+
+        # Apply MPAPS rules for tolerances and burst pressure
+        try:
+            # Import debug utils
+            from debug_utils import debug_tolerance_lookup
+        except ImportError as e:
+            logging.error(f"Error importing debug utils: {e}", exc_info=True)
+            debug_tolerance_lookup = lambda x: None
+
+        # Debug tolerance lookup before applying rules
+        debug_tolerance_lookup(final_results)
+
+        # Apply MPAPS rules using standard detection
+        detected_standard = detect_mpaps_standard(final_results)
+        logging.info(f"Detected MPAPS standard: {detected_standard}")
+        
+        if detected_standard == 'f6032':
+            logging.info("Applying MPAPS F-6032 rules (TABLE 1 + 2.0 MPa burst)")
+            apply_mpaps_f6032_rules(final_results)
+        elif detected_standard == 'f30_f1':
+            logging.info("Applying MPAPS F-30/F-1 rules (TABLE III/IV burst pressure)")
+            apply_mpaps_f30_f1_rules(final_results)
+            
+            # Apply grade-specific dimension rules for F-30/F-1
+            grade = final_results.get('grade', '')
+            grade_upper = str(grade).upper()
+            
+            if any(g in grade_upper for g in ['1BF', 'BF']):
+                apply_grade_1bf_rules(final_results)
+        else:
+            logging.info("No MPAPS standard detected, skipping MPAPS rules")
+        
+        # Debug tolerance lookup after applying rules
+        debug_tolerance_lookup(final_results)
+
+        # Calculate development length with improved handling
+        try:
+            coordinates = final_results.get("coordinates", [])
+            dimensions = final_results.get("dimensions", {})
+            centerline_length = dimensions.get("centerline_length")
+            dev_length = 0
+            
+            logger.info(f"Available coordinates: {len(coordinates) if coordinates else 0} points")
+            logger.info(f"Centerline length from drawing: {centerline_length}")
+            
+            # Priority 1: Use centerline length from drawing if available
+            if centerline_length and centerline_length != "Not Found":
+                try:
+                    dev_length = float(str(centerline_length))
+                    logger.info(f"Using centerline length as development length: {dev_length}mm")
+                except (ValueError, TypeError):
+                    logger.warning("Could not convert centerline length to float")
+            
+            # Priority 2: Calculate from coordinates if centerline not available
+            elif coordinates and len(coordinates) >= 2:
+                try:
+                    dev_length = calculate_development_length_safe(coordinates)
+                    logger.info(f"Calculated development length from coordinates: {dev_length:.2f}mm")
+                except Exception as exc:
+                    logger.warning(f"Coordinate-based development length calculation failed: {exc}")
+                    dev_length = 0
+            
+            # Update results
+            if dev_length > 0:
+                final_results["development_length_mm"] = f"{dev_length:.2f}"
+            else:
+                final_results["development_length_mm"] = "Not Found"
+                logger.info("No valid development length calculated")
+                
+        except Exception as e:
+            final_results["development_length_mm"] = "Not Found"
+            logger.exception("Error in development length calculation: %s", e)
+            logger.info("No coordinates found for development length calculation")
+        
+        # Generate Excel report if helper function exists
+        try:
+            if 'generate_excel_sheet' in globals():
+                excel_file = generate_corrected_excel_sheet(final_results, final_results.get("dimensions", {}), coordinates)
+                excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
+                final_results["excel_data"] = excel_b64
+        except Exception as e:
+            logging.warning(f"Excel generation skipped: {e}")
+
+        logging.info(f"Successfully analyzed drawing: {final_results.get('part_number', 'Unknown')}")
+        return jsonify(final_results)
+
+    except Exception as e:
+        logging.error(f"Error analyzing drawing: {str(e)}")
+        return jsonify({"error": f"Analysis failed: {str(e)}"}), 500
+    # 2. File type validation
+    if not file.filename.lower().endswith('.pdf'):
+        logging.warning(f"Invalid file type: {file.filename}")
+        return jsonify({"error": "Invalid file type. Please upload a PDF file."}), 400
+
+    logging.info(f"Processing analysis request for file: {file.filename}")
+    
+    try:
+        # 3. Read file contents
+        pdf_bytes = file.read()
+        if not pdf_bytes:
+            logging.warning("Uploaded file is empty")
+            return jsonify({"error": "Uploaded file is empty"}), 400
+            
+        # 4. Analyze drawing
+        final_results = analyze_drawing(pdf_bytes)
     except Exception as e:
         logging.error(f"Error reading PDF file: {e}", exc_info=True)
         return jsonify({"error": f"Error reading PDF file: {str(e)}"}), 500
@@ -3263,10 +3499,7 @@ def upload_and_analyze():
 
         # Debug tolerance lookup before applying rules
         debug_tolerance_lookup(final_results)
-
-        # Return the final results as JSON
-        return jsonify(final_results)
-
+        
 def detect_mpaps_standard(final_results):
     """
     Accurately detect which MPAPS standard should be applied.
