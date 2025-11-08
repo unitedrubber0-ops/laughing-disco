@@ -72,10 +72,10 @@ TABLE_4_GRADE_1_DATA = [
     ('>2.0-2.5', None, 0.5, 4.95, 0.65)   # For ID range >50.8 - 62.7 mm
 ]
 
-# Grade 1 (EPDM/Premium) ranges for IDs larger than 1 inch
+    # Grade 1 (EPDM/Premium) ranges for IDs larger than 1 inch
 TABLE_4_GRADE_1_RANGES = [
-    (25.4, 50.8, 4.95, 0.65),  # min_id_mm, max_id_mm, wall_mm, wall_tol_mm
-    (50.8, 62.7, 4.95, 0.65)
+    (25.4, 50.8, 4.95, 0.65, 0.5),  # min_id_mm, max_id_mm, wall_mm, wall_tol_mm, id_tol_mm
+    (50.8, 62.7, 4.95, 0.65, 0.5)
 ]
 
 # TABLE 8: Grade 1 (EPDM/Premium) Suffix BF Hose Dimensions - MPAPS F-30/F-1
@@ -639,12 +639,14 @@ def apply_grade_1b_rules(results: Dict[str, Any]) -> None:
         return False
         
     grade_upper = str(grade).upper().replace(' ', '')
-    if not (any(g in grade_upper for g in ['1B', 'B1', 'GRADE1B', 'GRADE1-B']) or 'GRADE1B' in grade_upper.replace('-', '')):
+    if not (any(g in grade_upper for g in ['1B', 'B1', 'GRADE1B', 'GRADE1-B', 'GRADE1B']) or
+            'GRADE1' in grade_upper and 'B' in grade_upper):
+        logging.info(f"Not a Grade 1B specification: {grade}")
         return  # Exit early if not Grade 1B
         
     logging.info("Applying Grade 1B rules to results")
     logging.info(f"Processing Grade 1B with grade string: {grade}")
-    
+
     # Get dimensions
     dimensions = results.get('dimensions', {})
     id_val = None
@@ -667,36 +669,55 @@ def apply_grade_1b_rules(results: Dict[str, Any]) -> None:
     if id_val is not None:
         logging.info(f"Processing Grade 1B dimensions for ID: {id_val}mm")
         
-        # First check exact matches in TABLE 4
+        # First check ranges since they take precedence over exact matches
         match_found = False
-        logging.info(f"Checking TABLE 4 exact matches for ID {id_val}mm")
+        logging.info(f"Checking TABLE 4 ranges first for ID {id_val}mm")
         
-        for row in TABLE_4_GRADE_1_DATA:
-            nom_in, nom_mm, id_tol, wall_mm, wall_tol = row
-            
-            # Skip range entries (which have None for nom_mm)
-            if nom_mm is None:
-                continue
-                
-            diff = abs(nom_mm - id_val)
-            logging.info(f"Comparing with nominal {nom_in}\" ({nom_mm}mm) - difference: {diff:.3f}mm (max allowed: {MAX_ACCEPT_DIFF_MM}mm)")
-            
-            if diff <= MAX_ACCEPT_DIFF_MM:
-                results['id_tolerance'] = f"{nom_mm:.2f} ± {id_tol:.2f} mm"
+        for min_id, max_id, wall_mm, wall_tol, id_tol in TABLE_4_GRADE_1_RANGES:
+            logging.info(f"Checking range {min_id}-{max_id}mm")
+            if min_id < id_val <= max_id:  # Use < for min to match ">X" ranges
                 results['wall_thickness'] = wall_mm
-                results['wall_thickness_tolerance'] = wall_tol
+                results['wall_thickness_tolerance'] = f"± {wall_tol:.2f} mm"
+                results['id_tolerance'] = f"± {id_tol:.2f} mm"
                 
-                # Calculate OD from ID and wall thickness
-                od_mm = nom_mm + (2 * wall_mm)
+                # Calculate OD based on actual ID and wall thickness for range entries
+                od_mm = id_val + (2 * wall_mm)
                 results['od_reference'] = od_mm
-                results['od_tolerance'] = f"{od_mm:.2f} mm"
+                results['od_tolerance'] = f"± {wall_tol:.2f} mm"  # OD tolerance matches wall tolerance
                 
-                logging.info(f"Found matching ID in TABLE 4: {nom_in}\" ({nom_mm}mm)")
-                logging.info(f"Setting tolerances: ID={nom_mm:.2f}±{id_tol:.2f}mm, Wall={wall_mm:.2f}±{wall_tol:.2f}mm")
+                logging.info(f"Found matching range in TABLE 4: {min_id}-{max_id}mm")
+                logging.info(f"Setting tolerances: ID={id_val:.2f}±{id_tol:.2f}mm, Wall={wall_mm:.2f}±{wall_tol:.2f}mm")
                 match_found = True
                 break
-        
-        # If no exact match found, check ranges
+                
+        # Only check exact matches if no range match found
+        if not match_found:
+            logging.info(f"No range match, checking TABLE 4 exact matches for ID {id_val}mm")
+            
+            for row in TABLE_4_GRADE_1_DATA:
+                nom_in, nom_mm, id_tol, wall_mm, wall_tol = row
+                
+                # Skip range entries (which have None for nom_mm)
+                if nom_mm is None:
+                    continue
+                    
+                diff = abs(nom_mm - id_val)
+                logging.info(f"Comparing with nominal {nom_in}\" ({nom_mm}mm) - difference: {diff:.3f}mm (max allowed: {MAX_ACCEPT_DIFF_MM}mm)")
+                
+                if diff <= MAX_ACCEPT_DIFF_MM:
+                    results['id_tolerance'] = f"{nom_mm:.2f} ± {id_tol:.2f} mm"
+                    results['wall_thickness'] = wall_mm
+                    results['wall_thickness_tolerance'] = f"± {wall_tol:.2f} mm"
+                    
+                    # Calculate OD from ID and wall thickness
+                    od_mm = nom_mm + (2 * wall_mm)
+                    results['od_reference'] = od_mm
+                    results['od_tolerance'] = f"± {wall_tol:.2f} mm"  # OD tolerance matches wall tolerance
+                    
+                    logging.info(f"Found matching ID in TABLE 4: {nom_in}\" ({nom_mm}mm)")
+                    logging.info(f"Setting tolerances: ID={nom_mm:.2f}±{id_tol:.2f}mm, Wall={wall_mm:.2f}±{wall_tol:.2f}mm")
+                    match_found = True
+                    break
         if not match_found:
             logging.info(f"No exact match found, checking TABLE 4 ranges for ID {id_val}mm")
             for min_id, max_id, wall_mm, wall_tol in TABLE_4_GRADE_1_RANGES:
