@@ -983,7 +983,8 @@ def extract_dimensions_from_text(text):
             r'OD\s*[=:]?\s*(\d+(?:\.\d+)?)',
             r'OUTSIDE\s+DIAMETER\s*[=:]?\s*(\d+(?:\.\d+)?)',
             r'OUTSIDE\s+DIA\s*[=:]?\s*(\d+(?:\.\d+)?)',
-            r'(\d+\.\d+)\s*MM.*OD'  # Pattern: "101.4 MM" followed by OD context
+            r'(\d+\.\d+)\s*MM.*OD',  # Pattern: "101.4 MM" followed by OD context
+            r'(?<!INSIDE\s)(?<!ID\s)(\d+(?:\.\d+)?)\s*MM.*(?:OD|OUTSIDE)'  # Look for MM followed by OD context, but not preceded by "INSIDE" or "ID"
         ]
         
         for pattern in od_patterns:
@@ -994,6 +995,39 @@ def extract_dimensions_from_text(text):
                 dimensions["od2"] = od_value
                 logger.info(f"OD found via pattern '{pattern}': {od_value}mm")
                 break
+                
+        # Validate and potentially fix OD/ID relationship
+        if dimensions["id1"] != "Not Found" and dimensions["od1"] != "Not Found":
+            try:
+                id_val = float(dimensions["id1"])
+                od_val = float(dimensions["od1"])
+                
+                if od_val <= id_val:
+                    logger.warning(f"Invalid dimension relationship detected: OD ({od_val}mm) <= ID ({id_val}mm)")
+                    
+                    # Look for larger value in text that could be OD
+                    larger_val_pattern = fr'(?<!INSIDE\s)(?<!ID\s)(\d+(?:\.\d+)?)\s*MM'
+                    larger_matches = re.finditer(larger_val_pattern, text, re.IGNORECASE)
+                    
+                    try:
+                        # Find all numeric values larger than ID
+                        potential_ods = [
+                            float(m.group(1)) for m in larger_matches 
+                            if float(m.group(1)) > id_val
+                        ]
+                        
+                        if potential_ods:
+                            # Use the smallest value that's still larger than ID
+                            new_od = min(potential_ods)
+                            logger.info(f"Found alternative OD value: {new_od}mm")
+                            dimensions["od1"] = str(new_od)
+                            dimensions["od2"] = str(new_od)
+                        else:
+                            logger.warning("No suitable larger value found for OD, leaving as is for manual review")
+                    except (ValueError, AttributeError) as e:
+                        logger.warning(f"Error processing potential OD values: {e}")
+            except ValueError as e:
+                logger.warning(f"Error converting dimensions to float: {e}")
         
         # 2. Thickness extraction
         thickness_match = re.search(r'WALL\s+THICKNESS\s+([\d.]+)', text, re.IGNORECASE)
