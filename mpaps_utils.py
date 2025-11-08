@@ -423,22 +423,34 @@ def get_burst_pressure_from_tables(grade: str, id_mm: float) -> Optional[float]:
             return None
         
         # TABLE IV: Value ranges for suffix B, C, and F grades
+        logging.info(f"Looking up burst pressure for ID={id_mm}mm, Grade={grade}")
         for row in TABLE_IV_BURST_PRESSURE:
             over, thru = row[0], row[1]
+            logging.debug(f"Checking range: {over} < {id_mm} <= {thru}")
             
             if over < id_mm <= thru:
+                logging.info(f"ID {id_mm}mm matched TABLE IV range {over}-{thru}mm")
+                
                 if any(g in grade_upper for g in ['1BF', 'BF']):
+                    logging.info(f"Grade {grade} matched 1BF/BF pattern -> {row[6]} MPa")
                     return row[6]  # Suffix F Grade 1 (1BF)
                 elif '2F' in grade_upper:
+                    logging.info(f"Grade {grade} matched 2F pattern -> {row[7]} MPa")
                     return row[7]  # Suffix F Grade 2
                 elif any(g in grade_upper for g in ['1B', '3B', 'GRADE IB', 'IB', 'GRADE 1B', 'GRADE 1 B', '1 B']):
+                    logging.info(f"Grade {grade} matched 1B pattern -> {row[2]} MPa")
                     return row[2]  # Suffix B Grade 1&3
                 elif any(g in grade_upper for g in ['2B', 'GRADE 2B', 'GRADE 2 B', '2 B']):
+                    logging.info(f"Grade {grade} matched 2B pattern -> {row[3]} MPa")
                     return row[3]  # Suffix B Grade 2
                 elif '1C' in grade_upper:
+                    logging.info(f"Grade {grade} matched 1C pattern -> {row[4]} MPa")
                     return row[4]  # Suffix C Grade 1
                 elif '2C' in grade_upper:
+                    logging.info(f"Grade {grade} matched 2C pattern -> {row[5]} MPa")
                     return row[5]  # Suffix C Grade 2
+                else:
+                    logging.warning(f"Found matching range but grade '{grade}' did not match any patterns")
                 
         logging.warning(f"No matching ID range found for {id_mm}mm in TABLE IV")
         return None

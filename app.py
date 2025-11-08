@@ -3263,7 +3263,10 @@ def upload_and_analyze():
 
         # Debug tolerance lookup before applying rules
         debug_tolerance_lookup(final_results)
-        
+
+        # Return the final results as JSON
+        return jsonify(final_results)
+
 def detect_mpaps_standard(final_results):
     """
     Accurately detect which MPAPS standard should be applied.
