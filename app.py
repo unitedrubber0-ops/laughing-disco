@@ -676,13 +676,6 @@ def get_material_from_standard(standard, grade):
         logging.info(f"Material lookup initiated: Standard='{standard}', Grade='{grade}'")
         logging.info(f"Cleaned: Standard='{clean_standard}', Grade='{clean_grade}'")
         
-        # Special handling for MPAPS F-6032
-        if 'MPAPS F-6032' in clean_standard.upper() or 'MPAPSF6032' in clean_standard.upper():
-            # For MPAPS F-6032 TYPE I, material is typically NBR (Nitrile)
-            if clean_grade.upper() in ['1', 'TYPE I', 'I']:
-                logging.info("MPAPS F-6032 TYPE I detected, returning NBR material")
-                return "NBR"
-                
         # Special handling for MPAPS F-1 -> MPAPS F-30 mapping
         if 'MPAPS F-1' in clean_standard.upper() or 'MPAPSF1' in clean_standard.upper():
             clean_standard = 'MPAPS F-30'
@@ -694,10 +687,15 @@ def get_material_from_standard(standard, grade):
         
         logging.info(f"Normalized: Standard='{norm_standard}', Grade='{norm_grade}'")
         
+        # Normalize F-6032 Type I grade
+        if 'F-6032' in norm_standard:
+            if any(g in norm_grade.upper() for g in ['1', 'TYPE I', 'I', 'TYPE-I']):
+                norm_grade = 'Type I'
+
         # Stage 1: Exact match on cleaned values
         exact_matches = material_df[
             (material_df['STANDARD'].str.upper().str.strip() == norm_standard) &
-            (material_df['GRADE'].astype(str).str.upper().str.strip() == norm_grade)
+            (material_df['GRADE'].astype(str).str.upper().str.strip().str.replace('-', ' ') == norm_grade.upper())
         ]
         
         if not exact_matches.empty:
