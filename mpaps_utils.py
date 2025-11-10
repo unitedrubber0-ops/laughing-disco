@@ -67,9 +67,9 @@ def apply_mpaps_f6032_dimensions(result: dict, id_value_mm: float):
     result['thickness_mm'] = result.get('thickness_mm') or None  # allow computed thickness if you want
     result['thickness_tolerance_mm'] = None  # explicit: no tolerance
 
-    # Set F-6032 specific material construction
-    result['material'] = 'INNER NBR OUTER:ECO'  # Set layered construction for F-6032
-
+    # Material will be looked up from material_data.csv through get_material_from_standard()
+    # which correctly maps MPAPS F-6032 Type I to "INNER NBR OUTER:ECO"
+    
     # also mark dimension source for traceability
     result['dimension_source'] = 'MPAPS F-6032 TABLE 1'
     return result
