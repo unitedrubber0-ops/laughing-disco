@@ -34,6 +34,29 @@ TABLE_1_DATA = [
 # Maximum acceptable difference for nominal value matching (mm)
 MAX_ACCEPT_DIFF_MM = 0.5  # Allow up to 0.5mm difference for practical measurements
 
+def normalize_standard_and_grade(standard_raw: str, grade_raw: str):
+    """
+    Normalize strings from OCR/text so downstream lookups use canonical keys.
+    Returns (standard_norm, grade_norm)
+    """
+    s = (standard_raw or "").upper().strip()
+    # collapse spaces and unify separators
+    s = re.sub(r'[\s_]+', ' ', s)
+    # canonical mappings
+    if 'F-6032' in s or 'F6032' in s:
+        std = 'MPAPS F-6032'
+    elif 'F-30' in s or 'F30' in s:
+        std = 'MPAPS F-30'
+    elif 'F-1' in s or 'F1' in s:
+        std = 'MPAPS F-1'
+    else:
+        std = s  # keep what we got
+    # grade: remove extra spaces and OCR noise, convert "GRADE 1 B" -> "1B"
+    g = (grade_raw or "").upper()
+    g = re.sub(r'GRADE\s*', '', g)
+    g = re.sub(r'\s+', '', g)  # 1 B -> 1B
+    return std, g
+
 # Burst pressure tables for MPAPS F-30/F-1
 # Grade lookup guide for TABLE IV:
 # - Grade 1BF: Use "Suffix F, Grade 1" column (column 6)
@@ -245,25 +268,55 @@ TABLE_8A_GRADE_2BF_DATA = [
 # ]
 
 #######################
-# MPAPS F-6032 Functions
+# Burst Pressure Functions 
 #######################
 
-def get_burst_pressure_from_table_iv(id_value: float, grade: str) -> Optional[float]:
+def lookup_burst_pressure(standard_norm: str, grade_norm: str, id_mm: float) -> Optional[float]:
+    """
+    Unified lookup that routes to the correct table based on standard_norm.
+    Returns burst_pressure_MPa (float) or None if not found.
+    """
+    # prefer MPAPS F-30 / F-1 rules if standard includes either
+    if 'F-30' in standard_norm or 'F-1' in standard_norm:
+        logging.info(f"Looking up burst pressure in TABLE IV for standard={standard_norm}, grade={grade_norm}, id={id_mm}")
+        return get_burst_pressure_from_table_iv(id_mm, grade_norm)
+    # fallback to F-6032 table lookup
+    if 'F-6032' in standard_norm:
+        logging.info(f"Using F-6032 default burst pressure for standard={standard_norm}")
+        return MPAPS_F6032_BURST_PRESSURE_MPA
+    # last resort: None
+    logging.warning(f"No burst pressure table found for standard={standard_norm}")
+    return None
+        
+def get_burst_pressure_from_table_iv(id_value_mm: float, grade_norm: str) -> Optional[float]:
     """
     Get burst pressure from TABLE IV based on ID and grade.
+    Returns float MPa or None.
     
     Args:
-        id_value: ID in mm
-        grade: Grade string (e.g., "GRADE 1 B", "1B", "2B", etc.)
+        id_value_mm: ID in mm
+        grade_norm: Normalized grade string (e.g., "1B", "2B", etc.)
         
     Returns:
         Burst pressure in MPa or None if not found
     """
-    # Normalize grade 
-    grade_str = re.sub(r'\s+', '', str(grade).upper())
-    grade_str = re.sub(r'GRADE', '', grade_str)
+    logging.info(f"Looking up burst pressure for ID {id_value_mm}mm with grade {grade_norm}")
     
     # Find the matching ID range in TABLE IV
+    for min_id, max_id, b_1_3, b_2, c_1, c_2, f_1, f_2 in TABLE_IV_BURST_PRESSURE:
+        # inclusive with tiny epsilon
+        if (min_id - 1e-6) <= id_value_mm <= (max_id + 1e-6):
+            logging.info(f"Found ID range {min_id}-{max_id}mm in TABLE IV")
+            # Select correct column based on grade
+            if any(g in grade_norm for g in ['1B', 'B1', '3B', 'B3']):
+                return b_1_3  # Suffix B Grade 1&3 column
+            elif any(g in grade_norm for g in ['2B', 'B2']):
+                return b_2   # Suffix B Grade 2 column
+            elif any(g in grade_norm for g in ['1BF', 'BF1']):
+                return f_1   # Suffix F Grade 1 column
+                
+    logging.warning(f"No matching ID range found for {id_value_mm}mm in TABLE IV")
+    return None
     logging.info(f"Looking up burst pressure for ID {id_value}mm with grade {grade_str}")
     for min_id, max_id, b_1_3, b_2, c_1, c_2, f_1, f_2 in TABLE_IV_BURST_PRESSURE:
         if min_id < id_value <= max_id:
@@ -443,12 +496,62 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
         results['od_tolerance'] = "N/A"
         logging.warning("No valid ID value found for MPAPS F-6032 dimension calculation")
             
-    # Set burst pressure for MPAPS F-6032 (default 2.0 MPa = 20 bar)
-    results['burst_pressure_mpa'] = MPAPS_F6032_BURST_PRESSURE_MPA
-    results['burst_pressure_psi'] = round(MPAPS_F6032_BURST_PRESSURE_MPA * 145.038, 2)
-    results['burst_pressure'] = MPAPS_F6032_BURST_PRESSURE_MPA * 10  # Convert to bar
-    results['burst_pressure_source'] = f"MPAPS F-6032 default ({MPAPS_F6032_BURST_PRESSURE_MPA} MPa)"
-    logging.info(f"Set MPAPS F-6032 default burst pressure: {MPAPS_F6032_BURST_PRESSURE_MPA} MPa")
+    # After dimension match, ensure tolerances are set
+    if table_data:
+        result = {}
+        result['id_nominal_mm'] = table_data['nominal_id_mm']
+        result['id_tolerance_mm'] = table_data.get('id_tolerance_mm')
+        
+        # Handle OD tolerance
+        if 'nominal_od_mm' in table_data and table_data['nominal_od_mm'] != 'Not Found':
+            result['od_nominal_mm'] = table_data['nominal_od_mm']
+            result['od_tolerance_mm'] = table_data.get('od_tolerance_mm', 1.0)  # fallback 1.0 mm
+            
+        # Handle thickness
+        if table_data.get('thickness') and table_data['thickness'] != 'Not Found':
+            result['thickness_mm'] = table_data['thickness']
+            result['thickness_tolerance_mm'] = table_data.get('thickness_tolerance_mm', 0.25)
+        else:
+            # Try compute from OD & ID
+            if result.get('od_nominal_mm') and result.get('id_nominal_mm'):
+                try:
+                    t = (float(result['od_nominal_mm']) - float(result['id_nominal_mm'])) / 2.0
+                    result['thickness_mm'] = round(t, 3)
+                    result['thickness_tolerance_mm'] = 0.25
+                except Exception:
+                    logging.warning("Failed to compute thickness from OD-ID")
+                    result['thickness_mm'] = None
+                    result['thickness_tolerance_mm'] = None
+                    
+        # Update results with computed values
+        results.update(result)
+        logging.info("Set tolerances from TABLE 1 or computed values")
+    else:
+        logging.warning("No dimension match found - using fallback tolerances")
+        # Set fallback tolerances rather than N/A
+        if id_val is not None:
+            results['id_tolerance_mm'] = 0.79  # Default from TABLE 1
+            results['od_tolerance_mm'] = 1.0
+            results['thickness_tolerance_mm'] = 0.25
+        
+    # Now look up burst pressure based on normalized standard and grade
+    standard_norm, grade_norm = normalize_standard_and_grade(results.get('standard', ''), results.get('grade', ''))
+    logging.info(f"Normalized standard={standard_norm}, grade={grade_norm}")
+    
+    if id_val is not None:
+        burst = lookup_burst_pressure(standard_norm, grade_norm, id_val)
+        if burst is not None:
+            results['burst_pressure_mpa'] = burst
+            results['burst_pressure_psi'] = round(burst * 145.038, 2)
+            results['burst_pressure'] = burst * 10  # Convert to bar
+            results['burst_pressure_source'] = f"{standard_norm} TABLE IV ({burst} MPa)"
+            logging.info(f"Set burst pressure from {standard_norm} lookup: {burst} MPa")
+        else:
+            logging.warning(f"No burst pressure found for standard={standard_norm}, grade={grade_norm}, id={id_val}mm")
+            results['burst_pressure_mpa'] = None
+            results['burst_pressure_psi'] = None
+            results['burst_pressure'] = None
+            results['burst_pressure_source'] = "No matching burst pressure found"
 
 #######################
 # MPAPS F-30/F-1 Functions
