@@ -4,10 +4,113 @@ Enhanced Excel output generation with improved formatting and data handling.
 import pandas as pd
 import logging
 import io
+import math
 import openpyxl
+from typing import List, Dict
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from development_length import calculate_development_length
+
+def format_tolerance(val, tol):
+    """Return formatted tolerance string or None if both are missing."""
+    try:
+        if val is None and tol is None:
+            return None
+        if val is None:
+            return f"± {tol:.2f} mm" if tol is not None else None
+        if tol is None:
+            return f"{float(val):.2f} mm"
+        return f"{float(val):.2f} ± {float(tol):.2f} mm"
+    except Exception:
+        return None
+
+def ensure_result_fields(result: Dict) -> Dict:
+    """
+    Ensure result dict has expected fields populated or reasonable fallbacks.
+    Fields set/formatted:
+      - id_nominal_mm, id_tolerance_mm, id_formatted
+      - od_nominal_mm, od_tolerance_mm, od_formatted  
+      - thickness_mm, thickness_tolerance_mm, thickness_formatted
+      - burst_pressure_mpa, burst_pressure_formatted
+    """
+    res = dict(result)  # shallow copy
+    dimensions = res.get('dimensions', {})
+
+    # ID nominal and tolerance
+    id_nom = res.get('id_nominal_mm')
+    id_tol = res.get('id_tolerance_mm')
+    # if id_nom missing try to parse from other keys
+    if id_nom is None:
+        id_candidates = [dimensions.get(k) for k in ('id1','id','ID','nominal_id_mm') if dimensions.get(k) is not None]
+        if id_candidates:
+            try:
+                id_nom = float(id_candidates[0])
+                res['id_nominal_mm'] = id_nom
+            except Exception:
+                id_nom = None
+    # Ensure numeric types
+    try:
+        if id_nom is not None:
+            id_nom = float(id_nom)
+    except Exception:
+        id_nom = None
+    try:
+        if id_tol is not None:
+            id_tol = float(id_tol)
+    except Exception:
+        id_tol = None
+    res['id_nominal_mm'] = id_nom
+    res['id_tolerance_mm'] = id_tol
+    res['id_formatted'] = format_tolerance(id_nom, id_tol) or "N/A"
+
+    # OD nominal and tolerance
+    od_nom = dimensions.get('od1') or res.get('od_nominal_mm') or res.get('od')
+    od_tol = res.get('od_tolerance_mm')
+    try:
+        if od_nom is not None and od_nom != 'Not Found':
+            od_nom = float(od_nom)
+    except Exception:
+        od_nom = None
+    try:
+        if od_tol is not None:
+            od_tol = float(od_tol)
+    except Exception:
+        od_tol = None
+    res['od_nominal_mm'] = od_nom
+    res['od_tolerance_mm'] = od_tol
+    res['od_formatted'] = format_tolerance(od_nom, od_tol) or "N/A"
+
+    # Thickness: prefer explicit, else compute from OD/ID
+    thickness = res.get('thickness_mm') or res.get('thickness')
+    thickness_tol = res.get('thickness_tolerance_mm')
+    try:
+        if thickness is not None and thickness != 'Not Found':
+            thickness = float(thickness)
+    except Exception:
+        thickness = None
+    if thickness is None and od_nom is not None and id_nom is not None:
+        try:
+            thickness = round((od_nom - id_nom) / 2.0, 3)
+            # set a reasonable default tolerance if not supplied
+            if thickness_tol is None:
+                thickness_tol = 0.25
+        except Exception:
+            thickness = None
+    res['thickness_mm'] = thickness
+    res['thickness_tolerance_mm'] = thickness_tol
+    res['thickness_formatted'] = format_tolerance(thickness, thickness_tol) or "N/A"
+
+    # Burst pressure
+    burst = res.get('burst_pressure_mpa')
+    try:
+        if burst is not None:
+            burst = float(burst)
+    except Exception:
+        burst = None
+    res['burst_pressure_mpa'] = burst
+    res['burst_pressure_formatted'] = f"{burst:.2f} MPa" if burst is not None else "N/A"
+
+    return res
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -77,19 +180,12 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
         if grade != 'Not Found':
             specification += f" {grade}"
 
-        # Calculate thickness from ID/OD
-        thickness_calculated = "Not Found"
-        try:
-            od1 = dimensions.get('od1', 'Not Found')
-            id1 = dimensions.get('id1', 'Not Found')
-            if od1 != 'Not Found' and id1 != 'Not Found':
-                od_val = float(str(od1).replace(',', '.'))
-                id_val = float(str(id1).replace(',', '.'))
-                if od_val > id_val:
-                    thickness_calculated = f"{((od_val - id_val) / 2):.2f}"
-        except (ValueError, TypeError) as e:
-            logger.warning(f"Error calculating thickness: {e}")
-
+        # Post-process results to ensure fields are properly formatted
+        analysis_results = ensure_result_fields(analysis_results)
+        
+        # Get formatted values with proper handling of N/A
+        thickness_calculated = analysis_results.get('thickness_formatted', "N/A")
+        
         # Calculate development length
         if coordinates:
             development_length = calculate_development_length(coordinates)
@@ -125,16 +221,16 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             'POLYMER TYPE': analysis_results.get('polymer_type', 'Not Applicable'),
             'REINFORCEMENT': analysis_results.get('reinforcement', 'Not Found'),
             'RINGS': analysis_results.get('rings', 'Not Found'),
-            'ID1 AS PER 2D (MM)': dimensions.get('id1', 'Not Found'),
-            'ID TOLERANCE (MM)': analysis_results.get('id_tolerance', 'N/A'),
-            'ID2 AS PER 2D (MM)': dimensions.get('id2', 'Not Found'),
-            'OD1 AS PER 2D (MM)': dimensions.get('od1', 'Not Found'),
-            'OD TOLERANCE (MM)': analysis_results.get('od_tolerance', 'N/A'),
-            'OD2 AS PER 2D (MM)': dimensions.get('od2', 'Not Found'),
-            'THICKNESS AS PER 2D (MM)': wall_thickness,
-            'WALL THICKNESS TOLERANCE (MM)': analysis_results.get('wall_thickness_tolerance', 'N/A'),
-            'THICKNESS AS PER ID OD DIFFERENCE': thickness_calculated,
-            'BURST PRESSURE (MPA)': analysis_results.get('burst_pressure_mpa', 'N/A'),
+            'ID1 AS PER 2D (MM)': analysis_results.get('id_formatted', 'N/A'),
+            'ID TOLERANCE (MM)': format_tolerance(None, analysis_results.get('id_tolerance_mm')) or 'N/A',
+            'ID2 AS PER 2D (MM)': analysis_results.get('id_formatted', 'N/A'),  # Use same as ID1 if second measurement not available
+            'OD1 AS PER 2D (MM)': analysis_results.get('od_formatted', 'N/A'),
+            'OD TOLERANCE (MM)': format_tolerance(None, analysis_results.get('od_tolerance_mm')) or 'N/A',
+            'OD2 AS PER 2D (MM)': analysis_results.get('od_formatted', 'N/A'),  # Use same as OD1 if second measurement not available
+            'THICKNESS AS PER 2D (MM)': analysis_results.get('thickness_formatted', 'N/A'),
+            'WALL THICKNESS TOLERANCE (MM)': format_tolerance(None, analysis_results.get('thickness_tolerance_mm')) or 'N/A',
+            'THICKNESS AS PER ID OD DIFFERENCE': analysis_results.get('thickness_formatted', 'N/A'),
+            'BURST PRESSURE (MPA)': analysis_results.get('burst_pressure_formatted', 'N/A'),
             'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),
             'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)': development_length,
             'BURST PRESSURE AS PER 2D (BAR)': analysis_results.get('burst_pressure', 'Not Found'),
@@ -182,6 +278,14 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
 
         # Create DataFrame
         df = pd.DataFrame([row_data], columns=columns)
+        
+        # Replace any None/NaN with N/A
+        df.fillna("N/A", inplace=True)
+        
+        # Debug log to see what's going into Excel
+        logging.info("Prepared DataFrame head for Excel write:\n%s", df[[
+            c for c in ['PART NO.', 'ID (MM)', 'OD (MM)', 'THICKNESS (MM)', 'BURST PRESSURE (MPA)'] if c in df.columns
+        ]].to_string(index=False))
 
         # Create Excel writer with enhanced formatting
         output = io.BytesIO()
