@@ -9,7 +9,64 @@ import openpyxl
 from typing import List, Dict
 from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-from development_length import calculate_development_length
+from coordinate_extraction import validate_coords_list, polyline_length_from_coords, safe_development_length
+from openpyxl.utils import get_column_letter
+
+def guarantee_and_format_results(results):
+    # results: list of dicts
+    out = []
+    for r in results:
+        rr = dict(r)
+        # burst numeric -> formatted
+        burst = rr.get('burst_pressure_mpa')
+        try:
+            burst = float(burst) if burst is not None else None
+        except Exception:
+            burst = None
+        rr['burst_pressure_mpa'] = burst
+        rr['burst_pressure_formatted'] = f"{burst:.2f} MPa" if burst is not None else None
+
+        # id tolerance formatted
+        idn = rr.get('id_nominal_mm') or rr.get('id1') or rr.get('ID')
+        idt = rr.get('id_tolerance_mm')
+        try:
+            if idn is not None:
+                idn = float(idn)
+        except Exception:
+            idn = None
+        rr['id_nominal_mm'] = idn
+        rr['id_tolerance_mm'] = float(idt) if idt is not None else None
+        if idn is not None:
+            if rr['id_tolerance_mm'] is not None:
+                rr['id_formatted'] = f"{idn:.2f} ± {rr['id_tolerance_mm']:.2f} mm"
+            else:
+                rr['id_formatted'] = f"{idn:.2f} mm"
+        else:
+            rr['id_formatted'] = None
+
+        # thickness fallback computed if missing
+        odn = rr.get('od_nominal_mm')
+        try:
+            if odn is not None:
+                odn = float(odn)
+        except Exception:
+            odn = None
+        rr['od_nominal_mm'] = odn
+        if rr.get('thickness_mm') is None and odn is not None and idn is not None:
+            try:
+                rr['thickness_mm'] = round((odn - idn) / 2.0, 3)
+                rr['thickness_tolerance_mm'] = rr.get('thickness_tolerance_mm') or 0.25
+            except Exception:
+                rr['thickness_mm'] = None
+
+        # final display fields used in Excel
+        rr['id_display'] = rr['id_formatted'] or "N/A"
+        rr['od_display'] = (f"{odn:.2f} ± {rr['od_tolerance_mm']:.2f} mm" if odn is not None and rr.get('od_tolerance_mm') is not None else ("N/A" if odn is None else f"{odn:.2f} mm"))
+        rr['thickness_display'] = (f"{rr['thickness_mm']:.3f} ± {rr.get('thickness_tolerance_mm'):.2f} mm" if rr.get('thickness_mm') is not None else "N/A")
+        rr['burst_display'] = rr['burst_pressure_formatted'] or "N/A"
+
+        out.append(rr)
+    return out
 
 def format_tolerance(val, tol):
     """Return formatted tolerance string or None if both are missing."""
@@ -188,7 +245,10 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
         
         # Calculate development length
         if coordinates:
-            development_length = calculate_development_length(coordinates)
+            development_length_mm, is_fallback, reason = safe_development_length(coordinates)
+            development_length = f"{development_length_mm:.2f} mm" if development_length_mm is not None else "Not Found"
+            if is_fallback:
+                logging.warning("Development length calculation used fallback: %s", reason)
         else:
             development_length = "Not Found"
             logger.warning("No coordinates available for development length calculation")
@@ -276,11 +336,24 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
         # Add remarks to row data
         row_data['REMARK'] = ' '.join(remarks) if remarks else 'No specific remarks.'
 
-        # Create DataFrame
+        # Guarantee and format results
+        results = [row_data]  # wrap in list since guarantee_and_format_results expects list
+        formatted_results = guarantee_and_format_results(results)
+        row_data = formatted_results[0]  # unwrap since we only had one row
+
+        # Add display columns for Excel
+        display_cols = {
+            'ID (MM)': row_data.get('id_display'),
+            'OD (MM)': row_data.get('od_display'),
+            'THICKNESS (MM)': row_data.get('thickness_display'),
+            'BURST PRESSURE (MPA)': row_data.get('burst_display')
+        }
+        for col, val in display_cols.items():
+            if col in columns:
+                row_data[col] = val
+
+        # Create DataFrame with formatted data
         df = pd.DataFrame([row_data], columns=columns)
-        
-        # Replace any None/NaN with N/A
-        df.fillna("N/A", inplace=True)
         
         # Debug log to see what's going into Excel
         logging.info("Prepared DataFrame head for Excel write:\n%s", df[[

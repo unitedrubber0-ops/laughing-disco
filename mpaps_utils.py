@@ -4,6 +4,7 @@ Tolerance and burst pressure handling for MPAPS standards.
 import re
 import logging
 from typing import Optional, Dict, Any, Tuple, List
+from mpaps_burst import normalize_grade, get_burst_pressure_from_table_iv
 
 #######################
 # MPAPS F-6032 Tables
