@@ -28,6 +28,49 @@ TABLE_1_DATA = [
     ('1', 24.6, 0.79, 34.9, 1.0)
 ]
 
+# Map from nominal ID to tolerances for F-6032 TABLE 1
+F6032_TABLE1 = {
+    row[1]: {  # Use ID mm as key
+        'nominal_id_mm': row[1],
+        'id_tolerance_mm': row[2],
+        'nominal_od_mm': row[3],
+        'od_tolerance_mm': row[4]
+    }
+    for row in TABLE_1_DATA
+}
+
+def apply_mpaps_f6032_dimensions(result: dict, id_value_mm: float):
+    """
+    Populate ID/OD nominal + tolerances for MPAPS F-6032 and ensure NO wall thickness tolerance.
+    Mutates and returns result dict.
+    """
+    # find exact nominal match first (your existing logic may find within tolerance)
+    closest = None
+    for key, row in F6032_TABLE1.items():
+        # if exact or within 0.5 mm
+        if abs(float(key) - float(id_value_mm)) <= 0.5:
+            closest = row
+            break
+    if closest is None:
+        # fallback: find best approximate by difference
+        # choose nearest nominal by abs diff
+        candidate = min(F6032_TABLE1.items(), key=lambda kv: abs(kv[0] - float(id_value_mm)))
+        closest = candidate[1]
+    # populate result fields (use keys your pipeline expects)
+    result['id_nominal_mm'] = float(closest['nominal_id_mm'])
+    result['id_tolerance_mm'] = float(closest.get('id_tolerance_mm')) if closest.get('id_tolerance_mm') is not None else None
+    result['od_nominal_mm'] = float(closest['nominal_od_mm'])
+    result['od_tolerance_mm'] = float(closest.get('od_tolerance_mm')) if closest.get('od_tolerance_mm') is not None else None
+
+    # CRITICAL: for F-6032, explicitly DO NOT set wall/thickness tolerance
+    # There should be NO wall thickness tolerance for F-6032 per your requirement
+    result['thickness_mm'] = result.get('thickness_mm') or None  # allow computed thickness if you want
+    result['thickness_tolerance_mm'] = None  # explicit: no tolerance
+
+    # also mark dimension source for traceability
+    result['dimension_source'] = 'MPAPS F-6032 TABLE 1'
+    return result
+
 #######################
 # MPAPS F-30/F-1 Tables 
 #######################
@@ -35,23 +78,62 @@ TABLE_1_DATA = [
 # Maximum acceptable difference for nominal value matching (mm)
 MAX_ACCEPT_DIFF_MM = 0.5  # Allow up to 0.5mm difference for practical measurements
 
+def canonical_standard(standard_raw: str) -> str:
+    """
+    Return canonical standard identity strings:
+      returns 'MPAPS F-6032', 'MPAPS F-30', 'MPAPS F-1', or the cleaned input.
+    """
+    if not standard_raw:
+        return ''
+    s = standard_raw.upper().replace('_', ' ').strip()
+    # normalize common OCR variants
+    s = re.sub(r'\s+', ' ', s)
+    if 'F-6032' in s or 'F6032' in s:
+        return 'MPAPS F-6032'
+    if 'F-30' in s or 'F30' in s:
+        return 'MPAPS F-30'
+    if 'F-1' in s or 'F1' in s:
+        return 'MPAPS F-1'
+    return s
+
+def process_mpaps_dimensions(result: dict):
+    """Process dimensions according to MPAPS standards"""
+    if not result:
+        return result
+    
+    # Get normalized standard - use canonical to ensure proper routing
+    standard = canonical_standard(result.get('standard', ''))
+    
+    # Get nominal ID - needed for both F-30 and F-6032 lookups
+    id_value = result.get('id_nominal_mm')
+    if not id_value:
+        return result  # can't process without ID
+        
+    # F-6032: use TABLE 1 exclusively, with NO wall thickness tolerance
+    if standard == 'MPAPS F-6032':
+        return apply_mpaps_f6032_dimensions(result, id_value)
+        
+    # Handle F-30 standard specific processing - leave existing logic
+    if standard == 'MPAPS F-30':
+        # process with existing F-30 dimension rules
+        pass
+    
+    return result
+
 def normalize_standard_and_grade(standard_raw: str, grade_raw: str):
     """
     Normalize strings from OCR/text so downstream lookups use canonical keys.
     Returns (standard_norm, grade_norm)
     """
-    s = (standard_raw or "").upper().strip()
-    # collapse spaces and unify separators
-    s = re.sub(r'[\s_]+', ' ', s)
-    # canonical mappings
-    if 'F-6032' in s or 'F6032' in s:
+    std = canonical_standard(standard_raw)
+    if 'F-6032' in std or 'F6032' in std:
         std = 'MPAPS F-6032'
-    elif 'F-30' in s or 'F30' in s:
+    elif 'F-30' in std or 'F30' in std:
         std = 'MPAPS F-30'
-    elif 'F-1' in s or 'F1' in s:
+    elif 'F-1' in std or 'F1' in std:
         std = 'MPAPS F-1'
     else:
-        std = s  # keep what we got
+        std = std  # keep what we got
     # grade: remove extra spaces and OCR noise, convert "GRADE 1 B" -> "1B"
     g = (grade_raw or "").upper()
     g = re.sub(r'GRADE\s*', '', g)
