@@ -269,7 +269,21 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
         if wall_thickness == 'Not Found' and thickness_calculated != 'Not Found':
             wall_thickness = thickness_calculated
 
-        # Build the row data dictionary
+        # At this point analysis_results has been passed through ensure_result_fields()
+        # so use that canonical dict (snake_case keys) to populate Excel columns.
+        res = analysis_results  # canonical normalized dict from ensure_result_fields
+
+        # Debug: log the normalized fields we rely on
+        logging.info("Normalized fields: id_formatted=%s, od_formatted=%s, thickness_formatted=%s, burst_pressure_formatted=%s",
+                     res.get('id_formatted'), res.get('od_formatted'), res.get('thickness_formatted'), res.get('burst_pressure_formatted'))
+
+        # Prepare display strings (use 'N/A' when missing)
+        id_display = res.get('id_formatted') or "N/A"
+        od_display = res.get('od_formatted') or "N/A"
+        thickness_display = res.get('thickness_formatted') or "N/A"
+        burst_display = res.get('burst_pressure_formatted') or "N/A"
+
+        # Build the row data dictionary using the display strings and other normalized fields
         row_data = {
             'child part': part_number.lower(),
             'child quantity': "1",
@@ -277,88 +291,65 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             'CHILD PART DESCRIPTION': description,
             'CHILD PART QTY': "1",
             'SPECIFICATION': specification,
-            'MATERIAL': analysis_results.get('material', 'Not Found'),
-            'POLYMER TYPE': analysis_results.get('polymer_type', 'Not Applicable'),
-            'REINFORCEMENT': analysis_results.get('reinforcement', 'Not Found'),
-            'RINGS': analysis_results.get('rings', 'Not Found'),
-            'ID1 AS PER 2D (MM)': analysis_results.get('id_formatted', 'N/A'),
-            'ID TOLERANCE (MM)': format_tolerance(None, analysis_results.get('id_tolerance_mm')) or 'N/A',
-            'ID2 AS PER 2D (MM)': analysis_results.get('id_formatted', 'N/A'),  # Use same as ID1 if second measurement not available
-            'OD1 AS PER 2D (MM)': analysis_results.get('od_formatted', 'N/A'),
-            'OD TOLERANCE (MM)': format_tolerance(None, analysis_results.get('od_tolerance_mm')) or 'N/A',
-            'OD2 AS PER 2D (MM)': analysis_results.get('od_formatted', 'N/A'),  # Use same as OD1 if second measurement not available
-            'THICKNESS AS PER 2D (MM)': analysis_results.get('thickness_formatted', 'N/A'),
-            'WALL THICKNESS TOLERANCE (MM)': format_tolerance(None, analysis_results.get('thickness_tolerance_mm')) or 'N/A',
-            'THICKNESS AS PER ID OD DIFFERENCE': analysis_results.get('thickness_formatted', 'N/A'),
-            'BURST PRESSURE (MPA)': analysis_results.get('burst_pressure_formatted', 'N/A'),
+            'MATERIAL': res.get('material', 'Not Found'),
+            'POLYMER TYPE': res.get('polymer_type', 'Not Applicable'),
+            'REINFORCEMENT': res.get('reinforcement', 'Not Found'),
+            'RINGS': res.get('rings', 'Not Found'),
+            # Use the formatted display strings here
+            'ID1 AS PER 2D (MM)': id_display,
+            'ID TOLERANCE (MM)': format_tolerance(None, res.get('id_tolerance_mm')) or 'N/A',
+            'ID2 AS PER 2D (MM)': id_display,
+            'OD1 AS PER 2D (MM)': od_display,
+            'OD TOLERANCE (MM)': format_tolerance(None, res.get('od_tolerance_mm')) or 'N/A',
+            'OD2 AS PER 2D (MM)': od_display,
+            'THICKNESS AS PER 2D (MM)': thickness_display,
+            'WALL THICKNESS TOLERANCE (MM)': format_tolerance(None, res.get('thickness_tolerance_mm')) or 'N/A',
+            'THICKNESS AS PER ID OD DIFFERENCE': thickness_display,
+            'BURST PRESSURE (MPA)': burst_display,
             'CENTERLINE LENGTH AS PER 2D (MM)': dimensions.get('centerline_length', 'Not Found'),
             'DEVELOPMENT LENGTH AS PER CO-ORDINATE (MM)': development_length,
-            'BURST PRESSURE AS PER 2D (BAR)': analysis_results.get('burst_pressure', 'Not Found'),
+            'BURST PRESSURE AS PER 2D (BAR)': res.get('burst_pressure', 'Not Found'),
             'BURST PRESSURE AS PER WORKING PRESSURE (4XWP) (BAR)': burst_pressure_calc,
-            'VOLUME AS PER 2D MM3': analysis_results.get('volume_mm3', 'Not Found'),
-            'WEIGHT AS PER 2D KG': analysis_results.get('weight', 'Not Found'),
-            'COLOUR AS PER DRAWING': analysis_results.get('color', 'Not Found'),
+            'VOLUME AS PER 2D MM3': res.get('volume_mm3', 'Not Found'),
+            'WEIGHT AS PER 2D KG': res.get('weight', 'Not Found'),
+            'COLOUR AS PER DRAWING': res.get('color', 'Not Found'),
             'ADDITIONAL REQUIREMENT': "CUTTING & CHECKING FIXTURE COST TO BE ADDED. Marking cost to be added.",
             'OUTSOURCE': "",
             'REMARK': ""
         }
 
-        # Generate remarks based on validation
+        # Generate remarks based on validation (keep your existing logic)
         remarks = []
-        
-        # Check for specification conversion
         if standard.startswith('MPAPS F 1'):
             remarks.append('Drawing specifies MPAPS F 1, considered as MPAPS F 30.')
-            
-        # Check for Grade 1B/1BF information
-        grade = analysis_results.get('grade', '')
+        grade = res.get('grade', '')
         from mpaps_utils import is_grade_1bf
         if is_grade_1bf(grade):
-            if analysis_results.get('wall_thickness'):
-                remarks.append(f"Using Grade 1B/1BF wall thickness: {analysis_results['wall_thickness']} mm")
-                if analysis_results.get('wall_thickness_tolerance'):
-                    remarks.append(f"Wall thickness tolerance: {analysis_results['wall_thickness_tolerance']}")
-            if analysis_results.get('od_reference'):
-                remarks.append(f"Using Grade 1B/1BF reference OD: {analysis_results['od_reference']} mm")
-                
-        # Check for ID mismatch
+            if res.get('wall_thickness'):
+                remarks.append(f"Using Grade 1B/1BF wall thickness: {res['wall_thickness']} mm")
+                if res.get('wall_thickness_tolerance'):
+                    remarks.append(f"Wall thickness tolerance: {res['wall_thickness_tolerance']}")
+            if res.get('od_reference'):
+                remarks.append(f"Using Grade 1B/1BF reference OD: {res['od_reference']} mm")
+
+        # ID/OD mismatch checks (use dimensions dict)
         id1 = dimensions.get('id1', 'Not Found')
         id2 = dimensions.get('id2', 'Not Found')
         if id1 != 'Not Found' and id2 != 'Not Found' and id1 != id2:
             remarks.append('THERE IS MISMATCH IN ID 1 & ID 2')
-
-        # Check for OD mismatch
         od1 = dimensions.get('od1', 'Not Found')
         od2 = dimensions.get('od2', 'Not Found')
         if od1 != 'Not Found' and od2 != 'Not Found' and od1 != od2:
             remarks.append('THERE IS MISMATCH IN OD 1 & OD 2')
 
-        # Add remarks to row data
         row_data['REMARK'] = ' '.join(remarks) if remarks else 'No specific remarks.'
-
-        # Guarantee and format results
-        results = [row_data]  # wrap in list since guarantee_and_format_results expects list
-        formatted_results = guarantee_and_format_results(results)
-        row_data = formatted_results[0]  # unwrap since we only had one row
-
-        # Add display columns for Excel
-        display_cols = {
-            'ID (MM)': row_data.get('id_display'),
-            'OD (MM)': row_data.get('od_display'),
-            'THICKNESS (MM)': row_data.get('thickness_display'),
-            'BURST PRESSURE (MPA)': row_data.get('burst_display')
-        }
-        for col, val in display_cols.items():
-            if col in columns:
-                row_data[col] = val
 
         # Create DataFrame with formatted data
         df = pd.DataFrame([row_data], columns=columns)
-        
-        # Debug log to see what's going into Excel
-        logging.info("Prepared DataFrame head for Excel write:\n%s", df[[
-            c for c in ['PART NO.', 'ID (MM)', 'OD (MM)', 'THICKNESS (MM)', 'BURST PRESSURE (MPA)'] if c in df.columns
-        ]].to_string(index=False))
+
+        # Debug log to see what's going into Excel (log actual columns present)
+        cols_to_log = [c for c in ['ID1 AS PER 2D (MM)', 'OD1 AS PER 2D (MM)', 'THICKNESS AS PER 2D (MM)', 'BURST PRESSURE (MPA)'] if c in df.columns]
+        logging.info("Prepared DataFrame head for Excel write:\n%s", df[cols_to_log].to_string(index=False))
 
         # Create Excel writer with enhanced formatting
         output = io.BytesIO()
