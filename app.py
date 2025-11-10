@@ -676,6 +676,13 @@ def get_material_from_standard(standard, grade):
         logging.info(f"Material lookup initiated: Standard='{standard}', Grade='{grade}'")
         logging.info(f"Cleaned: Standard='{clean_standard}', Grade='{clean_grade}'")
         
+        # Special handling for MPAPS F-6032
+        if 'MPAPS F-6032' in clean_standard.upper() or 'MPAPSF6032' in clean_standard.upper():
+            # For MPAPS F-6032 TYPE I, return composite material spec: inner NBR, outer ECO
+            if clean_grade.upper() in ['1', 'TYPE I', 'I']:
+                logging.info("MPAPS F-6032 TYPE I detected, returning composite material 'INNER NBR OUTER:ECO'")
+                return "INNER NBR OUTER:ECO"
+
         # Special handling for MPAPS F-1 -> MPAPS F-30 mapping
         if 'MPAPS F-1' in clean_standard.upper() or 'MPAPSF1' in clean_standard.upper():
             clean_standard = 'MPAPS F-30'

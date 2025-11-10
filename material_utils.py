@@ -193,15 +193,10 @@ def normalize_grade(grd, std=None):
                 if mapped_grade != "Not Found":
                     return mapped_grade
                     
-        # Handle special case of "GRADE 1 B" format first
-        if re.search(r'GRADE\s+[123]\s*[ABC]F?', grd, re.IGNORECASE):
-            # Convert "GRADE 1 B" -> "1B", "GRADE 2 B" -> "2B" etc.
-            grd = re.sub(r'GRADE\s+(\d)\s*([ABC]F?)', r'\1\2', grd, flags=re.IGNORECASE)
-        
-        # Standard grade normalization for other cases
+        # Standard grade normalization
         grd = re.sub(r'[^A-Z0-9\-]', '', grd)       # remove weird punctuation
-        grd = re.sub(r'GRADE|TYPE|CLASS', '', grd)   # remove grade/type/class prefixes 
-        grd = grd.replace(' ', '').replace('_', '').replace('/', '')  # clean up separators
+        grd = re.sub(r'GRADE|TYPE|CLASS', '', grd)
+        grd = grd.replace(' ', '').replace('_', '').replace('/', '')
         grd = re.sub(r'([A-Z0-9\-]+)[XZ]$', r'\1', grd)
         return grd
     except Exception as e:
@@ -219,6 +214,11 @@ def normalize_material(material):
         # Convert to string and clean up
         mat = _coerce_to_str_maybe_dict(material, keys_to_try=('MATERIAL','material','name'))
         mat = mat.upper().strip()
+
+        # If the material string already contains composite qualifiers, preserve it as-is
+        # (prevents collapsing "INNER NBR OUTER:ECO" down to just "NBR")
+        if 'INNER' in mat or 'OUTER' in mat or ':' in mat:
+            return mat
         
         # Common material name variations
         variations = {
