@@ -243,12 +243,23 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
         # Get formatted values with proper handling of N/A
         thickness_calculated = analysis_results.get('thickness_formatted', "N/A")
         
-        # Calculate development length
+        # Calculate development length with robust error handling
         if coordinates:
-            development_length_mm, is_fallback, reason = safe_development_length(coordinates)
-            development_length = f"{development_length_mm:.2f} mm" if development_length_mm is not None else "Not Found"
-            if is_fallback:
-                logging.warning("Development length calculation used fallback: %s", reason)
+            try:
+                development_length_mm, is_fallback, reason = safe_development_length(coordinates)
+                
+                # Add sanity check: reject unrealistic development lengths (>20 meters = 20,000 mm)
+                if development_length_mm is not None:
+                    if development_length_mm <= 0 or development_length_mm > 20000:
+                        logging.warning(f"Unrealistic development length {development_length_mm}mm; rejecting and falling back")
+                        development_length_mm = None
+                
+                development_length = f"{development_length_mm:.2f} mm" if development_length_mm is not None else "Not Found"
+                if is_fallback:
+                    logging.warning("Development length calculation used fallback: %s", reason)
+            except ValueError as e:
+                logging.warning(f"safe_development_length failed: {e} - falling back to centerline")
+                development_length = "Not Found"
         else:
             development_length = "Not Found"
             logger.warning("No coordinates available for development length calculation")

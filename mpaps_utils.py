@@ -1153,6 +1153,14 @@ def apply_grade_2bf_rules(results: Dict[str, Any]) -> None:
     else:
         logging.warning("No valid ID value found for Grade 2BF dimension calculation")
 
+#######################
+# Backwards-compatible aliases (fix ImportError seen in debug_utils)
+#######################
+# Use the existing table/list names as the expected private names.
+# These aliases avoid ImportError and keep a single source-of-truth.
+_F30_BF_TABLE = GRADE_1_BF_TOLERANCE_ENTRIES
+_F30_BF_RANGES = TABLE_8_GRADE_1BF_RANGES
+
 def get_burst_pressure() -> float:
     """Get the standard burst pressure for MPAPS F-6032 materials."""
     return MPAPS_F6032_BURST_PRESSURE_MPA

@@ -1051,6 +1051,75 @@ def extract_dimensions_from_text(text):
     except Exception as e:
         logger.error(f"Error extracting dimensions: {e}")
         return dimensions
+
+def normalize_coordinates_safe(coords):
+    """
+    Ensure coords is a list of dicts with numeric x,y,z (and optional r).
+    Accepts:
+      - already-correct list -> returns cleaned list
+      - dict mapping P0->{...} or {'points': [...] } -> flattens
+      - JSON string -> parse
+      - None or invalid -> return []
+    Non-numeric or incomplete points are skipped with a warning.
+    """
+    if coords is None:
+        return []
+
+    # If string, try to parse JSON
+    if isinstance(coords, str):
+        try:
+            coords = json.loads(coords)
+        except Exception:
+            logging.warning("normalize_coordinates_safe: received string but JSON parse failed")
+            return []
+
+    # If dict, try to extract values (common AI outputs)
+    if isinstance(coords, dict):
+        # If it has 'points' key, use that
+        if 'points' in coords and isinstance(coords['points'], list):
+            coords_list = coords['points']
+        else:
+            # assume mapping like {'P0': {...}, 'P1': {...}}
+            coords_list = list(coords.values())
+    elif isinstance(coords, list):
+        coords_list = coords
+    else:
+        logging.warning(f"normalize_coordinates_safe: unexpected coords type {type(coords)}")
+        return []
+
+    clean = []
+    for p in coords_list:
+        if not isinstance(p, dict):
+            logging.warning(f"Skipping non-dict coord entry: {p!r}")
+            continue
+        # tolerate keys uppercase/lowercase, nested structures
+        x = p.get('x') if 'x' in p else p.get('X') if 'X' in p else None
+        y = p.get('y') if 'y' in p else p.get('Y') if 'Y' in p else None
+        z = p.get('z') if 'z' in p else p.get('Z') if 'Z' in p else 0
+        r = p.get('r') if 'r' in p else p.get('R') if 'R' in p else None
+
+        # missing coordinates -> skip
+        if x is None or y is None:
+            logging.warning(f"Skipping incomplete coord point (missing x/y): {p}")
+            continue
+
+        try:
+            x_f = float(x)
+            y_f = float(y)
+            z_f = float(z) if z is not None else 0.0
+        except Exception:
+            logging.warning(f"Skipping coord with non-numeric values: {p}")
+            continue
+
+        entry = {'x': x_f, 'y': y_f, 'z': z_f}
+        if r is not None:
+            try:
+                entry['r'] = float(r)
+            except Exception:
+                pass
+        clean.append(entry)
+
+    return clean
     
 def extract_coordinates_from_text(text):
     """
