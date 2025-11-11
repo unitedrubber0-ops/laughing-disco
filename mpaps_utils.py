@@ -41,7 +41,8 @@ F6032_TABLE1 = {
 
 def apply_mpaps_f6032_dimensions(result: dict, id_value_mm: float):
     """
-    Populate ID/OD nominal + tolerances for MPAPS F-6032 and ensure NO wall thickness tolerance.
+    Populate ID/OD nominal + tolerances for MPAPS F-6032.
+    Wall thickness tolerance is automatically set to ± 0.8 mm per user requirement.
     Mutates and returns result dict.
     """
     # find exact nominal match first (your existing logic may find within tolerance)
@@ -62,10 +63,9 @@ def apply_mpaps_f6032_dimensions(result: dict, id_value_mm: float):
     result['od_nominal_mm'] = float(closest['nominal_od_mm'])
     result['od_tolerance_mm'] = float(closest.get('od_tolerance_mm')) if closest.get('od_tolerance_mm') is not None else None
 
-    # CRITICAL: for F-6032, explicitly DO NOT set wall/thickness tolerance
-    # There should be NO wall thickness tolerance for F-6032 per your requirement
+    # For F-6032, wall thickness tolerance is automatically ± 0.8 mm per user requirement
     result['thickness_mm'] = result.get('thickness_mm') or None  # allow computed thickness if you want
-    result['thickness_tolerance_mm'] = None  # explicit: no tolerance
+    result['thickness_tolerance_mm'] = 0.8  # F-6032 wall thickness tolerance is always ± 0.8 mm
 
     # Material will be looked up from material_data.csv through get_material_from_standard()
     # which correctly maps MPAPS F-6032 Type I to "INNER NBR OUTER:ECO"
@@ -715,15 +715,16 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
         if table_data.get('thickness') and table_data['thickness'] != 'Not Found':
             # If the TABLE 1 provides explicit thickness, use it
             result['thickness_mm'] = table_data['thickness']
-            result['thickness_tolerance_mm'] = table_data.get('thickness_tolerance_mm', 0.25)
+            # For F-6032, wall thickness tolerance is automatically ± 0.8 mm
+            result['thickness_tolerance_mm'] = 0.8
         else:
             # Only compute thickness from OD/ID if thickness is not already set by F-30/F-1 rules
             if not result.get('thickness_mm') and result.get('od_nominal_mm') and result.get('id_nominal_mm'):
                 try:
                     t = (float(result['od_nominal_mm']) - float(result['id_nominal_mm'])) / 2.0
                     result['thickness_mm'] = round(t, 3)
-                    # keep the original fallback or prefer None — but only set it when computing
-                    result['thickness_tolerance_mm'] = 0.25
+                    # For F-6032, wall thickness tolerance is always ± 0.8 mm
+                    result['thickness_tolerance_mm'] = 0.8
                 except Exception:
                     logging.warning("Failed to compute thickness from OD-ID")
                     result['thickness_mm'] = None
