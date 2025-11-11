@@ -186,14 +186,28 @@ def ensure_result_fields(result: Dict) -> Dict:
             thickness = float(thickness)
     except Exception:
         thickness = None
+    
+    # Compute thickness from OD/ID if explicit thickness missing
     if thickness is None and od_nom is not None and id_nom is not None:
         try:
             thickness = round((od_nom - id_nom) / 2.0, 3)
-            # set a reasonable default tolerance if not supplied
-            if thickness_tol is None:
-                thickness_tol = 0.25
         except Exception:
             thickness = None
+
+    # If thickness tolerance is missing, try to fetch from MPAPS grade table
+    # (do not fall back to any hard-coded small tolerance)
+    if (thickness_tol is None or thickness_tol == '') and id_nom is not None:
+        try:
+            # ask mpaps_utils for the Grade1/BF wall tolerance (if applicable)
+            mpaps_entry = mpaps_utils.get_grade1bf_tolerances(id_nom)
+            if isinstance(mpaps_entry, dict):
+                wall_tol = mpaps_entry.get('wall_tolerance_mm')
+                if wall_tol is not None and isinstance(wall_tol, (int, float)):
+                    thickness_tol = float(wall_tol)
+        except Exception:
+            # leave thickness_tol as None (so Excel shows N/A) — do NOT default to 0.25
+            thickness_tol = thickness_tol
+    
     res['thickness_mm'] = thickness
     res['thickness_tolerance_mm'] = thickness_tol
     res['thickness_formatted'] = format_tolerance(thickness, thickness_tol) or "N/A"
@@ -227,6 +241,12 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
         BytesIO: Excel file data
     """
     try:
+        # Ensure MPAPS-driven nominal/tolerance fields are populated before formatting
+        try:
+            analysis_results = mpaps_utils.process_mpaps_dimensions(analysis_results or {})
+        except Exception as e:
+            logger.debug(f"mpaps_utils.process_mpaps_dimensions failed: {e}")
+        
         # Define column structure with proper formatting
         columns = [
             'child part',                                         # Row 1: Original format
