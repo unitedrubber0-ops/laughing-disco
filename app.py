@@ -3303,6 +3303,14 @@ def upload_and_analyze():
         # Debug tolerance lookup before applying rules
         debug_tolerance_lookup(final_results)
 
+        # **PATCH 1**: Ensure MPAPS F-30/F-1 table lookups fill thickness/id tolerances BEFORE any F-6032 rules run
+        try:
+            import mpaps_utils
+            final_results = mpaps_utils.process_mpaps_dimensions(final_results or {})
+            logging.info("Early F-30/F-1 table processing completed before standard-specific rules")
+        except Exception as e:
+            logging.warning(f"process_mpaps_dimensions failed: {e}", exc_info=True)
+
         # Apply MPAPS rules using standard detection
         detected_standard = detect_mpaps_standard(final_results)
         logging.info(f"Detected MPAPS standard: {detected_standard}")

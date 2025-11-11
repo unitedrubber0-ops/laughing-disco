@@ -542,27 +542,34 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
     """
     Apply ONLY MPAPS F-6032 rules to analysis results.
     Uses TABLE 1 for dimensions and tolerances, and fixed 2.0 MPa burst pressure.
+    This function will *not* override results when canonical standard indicates F-30/F-1
+    or when the results are already populated by F-30 rules (dimension_source set).
     """
-    # Check multiple fields for MPAPS F-6032 indication
-    material = results.get('material')
-    standard = results.get('standard')
-    specification = results.get('specification')
-    
-    # Only apply if it's MPAPS F-6032 - use strict checking
+    # **PATCH 2A**: Short-circuit if canonical standard is F-30/F-1
+    canonical = canonical_standard(results.get('standard', '') or '')
+    if canonical == 'MPAPS F-30':
+        logging.info("Canonical standard indicates MPAPS F-30/F-1 — skipping F-6032 rules.")
+        return
+
+    # **PATCH 2B**: If a prior step already set a dimension source indicating F-30 was used, skip.
+    dim_src = str(results.get('dimension_source') or '')
+    if 'F-30' in dim_src or 'TABLE 4' in dim_src or 'TABLE 8' in dim_src:
+        logging.info(f"Dimension source already indicates F-30 rules ({dim_src}); skipping F-6032 rules.")
+        return
+
+    # Existing strict detection for F-6032 still applies as a last-resort guard
     is_f6032 = False
-    
-    if standard:
-        std_upper = str(standard).upper()
-        if 'MPAPS F-6032' in std_upper or 'MPAPSF6032' in std_upper:
-            is_f6032 = True
-    
-    if material and not is_f6032:  # Only check material if standard didn't match
-        mat_upper = str(material).upper()
-        if 'MPAPS F-6032' in mat_upper or 'MPAPSF6032' in mat_upper:
-            is_f6032 = True
-    
+    standard = results.get('standard') or ''
+    material = results.get('material') or ''
+    std_upper = str(standard).upper()
+    if 'MPAPS F-6032' in std_upper or 'MPAPSF6032' in std_upper:
+        is_f6032 = True
+    mat_upper = str(material).upper()
+    if not is_f6032 and ('MPAPS F-6032' in mat_upper or 'MPAPSF6032' in mat_upper):
+        is_f6032 = True
+
     if not is_f6032:
-        return  # Exit early if not F-6032
+        return  # Not an F-6032 part; nothing to do.
         
     logging.info("Applying MPAPS F-6032 rules to results")
     
@@ -656,16 +663,18 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
             result['od_nominal_mm'] = table_data['nominal_od_mm']
             result['od_tolerance_mm'] = table_data.get('od_tolerance_mm', 1.0)  # fallback 1.0 mm
             
-        # Handle thickness
+        # **PATCH 3**: Handle thickness — guard against overwriting already-set F-30 thickness
         if table_data.get('thickness') and table_data['thickness'] != 'Not Found':
+            # If the TABLE 1 provides explicit thickness, use it
             result['thickness_mm'] = table_data['thickness']
             result['thickness_tolerance_mm'] = table_data.get('thickness_tolerance_mm', 0.25)
         else:
-            # Try compute from OD & ID
-            if result.get('od_nominal_mm') and result.get('id_nominal_mm'):
+            # Only compute thickness from OD/ID if thickness is not already set by F-30/F-1 rules
+            if not result.get('thickness_mm') and result.get('od_nominal_mm') and result.get('id_nominal_mm'):
                 try:
                     t = (float(result['od_nominal_mm']) - float(result['id_nominal_mm'])) / 2.0
                     result['thickness_mm'] = round(t, 3)
+                    # keep the original fallback or prefer None — but only set it when computing
                     result['thickness_tolerance_mm'] = 0.25
                 except Exception:
                     logging.warning("Failed to compute thickness from OD-ID")
