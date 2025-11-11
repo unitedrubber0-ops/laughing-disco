@@ -171,7 +171,9 @@ def process_mpaps_dimensions(result: dict) -> dict:
                         pass
 
                 # mark where values came from
-                result.setdefault('dimension_sources', []).append('MPAPS F-30/F-1 TABLE 4/8 (Grade 1/BF)')
+                dim_source_str = 'MPAPS F-30/F-1 TABLE 4/8 (Grade 1/BF)'
+                result.setdefault('dimension_sources', []).append(dim_source_str)
+                result['dimension_source'] = dim_source_str  # Also set singular for Patch 2 check
 
             return result
 
@@ -556,6 +558,14 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
     if 'F-30' in dim_src or 'TABLE 4' in dim_src or 'TABLE 8' in dim_src:
         logging.info(f"Dimension source already indicates F-30 rules ({dim_src}); skipping F-6032 rules.")
         return
+    
+    # Also check the dimension_sources list (plural) that process_mpaps_dimensions may set
+    dim_sources_list = results.get('dimension_sources', [])
+    if isinstance(dim_sources_list, list):
+        for src in dim_sources_list:
+            if 'F-30' in str(src) or 'TABLE 4' in str(src) or 'TABLE 8' in str(src):
+                logging.info(f"Dimension sources list indicates F-30 rules already applied; skipping F-6032 rules.")
+                return
 
     # Existing strict detection for F-6032 still applies as a last-resort guard
     is_f6032 = False
