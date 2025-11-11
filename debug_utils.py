@@ -38,14 +38,30 @@ def debug_tolerance_lookup(results: Dict[str, Any]) -> None:
                 from mpaps_utils import _F30_BF_TABLE, _F30_BF_RANGES
                 logging.info("Checking MPAPS F-30/F-1 TABLE VII-B dimensions:")
                 
-                # Check exact matches
+                # Check exact matches with support for both 5 and 6-field rows
                 for row in _F30_BF_TABLE:
-                    nom_in, nom_mm, id_tol, od_mm, wall_mm, wall_tol = row
+                    # Support both 6-field rows (nom_in, nom_mm, id_tol, od_mm, wall_mm, wall_tol)
+                    # and 5-field rows (nom_in, nom_mm, id_tol, wall_mm, wall_tol)
+                    try:
+                        if len(row) == 6:
+                            nom_in, nom_mm, id_tol, od_mm, wall_mm, wall_tol = row
+                        elif len(row) == 5:
+                            nom_in, nom_mm, id_tol, wall_mm, wall_tol = row
+                            od_mm = None
+                        else:
+                            logging.warning(f"Unexpected row shape in _F30_BF_TABLE: length={len(row)} row={row}")
+                            continue
+                    except Exception as e:
+                        logging.error(f"Failed to unpack _F30_BF_TABLE row {row}: {e}", exc_info=True)
+                        continue
+                    
                     if nom_mm:  # Skip range-based entries
                         diff = abs(id_float - nom_mm) if nom_mm else float('inf')
-                        logging.info(f"ID {id_float} vs nominal {nom_mm}mm ({nom_in}\"): "
-                                   f"diff={diff:.3f}mm, ID tol={id_tol}mm, "
-                                   f"Wall={wall_mm}±{wall_tol}mm")
+                        info_msg = f"ID {id_float} vs nominal {nom_mm}mm ({nom_in}\"): diff={diff:.3f}mm, ID tol={id_tol}mm"
+                        if od_mm is not None:
+                            info_msg += f", OD={od_mm}mm"
+                        info_msg += f", Wall={wall_mm}±{wall_tol}mm"
+                        logging.info(info_msg)
                 
                 # Check ranges
                 for min_id, max_id, wall_mm, wall_tol in _F30_BF_RANGES:

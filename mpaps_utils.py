@@ -187,50 +187,6 @@ TABLE_4_GRADE_1_RANGES = [
     (50.8, 62.7, 4.95, 0.65, 0.5)
 ]
 
-def get_grade1_tolerances(id_value_mm: float) -> dict:
-    """
-    Return a tolerance record for Grade 1 (EPDM/PREMIUM) hose using TABLE 4 logic.
-    For exact nominal sizes (1/4", 3/8", 1/2", 5/8", 3/4", 7/8", 1") and ranges.
-    
-    Output keys:
-      - nominal_id_mm: Actual inside diameter
-      - id_tolerance_mm: ID tolerance (±mm) = 0.5 for all Grade 1
-      - wall_mm: Wall thickness (mm) = 4.95 for all Grade 1
-      - wall_tolerance_mm: Wall thickness tolerance (±mm) = 0.65 for all Grade 1
-    """
-    if id_value_mm is None:
-        return {'id_tolerance_mm': None}
-    
-    # Try exact nominal matches first
-    for nominal, actual_id, id_tol, wall, wall_tol in TABLE_4_GRADE_1_DATA:
-        if actual_id is not None:  # Skip range entries in exact match
-            if abs(float(actual_id) - float(id_value_mm)) < 0.2:  # Allow small tolerance for float comparison
-                return {
-                    'nominal_id_mm': float(actual_id),
-                    'id_tolerance_mm': float(id_tol),
-                    'wall_mm': float(wall),
-                    'wall_tolerance_mm': float(wall_tol)
-                }
-    
-    # Try range matches (for IDs >25.4mm)
-    for min_id, max_id, wall, wall_tol, id_tol in TABLE_4_GRADE_1_RANGES:
-        if min_id <= id_value_mm < max_id:
-            return {
-                'nominal_id_mm': id_value_mm,
-                'id_tolerance_mm': float(id_tol),
-                'wall_mm': float(wall),
-                'wall_tolerance_mm': float(wall_tol)
-            }
-    
-    # Fallback: Grade 1 standard values
-    logging.warning(f"No exact TABLE 4 match for ID {id_value_mm}mm; using Grade 1 defaults")
-    return {
-        'nominal_id_mm': id_value_mm,
-        'id_tolerance_mm': 0.5,
-        'wall_mm': 4.95,
-        'wall_tolerance_mm': 0.65
-    }
-
 # TABLE 8: Grade 1 (EPDM/Premium) Suffix BF Hose Dimensions - MPAPS F-30/F-1
 TABLE_8_GRADE_1BF_DATA = [
     # (nominal_id_in, id_mm, id_tol_mm, od_mm, wall_mm, wall_tol_mm)
@@ -842,76 +798,8 @@ def is_grade_1bf(grade: str) -> bool:
         return False
         
     grade_upper = str(grade).upper()
-    # Check for explicit 1BF to avoid matching just '1' or '1A' as '1BF'
-    return '1BF' in grade_upper.replace(' ', '').replace('-', '')
-
-def apply_grade_1_rules(results: Dict[str, Any]) -> None:
-    """
-    Apply Grade 1 (non-BF) specific rules to the results using TABLE 4 dimensions and tolerances.
-    
-    TABLE 4 Reference (Grade 1 - EPDM/Premium Formed Hose):
-    | Nominal ID | Actual ID (mm) | ID Tolerance (±mm) | Wall Thickness (mm) | Wall Thickness Tolerance (±mm) |
-    |------------|---------------|-------------------|-------------------|------------------------------|
-    | 1/4" | 5.9 | 0.5 | 4.95 | 0.65 |
-    | 3/8" | 9.0 | 0.5 | 4.95 | 0.65 |
-    | 1/2" | 12.0 | 0.5 | 4.95 | 0.65 |
-    | 5/8" | 15.1 | 0.5 | 4.95 | 0.65 |
-    | 3/4" | 18.4 | 0.5 | 4.95 | 0.65 |
-    | 7/8" | 21.3 | 0.5 | 4.95 | 0.65 |
-    | 1" | 24.6 | 0.5 | 4.95 | 0.65 |
-    | >1.0-2.0" | >25.4-50.8 | 0.5 | 4.95 | 0.65 |
-    | >2.0-2.5" | >50.8-62.7 | 0.5 | 4.95 | 0.65 |
-    """
-    grade = results.get('grade', '')
-    
-    # Only apply Grade 1 rules if grade is exactly '1' or '1A', NOT '1BF'
-    grade_upper = str(grade).upper().replace(' ', '').replace('-', '')
-    if not (grade_upper == '1' or grade_upper == '1A' or grade_upper == 'GRADE1' or grade_upper == 'GRADE1A'):
-        return  # Exit early if not Grade 1
-    
-    # Don't apply if it's 1BF (that uses different rules)
-    if is_grade_1bf(grade):
-        return
-        
-    logging.info("Applying Grade 1 (TABLE 4) rules to results")
-    
-    # Get dimensions
-    dimensions = results.get('dimensions', {})
-    id_val = None
-    
-    for id_key in ['id1', 'ID1', 'ID', 'id', 'id_nominal_mm']:
-        val = dimensions.get(id_key) or results.get(id_key)
-        if val and str(val).strip().lower() != 'not found':
-            try:
-                if isinstance(val, str):
-                    val_clean = re.sub(r'[^\d.-]', '', val)
-                    id_val = float(val_clean)
-                else:
-                    id_val = float(val)
-                logging.info(f"Found valid ID value {id_val} from key {id_key}")
-                break
-            except (ValueError, TypeError) as e:
-                logging.warning(f"Failed to parse ID value '{val}': {e}")
-                continue
-    
-    if id_val is not None:
-        logging.info(f"Processing Grade 1 dimensions for ID: {id_val}mm")
-        
-        # Get matching tolerances from TABLE 4
-        tol_rec = get_grade1_tolerances(id_val)
-        logging.info(f"Grade 1 tolerance lookup result: {tol_rec}")
-        if tol_rec and tol_rec.get('id_tolerance_mm') is not None:
-            # Set tolerances from TABLE 4
-            results['id_tolerance_mm'] = float(tol_rec['id_tolerance_mm'])
-            results['thickness_mm'] = float(tol_rec['wall_mm'])
-            results['thickness_tolerance_mm'] = float(tol_rec['wall_tolerance_mm'])
-            results['dimension_source'] = 'MPAPS F-30/F-1 TABLE 4 (Grade 1)'
-            logging.info(f"Applied Grade 1 TABLE 4 tolerances: ID tol=±{tol_rec['id_tolerance_mm']}, "
-                        f"wall={tol_rec['wall_mm']}±{tol_rec['wall_tolerance_mm']}")
-        else:
-            logging.warning("No Grade 1 tolerance record found")
-    else:
-        logging.warning("No valid ID value found for Grade 1 dimension calculation")
+    return '1BF' in grade_upper.replace(' ', '') or 'GRADE1BF' in grade_upper.replace(' ', '') or 'GRADE1-BF' in grade_upper.replace(' ', '')
+    return any(g in grade_upper for g in ['1BF', 'BF'])
 
 def apply_grade_1bf_rules(results: Dict[str, Any]) -> None:
     """
@@ -1268,9 +1156,8 @@ def apply_grade_2bf_rules(results: Dict[str, Any]) -> None:
 #######################
 # Backwards-compatible aliases (fix ImportError seen in debug_utils)
 #######################
-# Use the existing table/list names as the expected private names.
-# These aliases avoid ImportError and keep a single source-of-truth.
-_F30_BF_TABLE = GRADE_1_BF_TOLERANCE_ENTRIES
+# Point the debug-compatible alias to the TABLE_8 6-field entries (nom_in, nom_mm, id_tol, od_mm, wall_mm, wall_tol)
+_F30_BF_TABLE = TABLE_8_GRADE_1BF_DATA
 _F30_BF_RANGES = TABLE_8_GRADE_1BF_RANGES
 
 def get_burst_pressure() -> float:
