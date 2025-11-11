@@ -238,6 +238,14 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             specification += f" {grade}"
 
         # Post-process results to ensure fields are properly formatted
+        # **PATCH 2B**: Ensure MPAPS values have been applied (populate thickness, tolerances, etc.)
+        try:
+            from mpaps_utils import process_mpaps_dimensions
+            analysis_results = process_mpaps_dimensions(analysis_results or {})
+            logging.debug("process_mpaps_dimensions called successfully before ensure_result_fields")
+        except Exception as e:
+            logging.debug(f"process_mpaps_dimensions failed inside excel generator: {e}", exc_info=True)
+
         analysis_results = ensure_result_fields(analysis_results)
         
         # Get formatted values with proper handling of N/A

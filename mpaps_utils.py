@@ -117,30 +117,70 @@ def process_mpaps_dimensions(result: dict) -> dict:
     canonical = canonical_standard(std_raw)
     result['standard_canonical'] = canonical
 
-    # try numeric ID
-    id_val = result.get('id_nominal_mm')
-    try:
-        if id_val is not None:
-            id_val = float(id_val)
-            result['id_nominal_mm'] = id_val
-    except Exception:
-        id_val = None
+    # --- Find ID value from any plausible source (top-level, dimensions dict, raw text)
+    id_val = None
+    
+    # 1) top-level numeric fields
+    for k in ('id_nominal_mm', 'id1', 'ID1', 'ID', 'id', 'nominal_id_mm'):
+        v = result.get(k)
+        if v not in (None, '', 'Not Found'):
+            try:
+                if isinstance(v, str):
+                    v_clean = re.sub(r'[^\d\.\-]', '', v)
+                    id_val = float(v_clean)
+                else:
+                    id_val = float(v)
+                break
+            except Exception:
+                id_val = None
+    
+    # 2) dimensions dict (if still None)
+    if id_val is None:
+        dims = result.get('dimensions', {}) or {}
+        for k in ('id1', 'ID1', 'id', 'ID', 'nominal_id_mm'):
+            v = dims.get(k)
+            if v not in (None, '', 'Not Found'):
+                try:
+                    if isinstance(v, str):
+                        v_clean = re.sub(r'[^\d\.\-]', '', v)
+                        id_val = float(v_clean)
+                    else:
+                        id_val = float(v)
+                    break
+                except Exception:
+                    id_val = None
 
-    # 1) If standard is explicitly MPAPS F-6032 -> use TABLE 1 logic (no wall tol)
-    if canonical == 'MPAPS F-6032' and id_val is not None:
+    # 3) fallback: parse raw_text/ocr_text
+    if id_val is None:
+        raw_text = result.get('raw_text') or result.get('ocr_text') or result.get('text') or ''
+        if raw_text:
+            m = re.search(r'HOSE\s+ID\s*[=:]?\s*([\d\.]+)', raw_text, re.IGNORECASE)
+            if m:
+                try:
+                    id_val = float(m.group(1))
+                except Exception:
+                    id_val = None
+
+    # If we still don't have an ID, nothing to do — return unchanged (caller will show N/A)
+    if id_val is None:
+        return result
+
+    # normalize the id_value onto result for downstream use
+    result['id_nominal_mm'] = float(id_val)
+
+    # 1) If canonical standard explicitly MPAPS F-6032 -> use TABLE 1 logic
+    if canonical == 'MPAPS F-6032':
         result = apply_mpaps_f6032_dimensions(result, id_val)
         return result
 
-    # 2) If standard is MPAPS F-30 (or F-1 mapped to F-30), apply F-30/F-1 rules
-    if canonical == 'MPAPS F-30' and id_val is not None:
+    # 2) If canonical standard is MPAPS F-30 (or F-1 mapped to F-30), apply F-30/F-1 rules
+    if canonical == 'MPAPS F-30':
         # normalize grade string e.g. "1BF", "1B", "1"
         g = (grade_raw or "").upper().replace(' ', '').replace('-', '')
-        # handle "GRADE1BF" etc
         g = re.sub(r'GRADE', '', g)
 
         # If Grade 1 or 1BF -> use Grade1/BF table entry (TABLE 4 / TABLE 8 semantics)
         if g.startswith('1') or '1B' in g or '1BF' in g:
-            # Use helper that already knows TABLE_8/ TABLE_4 semantics
             try:
                 grade_entry = get_grade1bf_tolerances(id_val)
             except Exception:
@@ -170,18 +210,16 @@ def process_mpaps_dimensions(result: dict) -> dict:
                     except Exception:
                         pass
 
-                # mark where values came from
                 dim_source_str = 'MPAPS F-30/F-1 TABLE 4/8 (Grade 1/BF)'
                 result.setdefault('dimension_sources', []).append(dim_source_str)
-                result['dimension_source'] = dim_source_str  # Also set singular for Patch 2 check
+                result['dimension_source'] = dim_source_str
 
             return result
 
-        # For other grades in F-30, you can implement TABLE III/IV as before.
-        # (Keep existing F-30 burst-pressure logic, etc.)
+        # (Other grades under F-30 will be handled by apply_mpaps_f30_f1_rules later)
         return result
 
-    # 3) Fallback: not enough info or unknown standard -> return unchanged
+    # No change for other standards
     return result
 
 def normalize_standard_and_grade(standard_raw: str, grade_raw: str):
