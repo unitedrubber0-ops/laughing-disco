@@ -85,6 +85,7 @@ def canonical_standard(standard_raw: str) -> str:
     """
     Return canonical standard identity strings:
       returns 'MPAPS F-6032', 'MPAPS F-30', 'MPAPS F-1', or the cleaned input.
+    NOTE: Map F-1 to F-30 (prefer F-30) to avoid accidental selection of F-6032 rules.
     """
     if not standard_raw:
         return ''
@@ -93,10 +94,12 @@ def canonical_standard(standard_raw: str) -> str:
     s = re.sub(r'\s+', ' ', s)
     if 'F-6032' in s or 'F6032' in s:
         return 'MPAPS F-6032'
+    # Prefer mapping F-1 to F-30 when drawing references both or when F-1 appears by itself
     if 'F-30' in s or 'F30' in s:
         return 'MPAPS F-30'
     if 'F-1' in s or 'F1' in s:
-        return 'MPAPS F-1'
+        # treat F-1 as F-30 per internal policy / drawing note
+        return 'MPAPS F-30'
     return s
 
 def process_mpaps_dimensions(result: dict):
@@ -118,8 +121,10 @@ def process_mpaps_dimensions(result: dict):
         
     # Handle F-30 standard specific processing - leave existing logic
     if standard == 'MPAPS F-30':
-        # process with existing F-30 dimension rules
-        pass
+        # call any F-30 specific processing functions in your pipeline as needed
+        # e.g., set dimension_source to table 4/8 depending on grade
+        result['dimension_source'] = 'MPAPS F-30 (TABLE lookup)'
+        return result
     
     return result
 
@@ -134,7 +139,8 @@ def normalize_standard_and_grade(standard_raw: str, grade_raw: str):
     elif 'F-30' in std or 'F30' in std:
         std = 'MPAPS F-30'
     elif 'F-1' in std or 'F1' in std:
-        std = 'MPAPS F-1'
+        # treat F-1 as F-30
+        std = 'MPAPS F-30'
     else:
         std = std  # keep what we got
     # grade: remove extra spaces and OCR noise, convert "GRADE 1 B" -> "1B"
@@ -1152,6 +1158,85 @@ def apply_grade_2bf_rules(results: Dict[str, Any]) -> None:
                 logging.warning(f"No Grade 2BF dimension match found for ID {id_val}mm")
     else:
         logging.warning("No valid ID value found for Grade 2BF dimension calculation")
+
+#######################
+# Grade 1 BF tolerance helper
+#######################
+GRADE_1_BF_TOLERANCE_ENTRIES = [
+    # (nominal_in, actual_id_mm, id_tol_mm, wall_mm, wall_tol_mm)
+    ('5/8',  15.1, 0.5, 4.95, 0.8),
+    ('3/4',  18.4, 0.5, 4.95, 0.8),
+    ('7/8',  21.3, 0.5, 4.95, 0.8),
+    ('1',    24.6, 0.5, 4.95, 0.8),
+    ('>1.0-2.0', 38.4, 0.5, 4.95, 0.8),  # For ID range >26 to <50.8 mm
+    ('2.0-2.5', 56.6, 0.5, 5.35, 0.8)     # For ID range ≥50.8 to <63.5 mm
+]
+
+def get_grade1bf_tolerances(id_value_mm: float) -> dict:
+    """
+    Return a tolerance record for Grade 1 (EPDM/PREMIUM) SUFFIX BF hose
+    using TABLE 8 logic with exact matches and ranges.
+    """
+    try:
+        id_val = float(id_value_mm)
+    except Exception:
+        logging.error(f"Invalid ID value: {id_value_mm}")
+        return {
+            'nominal_in': None,
+            'nominal_id_mm': None,
+            'id_tolerance_mm': None,
+            'wall_mm': None,
+            'wall_tolerance_mm': None,
+            'difference_mm': None
+        }
+
+    # Handle special ranges first
+    if 50.8 <= id_val < 63.5:
+        return {
+            'nominal_in': '2.0-2.5',
+            'nominal_id_mm': id_val,
+            'id_tolerance_mm': 0.5,
+            'wall_mm': 5.35,
+            'wall_tolerance_mm': 0.8,
+            'difference_mm': 0.0
+        }
+    elif 26.0 <= id_val < 50.8:
+        return {
+            'nominal_in': '>1.0-2.0',
+            'nominal_id_mm': id_val,
+            'id_tolerance_mm': 0.5,
+            'wall_mm': 4.95,
+            'wall_tolerance_mm': 0.8,
+            'difference_mm': 0.0
+        }
+
+    # find nearest entry by absolute difference for standard sizes
+    best = None
+    best_diff = float('inf')
+    for entry in GRADE_1_BF_TOLERANCE_ENTRIES:
+        nominal_in, nominal_id_mm, id_tol, wall_mm, wall_tol = entry
+        if nominal_id_mm is None:
+            continue
+        diff = abs(nominal_id_mm - id_val)
+        if diff < best_diff:
+            best_diff = diff
+            best = {
+                'nominal_in': nominal_in,
+                'nominal_id_mm': nominal_id_mm,
+                'id_tolerance_mm': id_tol,
+                'wall_mm': wall_mm,
+                'wall_tolerance_mm': wall_tol,
+                'difference_mm': diff
+            }
+
+    return best or {
+        'nominal_in': None,
+        'nominal_id_mm': None,
+        'id_tolerance_mm': None,
+        'wall_mm': None,
+        'wall_tolerance_mm': None,
+        'difference_mm': None
+    }
 
 #######################
 # Backwards-compatible aliases (fix ImportError seen in debug_utils)

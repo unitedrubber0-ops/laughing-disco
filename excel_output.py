@@ -1,5 +1,9 @@
 """
 Enhanced Excel output generation with improved formatting and data handling.
+Patched to:
+ - Use mpaps_utils.get_grade1bf_tolerances() for wall thickness tolerance when appropriate
+ - Avoid hardcoded default thickness tolerance of 0.25 mm
+ - Compute and write Development Length using safe_development_length()
 """
 import pandas as pd
 import logging
@@ -11,6 +15,9 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from coordinate_extraction import validate_coords_list, polyline_length_from_coords, safe_development_length
 from openpyxl.utils import get_column_letter
+
+# NEW: import mpaps_utils to query MPAPS tables for tolerances
+import mpaps_utils
 
 def guarantee_and_format_results(results):
     # results: list of dicts
@@ -44,25 +51,59 @@ def guarantee_and_format_results(results):
         else:
             rr['id_formatted'] = None
 
-        # thickness fallback computed if missing
-        odn = rr.get('od_nominal_mm')
+        # od nominal and tolerance
+        odn = rr.get('od_nominal_mm') or rr.get('od1') or rr.get('OD')
+        odt = rr.get('od_tolerance_mm')
         try:
             if odn is not None:
                 odn = float(odn)
         except Exception:
             odn = None
         rr['od_nominal_mm'] = odn
-        if rr.get('thickness_mm') is None and odn is not None and idn is not None:
+        rr['od_tolerance_mm'] = float(odt) if odt is not None else None
+        
+        # Thickness: prefer explicit, else compute from OD/ID
+        # Avoid hardcoded fallback tolerance; try to fetch from mpaps tables if available
+        thickness = rr.get('thickness_mm') or rr.get('thickness')
+        thickness_tol = rr.get('thickness_tolerance_mm')
+        try:
+            if thickness is not None and thickness != 'Not Found':
+                thickness = float(thickness)
+        except Exception:
+            thickness = None
+
+        if thickness is None and odn is not None and idn is not None:
             try:
-                rr['thickness_mm'] = round((odn - idn) / 2.0, 3)
-                rr['thickness_tolerance_mm'] = rr.get('thickness_tolerance_mm') or 0.25
+                thickness = round((odn - idn) / 2.0, 3)
             except Exception:
-                rr['thickness_mm'] = None
+                thickness = None
+
+        # If thickness tolerance is not provided, try to get it from MPAPS Grade 1 BF table
+        if (thickness_tol is None or thickness_tol == '') and rr.get('id_nominal_mm') is not None:
+            try:
+                # Query MPAPS grade 1 BF tolerances (this returns a dict with wall_tolerance_mm when applicable)
+                mpaps_tol = mpaps_utils.get_grade1bf_tolerances(rr['id_nominal_mm'])
+                wall_tol = mpaps_tol.get('wall_tolerance_mm') if isinstance(mpaps_tol, dict) else None
+                # Accept non-zero numeric wall_tol
+                if wall_tol is not None and (isinstance(wall_tol, (int, float))):
+                    thickness_tol = float(wall_tol)
+            except Exception:
+                thickness_tol = thickness_tol
+
+        # Keep thickness tolerance if still None (leave as None -> Excel will show "N/A")
+        try:
+            if thickness_tol is not None:
+                thickness_tol = float(thickness_tol)
+        except Exception:
+            thickness_tol = None
+
+        rr['thickness_mm'] = thickness
+        rr['thickness_tolerance_mm'] = thickness_tol
 
         # final display fields used in Excel
         rr['id_display'] = rr['id_formatted'] or "N/A"
         rr['od_display'] = (f"{odn:.2f} ± {rr['od_tolerance_mm']:.2f} mm" if odn is not None and rr.get('od_tolerance_mm') is not None else ("N/A" if odn is None else f"{odn:.2f} mm"))
-        rr['thickness_display'] = (f"{rr['thickness_mm']:.3f} ± {rr.get('thickness_tolerance_mm'):.2f} mm" if rr.get('thickness_mm') is not None else "N/A")
+        rr['thickness_display'] = (f"{rr['thickness_mm']:.3f} ± {rr.get('thickness_tolerance_mm'):.2f} mm" if rr.get('thickness_mm') is not None and rr.get('thickness_tolerance_mm') is not None else (f"{rr['thickness_mm']:.3f} mm" if rr.get('thickness_mm') is not None else "N/A"))
         rr['burst_display'] = rr['burst_pressure_formatted'] or "N/A"
 
         out.append(rr)
