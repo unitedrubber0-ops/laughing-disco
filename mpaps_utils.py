@@ -664,6 +664,7 @@ def apply_mpaps_f6032_rules(results: Dict[str, Any]) -> None:
                     logging.warning(f"Fallback parse failed for ID value {m.group(1)}: {e}")
     
     # For MPAPS F-6032, use TABLE 1 for dimensions and tolerances
+    table_data = None  # Initialize to None (will be set if ID found)
     if id_val is not None:
         logging.info(f"Processing MPAPS F-6032 dimensions for ID: {id_val}mm")
         
