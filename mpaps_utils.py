@@ -84,7 +84,8 @@ MAX_ACCEPT_DIFF_MM = 0.5  # Allow up to 0.5mm difference for practical measureme
 def canonical_standard(standard_raw: str) -> str:
     """
     Return canonical standard identity strings:
-      returns 'MPAPS F-6032', 'MPAPS F-30', 'MPAPS F-1', or the cleaned input.
+      - Returns 'MPAPS F-6032', 'MPAPS F-30', or the cleaned input
+      - Maps F-1 to F-30 (per Table 4 mapping)
     """
     if not standard_raw:
         return ''
@@ -96,31 +97,89 @@ def canonical_standard(standard_raw: str) -> str:
     if 'F-30' in s or 'F30' in s:
         return 'MPAPS F-30'
     if 'F-1' in s or 'F1' in s:
-        return 'MPAPS F-1'
+        # treat F-1 as F-30 (per your Table 4 mapping)
+        return 'MPAPS F-30'
     return s
 
-def process_mpaps_dimensions(result: dict):
-    """Process dimensions according to MPAPS standards"""
-    if not result:
+def process_mpaps_dimensions(result: dict) -> dict:
+    """
+    Populate MPAPS-driven nominal/tolerance fields and prefer F-30/F-1 table values
+    for Grade 1 / 1BF hoses (ID tol = ±0.50 mm; wall tol = ±0.80 mm).
+    Will only apply F-6032 rules if the canonical standard explicitly equals MPAPS F-6032.
+    Mutates and returns result.
+    """
+    if not isinstance(result, dict):
         return result
-    
-    # Get normalized standard - use canonical to ensure proper routing
-    standard = canonical_standard(result.get('standard', ''))
-    
-    # Get nominal ID - needed for both F-30 and F-6032 lookups
-    id_value = result.get('id_nominal_mm')
-    if not id_value:
-        return result  # can't process without ID
-        
-    # F-6032: use TABLE 1 exclusively, with NO wall thickness tolerance
-    if standard == 'MPAPS F-6032':
-        return apply_mpaps_f6032_dimensions(result, id_value)
-        
-    # Handle F-30 standard specific processing - leave existing logic
-    if standard == 'MPAPS F-30':
-        # process with existing F-30 dimension rules
-        pass
-    
+
+    # normalize standard and grade
+    std_raw = result.get('standard', '') or ''
+    grade_raw = result.get('grade', '') or ''
+    canonical = canonical_standard(std_raw)
+    result['standard_canonical'] = canonical
+
+    # try numeric ID
+    id_val = result.get('id_nominal_mm')
+    try:
+        if id_val is not None:
+            id_val = float(id_val)
+            result['id_nominal_mm'] = id_val
+    except Exception:
+        id_val = None
+
+    # 1) If standard is explicitly MPAPS F-6032 -> use TABLE 1 logic (no wall tol)
+    if canonical == 'MPAPS F-6032' and id_val is not None:
+        result = apply_mpaps_f6032_dimensions(result, id_val)
+        return result
+
+    # 2) If standard is MPAPS F-30 (or F-1 mapped to F-30), apply F-30/F-1 rules
+    if canonical == 'MPAPS F-30' and id_val is not None:
+        # normalize grade string e.g. "1BF", "1B", "1"
+        g = (grade_raw or "").upper().replace(' ', '').replace('-', '')
+        # handle "GRADE1BF" etc
+        g = re.sub(r'GRADE', '', g)
+
+        # If Grade 1 or 1BF -> use Grade1/BF table entry (TABLE 4 / TABLE 8 semantics)
+        if g.startswith('1') or '1B' in g or '1BF' in g:
+            # Use helper that already knows TABLE_8/ TABLE_4 semantics
+            try:
+                grade_entry = get_grade1bf_tolerances(id_val)
+            except Exception:
+                grade_entry = None
+
+            if isinstance(grade_entry, dict):
+                # ID tolerance -> ensure ±0.5 (use table value)
+                id_tol = grade_entry.get('id_tolerance_mm')
+                if id_tol is not None:
+                    result['id_tolerance_mm'] = float(id_tol)
+
+                # Wall thickness nominal -> set to table wall if missing
+                wall_mm = grade_entry.get('wall_mm')
+                if wall_mm is not None and (result.get('thickness_mm') in (None, '', 'Not Found')):
+                    result['thickness_mm'] = float(wall_mm)
+
+                # Wall thickness tolerance -> set to table wall_tol (±0.8)
+                wall_tol = grade_entry.get('wall_tolerance_mm')
+                if wall_tol is not None:
+                    result['thickness_tolerance_mm'] = float(wall_tol)
+
+                # If OD missing, compute OD = ID + 2*thickness
+                if result.get('od_nominal_mm') in (None, '', 'Not Found'):
+                    try:
+                        if result.get('id_nominal_mm') is not None and result.get('thickness_mm') is not None:
+                            result['od_nominal_mm'] = round(float(result['id_nominal_mm']) + 2.0 * float(result['thickness_mm']), 3)
+                    except Exception:
+                        pass
+
+                # mark where values came from
+                result.setdefault('dimension_sources', []).append('MPAPS F-30/F-1 TABLE 4/8 (Grade 1/BF)')
+
+            return result
+
+        # For other grades in F-30, you can implement TABLE III/IV as before.
+        # (Keep existing F-30 burst-pressure logic, etc.)
+        return result
+
+    # 3) Fallback: not enough info or unknown standard -> return unchanged
     return result
 
 def normalize_standard_and_grade(standard_raw: str, grade_raw: str):
