@@ -227,6 +227,8 @@ TABLE_IV_BURST_PRESSURE = [
 ]
 
 # TABLE 4: Grade 1 (EPDM/Premium) Formed Hose Dimensions - MPAPS F-30/F-1
+# Updated per MPAPS F-1 Table 4 (Grade 1 EPDM/Premium)
+# 1" nominal (24.6 mm) -> wall thickness 4.30 mm, wall tolerance ±0.80 mm
 TABLE_4_GRADE_1_DATA = [
     # (nominal_id_in, id_mm, id_tol_mm, wall_mm, wall_tol_mm)
     ('1/4', 5.9, 0.5, 4.95, 0.65),
@@ -235,7 +237,7 @@ TABLE_4_GRADE_1_DATA = [
     ('5/8', 15.1, 0.5, 4.95, 0.65),
     ('3/4', 18.4, 0.5, 4.95, 0.65),
     ('7/8', 21.3, 0.5, 4.95, 0.65),
-    ('1', 24.6, 0.5, 4.95, 0.65),
+    ('1', 24.6, 0.5, 4.30, 0.80),  # Per TABLE 4: 1" -> 4.30 mm wall, ±0.80 mm tol
     ('>1.0-2.0', None, 0.5, 4.95, 0.65),  # For ID range >25.4 - 50.8 mm
     ('>2.0-2.5', None, 0.5, 4.95, 0.65)   # For ID range >50.8 - 62.7 mm
 ]
@@ -247,12 +249,14 @@ TABLE_4_GRADE_1_RANGES = [
 ]
 
 # TABLE 8: Grade 1 (EPDM/Premium) Suffix BF Hose Dimensions - MPAPS F-30/F-1
+# Updated per MPAPS F-1 Table 8 (Grade 1 BF)
+# 1" nominal (24.6 mm) -> wall 4.30 mm, OD = 24.6 + 2(4.30) = 33.20 mm, wall tol ±0.80 mm
 TABLE_8_GRADE_1BF_DATA = [
     # (nominal_id_in, id_mm, id_tol_mm, od_mm, wall_mm, wall_tol_mm)
     ('5/8', 15.1, 0.5, 28.3, 4.95, 0.195),
     ('3/4', 18.4, 0.5, 28.3, 4.95, 0.195),
     ('7/8', 21.3, 0.5, 29.7, 4.95, 0.195),
-    ('1', 24.6, 0.5, 34.5, 4.95, 0.195),
+    ('1', 24.6, 0.5, 33.20, 4.30, 0.80),  # Per TABLE 8: 1" -> OD 33.20 mm, wall 4.30 mm, tol ±0.80
     ('>1.0-2.0', None, 0.5, None, 5.35, 0.211),  # For ID range >25.4 - 50.8 mm
     ('>2.0-2.5', None, 0.5, None, 5.35, 0.211)   # For ID range >50.8 - 62.7 mm
 ]
@@ -266,13 +270,13 @@ TABLE_8_GRADE_1BF_RANGES = [
 # ---------------------------
 # Grade 1 BF tolerance helper
 # ---------------------------
-# Based on TABLE 8 (Grade 1BF Dimensions and tolerances)
+# Based on TABLE 8 (Grade 1BF Dimensions and tolerances) - Updated per MPAPS F-1 Table 8
 GRADE_1_BF_TOLERANCE_ENTRIES = [
     # (nominal_in, actual_id_mm, id_tol_mm, wall_mm, wall_tol_mm)
     ('5/8',  15.1, 0.5, 4.95, 0.8),
     ('3/4',  18.4, 0.5, 4.95, 0.8),
     ('7/8',  21.3, 0.5, 4.95, 0.8),
-    ('1',    24.6, 0.5, 4.95, 0.8),
+    ('1',    24.6, 0.5, 4.30, 0.8),    # Per TABLE 8: 1" uses wall 4.30 mm with tol ±0.80 mm
     ('>1.0-2.0', 38.4, 0.5, 4.95, 0.8),  # For ID range >26 to <50.8 mm
     ('2.0-2.5', 56.6, 0.5, 5.35, 0.8)     # For ID range ≥50.8 to <63.5 mm
 ]
