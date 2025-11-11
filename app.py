@@ -3368,6 +3368,10 @@ def upload_and_analyze():
         # Generate Excel report if helper function exists
         try:
             if 'generate_excel_sheet' in globals():
+                # Finalize analysis results before Excel generation
+                from mpaps_utils import process_mpaps_dimensions
+                final_results = process_mpaps_dimensions(final_results)
+                
                 excel_file = generate_corrected_excel_sheet(final_results, final_results.get("dimensions", {}), coordinates)
                 excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
                 final_results["excel_data"] = excel_b64
@@ -3704,6 +3708,10 @@ def detect_mpaps_standard(final_results):
         # Generate Excel report if helper function exists
         try:
             if 'generate_excel_sheet' in globals():
+                # Finalize analysis results before Excel generation
+                from mpaps_utils import process_mpaps_dimensions
+                final_results = process_mpaps_dimensions(final_results)
+                
                 excel_file = generate_corrected_excel_sheet(final_results, final_results.get("dimensions", {}), coordinates)
                 excel_b64 = base64.b64encode(excel_file.getvalue()).decode('utf-8')
                 final_results["excel_data"] = excel_b64
