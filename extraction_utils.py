@@ -6,28 +6,19 @@ import math
 import logging
 from typing import List, Tuple, Optional
 
-# Initialize module logger
-logger = logging.getLogger(__name__)
-
-# Base components for ring pattern matching
-_RING_COMPONENTS = {
-    'quantity': r'(?:(\d+)\s*(?:X|TIMES|PCS)?)',
-    'type': r'(?:RING(?:S)?|REINFORCEMENT)',
-    'position': r'(?:@\s*\d+|INNER|OUTER|MIDDLE)',
-    'material': r'(?:STAINLESS\s*(?:STEEL|WIRE)|[A-Z]+\s*STEEL|[A-Z]{2,4})'
-}
-
-# Dynamic patterns built from components
+# Patterns for ring counts/types
 _RING_COUNT_PATTERNS = [
-    fr"{_RING_COMPONENTS['quantity']}\s*{_RING_COMPONENTS['type']}",
-    fr"{_RING_COMPONENTS['type']}\s*{_RING_COMPONENTS['quantity']}",
-    fr"(?:NO\.?\s*OF\s*)?{_RING_COMPONENTS['type']}\s*[:=\-]?\s*{_RING_COMPONENTS['quantity']}"
+    r'RINGS?\s*[:=\-]?\s*(\d+)',               # RINGS: 2
+    r'\b(\d+)\s*R(?:INGS?)?\b',                # 2R or 2 RINGS
+    r'NO\.?\s*OF\s*RINGS\s*[:=\-]?\s*(\d+)',   # No. of rings: 2
+    r'RING\s*COUNT\s*[:=\-]?\s*(\d+)',
+    r'RINGS?\s*\(\s*(\d+)\s*\)',               # RINGS(2)
 ]
 
 _RING_TYPE_PATTERNS = [
-    fr"{_RING_COMPONENTS['position']}\s*[:=\-]?\s*{_RING_COMPONENTS['material']}",
-    fr"{_RING_COMPONENTS['type']}\s*[:=\-]?\s*{_RING_COMPONENTS['material']}",
-    fr"{_RING_COMPONENTS['material']}\s*{_RING_COMPONENTS['type']}"
+    r'\b(INNER|OUTER|MID|RING|RINGS|SEAL)\s*[:=\-]\s*([A-Z0-9\-\s/]+)',   # INNER: NBR
+    r'\b(RING|RINGS)\b[^\n:]*[:\-\n]\s*([A-Z0-9,\/\-\s]+)',              # RINGS: STEEL, NBR
+    r'\b(INNER|OUTER)[\s:]*([A-Z0-9\-]+)\b'                               # INNER NBR
 ]
 
 # Patterns for explicit coordinates and points
@@ -46,75 +37,68 @@ _DEV_LENGTH_PATTERNS = [
 
 def extract_rings_info(text: str) -> dict:
     """
-    Extract rings information from text.
-    Returns a dict with keys: count, types, raw_matches.
+    Return {'count': Optional[int], 'types': List[str], 'raw_matches': List[(kind, snippet)]}
+    Will set count = len(types) if count not found and types found.
     """
-    result = {
-        "count": None,
-        "types": [],
-        "raw_matches": []
-    }
-    try:
-        if not text:
-            return result
-            
-        t = str(text).upper()
-        
-        # Look for explicit rings mentions
-        rings_patterns = [
-            r'RINGS?\s*:\s*([^\n.,;]+(?:[.,;]\s*[^\n.,;]+)*)',
-            r'RINGS?\s*-\s*([^\n.,;]+(?:[.,;]\s*[^\n.,;]+)*)',
-            r'(\d+\s*X\s*RING[^\n.,;]*(?:[.,;]\s*[^\n.,;]+)*)',
-            r'(RING\s*REINFORCEMENT[^\n.,;]*(?:[.,;]\s*[^\n.,;]+)*)',
-        ]
-        
-        for pattern in rings_patterns:
-            matches = re.finditer(pattern, t, re.IGNORECASE)
-            for m in matches:
-                # Safely extract matched text
-                if m.lastindex and m.lastindex >= 1:
-                    val = m.group(1).strip()
-                else:
-                    val = m.group(0).strip()
-                
-                if not val:
-                    continue
-                    
-                # Clean the value
-                val = re.sub(r'\s+', ' ', val)
-                val = val.strip(' ,.-;')
-                
-                # Only add if meaningful
-                if len(val) > 3:
-                    result["raw_matches"].append({
-                        "text": val,
-                        "pattern": pattern
-                    })
-                    
-                    # Try to extract count
-                    count_match = re.search(r'(\d+)\s*X', val, re.IGNORECASE)
-                    if count_match:
-                        try:
-                            result["count"] = int(count_match.group(1))
-                        except (ValueError, TypeError):
-                            pass
-                    
-                    # Extract type information
-                    if 'REINFORCEMENT' in val:
-                        result["types"].append('REINFORCEMENT')
-                    if 'STAINLESS' in val:
-                        result["types"].append('STAINLESS')
-                    if 'WIRE' in val:
-                        result["types"].append('WIRE')
-        
-        # Deduplicate types while preserving order
-        result["types"] = list(dict.fromkeys(result["types"]))
-        
-        return result
-        
-    except Exception as e:
-        logger.error(f"Error in extract_rings_info: {e}")
-        return result
+    t = (text or "").upper()
+    result = {'count': None, 'types': [], 'raw_matches': []}
+
+    # 1) count
+    for pat in _RING_COUNT_PATTERNS:
+        m = re.search(pat, t, flags=re.IGNORECASE)
+        if m:
+            try:
+                result['count'] = int(m.group(1))
+                result['raw_matches'].append(('count', m.group(0)))
+                break
+            except Exception:
+                pass
+
+    # 2) types (explicit lines)
+    for pat in _RING_TYPE_PATTERNS:
+        for m in re.finditer(pat, t, flags=re.IGNORECASE):
+            raw = m.group(0).strip()
+            # Most patterns put label in group1, value in group2
+            if len(m.groups()) >= 2:
+                val = m.group(2).strip()
+            else:
+                val = m.group(1).strip()
+            parts = [p.strip() for p in re.split(r'[,/;]', val) if p.strip()]
+            for p in parts:
+                # normalize spacing, uppercase
+                p_clean = re.sub(r'\s+', ' ', p).strip()
+                if p_clean:
+                    # store as e.g. "INNER:NBR" when possible
+                    label = (m.group(1) or '').strip().upper()
+                    if label and not p_clean.startswith(label):
+                        stored = f"{label}:{p_clean}"
+                    else:
+                        stored = p_clean
+                    result['types'].append(stored)
+            result['raw_matches'].append(('type', raw))
+
+    # 3) tokens like INNER:NBR anywhere
+    token_match = re.findall(r'\b(INNER|OUTER|MID|RING)[\s:\-]*([A-Z0-9\-/]+)\b', t)
+    for tok in token_match:
+        label, v = tok
+        result['types'].append(f"{label}:{v}")
+        result['raw_matches'].append(('token', f"{label}:{v}"))
+
+    # dedupe preserving order
+    seen = set()
+    deduped = []
+    for v in result['types']:
+        if v not in seen:
+            seen.add(v)
+            deduped.append(v)
+    result['types'] = deduped
+
+    # If we didn't find a numeric count but have types, set count = len(types)
+    if result['count'] is None and result['types']:
+        result['count'] = len(result['types'])
+        result['raw_matches'].append(('inferred_count', f"inferred from types ({len(result['types'])})"))
+
+    return result
 
 def extract_coordinates(text: str) -> List[Tuple[float, float]]:
     """
@@ -236,36 +220,3 @@ def snippet_around(text: str, match_pat: str) -> Optional[str]:
     start = max(0, m.start() - 120)
     end = min(len(text), m.end() + 120)
     return text[start:end]
-
-def debug_text_extraction(text: str) -> None:
-    """Debug function to see what text is available for extraction"""
-    logger.info("=== DEBUG TEXT EXTRACTION ===")
-    logger.info(f"Full text length: {len(text)}")
-    
-    # Look for ID-related patterns
-    id_indicators = [
-        'HOSE ID', 'ID', 'DIAMETER', '18.4', 'INSIDE'
-    ]
-    
-    for indicator in id_indicators:
-        if indicator in text.upper():
-            # Find context around the indicator
-            start = text.upper().find(indicator.upper())
-            if start != -1:
-                context = text[max(0, start-50):min(len(text), start+50)]
-                logger.info(f"Found '{indicator}' in context: ...{context}...")
-    
-    # Look for numeric values that could be dimensions
-    number_matches = re.finditer(r'\b\d+\.\d+\b', text)
-    numbers_found = []
-    for match in number_matches:
-        start = match.start()
-        context = text[max(0, start-25):min(len(text), start+25)]
-        numbers_found.append((match.group(0), context))
-    
-    if numbers_found:
-        logger.info("Found numeric values with context:")
-        for num, context in numbers_found:
-            logger.info(f"  {num}: ...{context.strip()}...")
-            
-    logger.info("=== END DEBUG ===")
