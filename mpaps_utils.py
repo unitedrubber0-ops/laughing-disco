@@ -182,37 +182,134 @@ def process_mpaps_dimensions(result: dict) -> dict:
         # If Grade 1 or 1BF -> use Grade1/BF table entry (TABLE 4 / TABLE 8 semantics)
         if g.startswith('1') or '1B' in g or '1BF' in g:
             try:
-                grade_entry = get_grade1bf_tolerances(id_val)
-            except Exception:
+                # Try primary exact lookup (existing helper)
                 grade_entry = None
+                try:
+                    grade_entry = get_grade1bf_tolerances(id_val)
+                except Exception:
+                    grade_entry = None
 
-            if isinstance(grade_entry, dict):
-                # ID tolerance -> ensure ±0.5 (use table value)
-                id_tol = grade_entry.get('id_tolerance_mm')
-                if id_tol is not None:
+                # Defensive fallback: if grade_entry is None, do nearest-nominal search in TABLE_8 and TABLE_4
+                if not isinstance(grade_entry, dict):
+                    logging.info(f"No direct Grade1/BF table match for ID={id_val}; attempting nearest-nominal/range lookup")
+                    # 1) try nearest nominal in TABLE_8_GRADE_1BF_DATA
+                    nearest = None
+                    nearest_diff = None
+                    for row in TABLE_8_GRADE_1BF_DATA:
+                        # row format: (nominal_in, id_mm, id_tol_mm, od_mm, wall_mm, wall_tol_mm)
+                        try:
+                            candidate_id = float(row[1]) if row[1] is not None else None
+                        except Exception:
+                            candidate_id = None
+                        if candidate_id is None:
+                            continue
+                        diff = abs(candidate_id - float(id_val))
+                        if nearest is None or diff < nearest_diff:
+                            nearest = row
+                            nearest_diff = diff
+
+                    # If nearest within MAX_ACCEPT_DIFF_MM, use it
+                    if nearest is not None and nearest_diff is not None and nearest_diff <= MAX_ACCEPT_DIFF_MM:
+                        logging.info(f"Nearest TABLE_8 match for ID {id_val}: nominal={nearest[1]}mm diff={nearest_diff:.3f}mm")
+                        # build grade_entry dict
+                        grade_entry = {
+                            'nominal_in': nearest[0],
+                            'nominal_id_mm': float(nearest[1]),
+                            'id_tolerance_mm': float(nearest[2]) if nearest[2] is not None else None,
+                            'od_mm': float(nearest[3]) if nearest[3] is not None else None,
+                            'wall_mm': float(nearest[4]) if nearest[4] is not None else None,
+                            'wall_tolerance_mm': float(nearest[5]) if nearest[5] is not None else None
+                        }
+
+                    # 2) if still no match, check TABLE_4 exact entries
+                    if not isinstance(grade_entry, dict):
+                        for row in TABLE_4_GRADE_1_DATA:
+                            try:
+                                candidate_id = float(row[1]) if row[1] is not None else None
+                            except Exception:
+                                candidate_id = None
+                            if candidate_id is None:
+                                continue
+                            diff = abs(candidate_id - float(id_val))
+                            if diff <= MAX_ACCEPT_DIFF_MM:
+                                logging.info(f"Nearest TABLE_4 match for ID {id_val}: nominal={candidate_id}mm diff={diff:.3f}mm")
+                                grade_entry = {
+                                    'nominal_in': row[0],
+                                    'nominal_id_mm': float(row[1]),
+                                    'id_tolerance_mm': float(row[2]) if row[2] is not None else None,
+                                    'wall_mm': float(row[3]) if row[3] is not None else None,
+                                    'wall_tolerance_mm': float(row[4]) if row[4] is not None else None
+                                }
+                                break
+
+                    # 3) If still not found, check ranges TABLE_4_GRADE_1_RANGES / TABLE_8_GRADE_1BF_RANGES
+                    if not isinstance(grade_entry, dict):
+                        idf = float(id_val)
+                        # Table 4 ranges
+                        for (min_mm, max_mm, wall_mm, wall_tol_mm, id_tol_mm) in TABLE_4_GRADE_1_RANGES:
+                            if min_mm <= idf <= max_mm:
+                                logging.info(f"ID {idf} falls in TABLE_4 range {min_mm}-{max_mm} mm -> wall {wall_mm} mm")
+                                grade_entry = {
+                                    'nominal_in': f'>{min_mm}-{max_mm}',
+                                    'nominal_id_mm': idf,
+                                    'id_tolerance_mm': float(id_tol_mm),
+                                    'wall_mm': float(wall_mm),
+                                    'wall_tolerance_mm': float(wall_tol_mm)
+                                }
+                                break
+                        # Table 8 ranges (if still None)
+                        if not isinstance(grade_entry, dict):
+                            for (min_mm, max_mm, wall_mm, wall_tol_mm) in TABLE_8_GRADE_1BF_RANGES:
+                                if min_mm <= idf <= max_mm:
+                                    logging.info(f"ID {idf} falls in TABLE_8 range {min_mm}-{max_mm} mm -> wall {wall_mm} mm")
+                                    grade_entry = {
+                                        'nominal_in': f'>{min_mm}-{max_mm}',
+                                        'nominal_id_mm': idf,
+                                        'id_tolerance_mm': 0.5,
+                                        'wall_mm': float(wall_mm),
+                                        'wall_tolerance_mm': float(wall_tol_mm)
+                                    }
+                                    break
+
+                # If we now have a grade_entry dict, populate fields
+                if isinstance(grade_entry, dict):
+                    # ID tolerance -> ensure ±0.5 if table provides it
+                    id_tol = grade_entry.get('id_tolerance_mm')
+                    if id_tol is None:
+                        id_tol = 0.5
                     result['id_tolerance_mm'] = float(id_tol)
 
-                # Wall thickness nominal -> set to table wall if missing
-                wall_mm = grade_entry.get('wall_mm')
-                if wall_mm is not None and (result.get('thickness_mm') in (None, '', 'Not Found')):
-                    result['thickness_mm'] = float(wall_mm)
+                    # Wall thickness nominal -> set to table wall
+                    wall_mm = grade_entry.get('wall_mm')
+                    if wall_mm is not None:
+                        result['thickness_mm'] = float(wall_mm)
 
-                # Wall thickness tolerance -> set to table wall_tol (±0.8)
-                wall_tol = grade_entry.get('wall_tolerance_mm')
-                if wall_tol is not None:
+                    # Wall thickness tolerance -> set to table wall_tol
+                    wall_tol = grade_entry.get('wall_tolerance_mm')
+                    if wall_tol is None:
+                        # default for Grade1 per Table 4 is ±0.80 for 1" entry; fallback to 0.8
+                        wall_tol = 0.8
                     result['thickness_tolerance_mm'] = float(wall_tol)
 
-                # If OD missing, compute OD = ID + 2*thickness
-                if result.get('od_nominal_mm') in (None, '', 'Not Found'):
-                    try:
-                        if result.get('id_nominal_mm') is not None and result.get('thickness_mm') is not None:
-                            result['od_nominal_mm'] = round(float(result['id_nominal_mm']) + 2.0 * float(result['thickness_mm']), 3)
-                    except Exception:
-                        pass
+                    # OD: either from grade_entry (TABLE_8) or compute from ID+2*thickness
+                    od_from_entry = grade_entry.get('od_mm')
+                    if od_from_entry is not None:
+                        result['od_nominal_mm'] = float(od_from_entry)
+                    else:
+                        try:
+                            if result.get('id_nominal_mm') is not None and result.get('thickness_mm') is not None:
+                                result['od_nominal_mm'] = round(float(result['id_nominal_mm']) + 2.0 * float(result['thickness_mm']), 3)
+                        except Exception:
+                            pass
 
-                dim_source_str = 'MPAPS F-30/F-1 TABLE 4/8 (Grade 1/BF)'
-                result.setdefault('dimension_sources', []).append(dim_source_str)
-                result['dimension_source'] = dim_source_str
+                    # record dimension source used
+                    ds = 'MPAPS F-30/F-1 TABLE 4/8 (Grade1 fallback)'
+                    result.setdefault('dimension_sources', []).append(ds)
+                    result['dimension_source'] = ds
+                else:
+                    logging.warning(f"Unable to determine Grade1 table entry for ID {id_val}; leaving thickness/ID tol unset")
+            except Exception as e:
+                logging.error(f"Error during Grade1 table fallback lookup: {e}", exc_info=True)
 
             return result
 
