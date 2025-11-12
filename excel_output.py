@@ -52,12 +52,20 @@ def guarantee_and_format_results(results):
         except Exception:
             odn = None
         rr['od_nominal_mm'] = odn
-        if rr.get('thickness_mm') is None and odn is not None and idn is not None:
+
+        provenance = rr.get('thickness_source')
+        # Only compute thickness if not set by authoritative table
+        if rr.get('thickness_mm') is None and odn is not None and idn is not None and provenance != 'TABLE-4/8 Grade-1 authoritative':
             try:
                 rr['thickness_mm'] = round((odn - idn) / 2.0, 3)
-                rr['thickness_tolerance_mm'] = rr.get('thickness_tolerance_mm') or 0.25
+                # Only set tolerance if not already set by table
+                if rr.get('thickness_tolerance_mm') is None:
+                    rr['thickness_tolerance_mm'] = 0.25
+                logging.debug(f"Computed thickness from OD/ID for part {rr.get('part_number','?')}: {rr['thickness_mm']} mm (fallback)")
             except Exception:
                 rr['thickness_mm'] = None
+        elif provenance == 'TABLE-4/8 Grade-1 authoritative':
+            logging.debug(f"Thickness for part {rr.get('part_number','?')} is authoritative from table: {rr['thickness_mm']} mm ± {rr.get('thickness_tolerance_mm')} mm")
 
         # final display fields used in Excel
         rr['id_display'] = rr['id_formatted'] or "N/A"
@@ -137,22 +145,29 @@ def ensure_result_fields(result: Dict) -> Dict:
     res['od_tolerance_mm'] = od_tol
     res['od_formatted'] = format_tolerance(od_nom, od_tol) or "N/A"
 
-    # Thickness: prefer explicit, else compute from OD/ID
+    # Thickness: prefer explicit, else compute from OD/ID (guarded against table overwrites)
     thickness = res.get('thickness_mm') or res.get('thickness')
     thickness_tol = res.get('thickness_tolerance_mm')
+    provenance_thickness = res.get('thickness_source')
     try:
         if thickness is not None and thickness != 'Not Found':
             thickness = float(thickness)
     except Exception:
         thickness = None
-    if thickness is None and od_nom is not None and id_nom is not None:
+    
+    # Only compute thickness if not already set by authoritative table
+    if thickness is None and od_nom is not None and id_nom is not None and provenance_thickness != 'TABLE-4/8 Grade-1 authoritative':
         try:
             thickness = round((od_nom - id_nom) / 2.0, 3)
-            # set a reasonable default tolerance if not supplied
+            # set a reasonable default tolerance if not supplied by table
             if thickness_tol is None:
                 thickness_tol = 0.25
+            logging.debug(f"ensure_result_fields: Computed thickness from OD/ID for {res.get('part_number','?')}: {thickness} mm (provenance={provenance_thickness})")
         except Exception:
             thickness = None
+    elif provenance_thickness == 'TABLE-4/8 Grade-1 authoritative':
+        logging.debug(f"ensure_result_fields: Thickness for {res.get('part_number','?')} is authoritative from table: {thickness} mm ± {thickness_tol} mm")
+    
     res['thickness_mm'] = thickness
     res['thickness_tolerance_mm'] = thickness_tol
     res['thickness_formatted'] = format_tolerance(thickness, thickness_tol) or "N/A"
@@ -247,6 +262,17 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             logging.debug(f"process_mpaps_dimensions failed inside excel generator: {e}", exc_info=True)
 
         analysis_results = ensure_result_fields(analysis_results)
+        
+        # Debug: Log value provenance before Excel creation
+        logging.info("DEBUG BEFORE EXCEL: part_number=%s, id_nominal_mm=%s, id_tolerance_mm=%s, od_nominal_mm=%s, thickness_mm=%s, thickness_tolerance_mm=%s, dimension_source=%s, thickness_source=%s",
+                     analysis_results.get('part_number'),
+                     analysis_results.get('id_nominal_mm'),
+                     analysis_results.get('id_tolerance_mm'),
+                     analysis_results.get('od_nominal_mm'),
+                     analysis_results.get('thickness_mm'),
+                     analysis_results.get('thickness_tolerance_mm'),
+                     analysis_results.get('dimension_source'),
+                     analysis_results.get('thickness_source'))
         
         # Get formatted values with proper handling of N/A
         thickness_calculated = analysis_results.get('thickness_formatted', "N/A")

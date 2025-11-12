@@ -283,6 +283,8 @@ def process_mpaps_dimensions(result: dict) -> dict:
                     wall_mm = grade_entry.get('wall_mm')
                     if wall_mm is not None:
                         result['thickness_mm'] = float(wall_mm)
+                        # Mark authoritative provenance for thickness
+                        result['thickness_source'] = 'TABLE-4/8 Grade-1 authoritative'
 
                     # Wall thickness tolerance -> set to table wall_tol
                     wall_tol = grade_entry.get('wall_tolerance_mm')
@@ -295,15 +297,18 @@ def process_mpaps_dimensions(result: dict) -> dict:
                     od_from_entry = grade_entry.get('od_mm')
                     if od_from_entry is not None:
                         result['od_nominal_mm'] = float(od_from_entry)
+                        result['od_source'] = 'TABLE-8 Grade-1 authoritative'
                     else:
-                        try:
-                            if result.get('id_nominal_mm') is not None and result.get('thickness_mm') is not None:
+                        # Only compute OD if not already set by table
+                        if result.get('od_nominal_mm') is None and result.get('id_nominal_mm') is not None and result.get('thickness_mm') is not None:
+                            try:
                                 result['od_nominal_mm'] = round(float(result['id_nominal_mm']) + 2.0 * float(result['thickness_mm']), 3)
-                        except Exception:
-                            pass
+                                result['od_source'] = 'computed from ID+2*thickness (guarded)'
+                            except Exception:
+                                pass
 
                     # record dimension source used
-                    ds = 'MPAPS F-30/F-1 TABLE 4/8 (Grade1 fallback)'
+                    ds = 'MPAPS F-30/F-1 TABLE 4/8 (Grade1 authoritative)'
                     result.setdefault('dimension_sources', []).append(ds)
                     result['dimension_source'] = ds
                 else:
