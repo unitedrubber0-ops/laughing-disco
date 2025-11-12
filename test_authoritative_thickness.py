@@ -70,56 +70,56 @@ def test_authoritative_grade1_override():
     
     # Check 1: Thickness should be 4.30 (not 3.50 computed from OD/ID)
     if result2.get('thickness_mm') == 4.30:
-        print(f"  ✓ Thickness = 4.30 mm (AUTHORITATIVE from TABLE_4, not computed)")
+        print(f"  [OK] Thickness = 4.30 mm (AUTHORITATIVE from TABLE_4, not computed)")
     else:
-        print(f"  ✗ Thickness = {result2.get('thickness_mm')} mm (expected 4.30)")
+        print(f"  [FAIL] Thickness = {result2.get('thickness_mm')} mm (expected 4.30)")
         success = False
     
     # Check 2: Tolerance should be 0.80 (not 0.25 computed)
     if result2.get('thickness_tolerance_mm') == 0.80:
-        print(f"  ✓ Thickness Tolerance = 0.80 mm (AUTHORITATIVE from TABLE_4)")
+        print(f"  [OK] Thickness Tolerance = 0.80 mm (AUTHORITATIVE from TABLE_4)")
     else:
-        print(f"  ✗ Thickness Tolerance = {result2.get('thickness_tolerance_mm')} mm (expected 0.80)")
+        print(f"  [FAIL] Thickness Tolerance = {result2.get('thickness_tolerance_mm')} mm (expected 0.80)")
         success = False
     
     # Check 3: thickness_source should show TABLE_4
     thickness_source = result2.get('thickness_source')
     if 'TABLE_4' in str(thickness_source) or 'AUTHORITATIVE' in str(thickness_source):
-        print(f"  ✓ Thickness Source = {thickness_source} (protected from overwrite)")
+        print(f"  [OK] Thickness Source = {thickness_source} (protected from overwrite)")
     else:
-        print(f"  ✗ Thickness Source = {thickness_source} (expected TABLE_4_*)")
+        print(f"  [FAIL] Thickness Source = {thickness_source} (expected TABLE_4_*)")
         success = False
     
     # Check 4: OD should be computed from ID + 2*thickness if not already set
     if result2.get('od_nominal_mm') is not None:
         expected_od = round(24.4 + 2*4.30, 3)
         if abs(float(result2.get('od_nominal_mm')) - expected_od) < 0.01:
-            print(f"  ✓ OD = {result2.get('od_nominal_mm')} mm (computed from ID + 2×thickness)")
+            print(f"  [OK] OD = {result2.get('od_nominal_mm')} mm (computed from ID + 2*thickness)")
         else:
-            print(f"  ⚠ OD = {result2.get('od_nominal_mm')} mm (expected ~{expected_od}, but value exists)")
+            print(f"  [WARN] OD = {result2.get('od_nominal_mm')} mm (expected ~{expected_od}, but value exists)")
     else:
-        print(f"  ⚠ OD = None")
+        print(f"  [WARN] OD = None")
     
     # Check 5: ID tolerance should be 0.5
     if result2.get('id_tolerance_mm') == 0.5:
-        print(f"  ✓ ID Tolerance = 0.5 mm (from TABLE_4/TABLE_8)")
+        print(f"  [OK] ID Tolerance = 0.5 mm (from TABLE_4/TABLE_8)")
     else:
-        print(f"  ⚠ ID Tolerance = {result2.get('id_tolerance_mm')} mm (expected 0.5)")
+        print(f"  [WARN] ID Tolerance = {result2.get('id_tolerance_mm')} mm (expected 0.5)")
     
     # Check 6: Excel formatted strings should show correct values
     thickness_fmt = result2.get('thickness_formatted')
     if thickness_fmt and '4.30' in str(thickness_fmt) and '0.80' in str(thickness_fmt):
-        print(f"  ✓ Thickness Formatted = '{thickness_fmt}'")
+        print(f"  [OK] Thickness Formatted = '{thickness_fmt}'")
     else:
-        print(f"  ⚠ Thickness Formatted = '{thickness_fmt}' (expected '4.30 ± 0.80 mm')")
+        print(f"  [WARN] Thickness Formatted = '{thickness_fmt}' (expected '4.30 +/- 0.80 mm')")
     
     print("\n" + "="*70)
     if success:
-        print("✓ TEST PASSED: Grade-1 uses authoritative TABLE_4 thickness")
+        print("[PASS] TEST PASSED: Grade-1 uses authoritative TABLE_4 thickness")
         print("  Thickness is NOT overwritten by computed OD/ID formula")
         return True
     else:
-        print("✗ TEST FAILED: Some checks did not pass")
+        print("[FAIL] TEST FAILED: Some checks did not pass")
         return False
 
 def test_multiple_id_values():
@@ -151,9 +151,9 @@ def test_multiple_id_values():
         thickness_source = result2.get('thickness_source')
         
         if thickness == 4.30 and 'TABLE_4' in str(thickness_source):
-            print(f"    ✓ Thickness = {thickness}, Source = {thickness_source}")
+            print(f"    [OK] Thickness = {thickness}, Source = {thickness_source}")
         else:
-            print(f"    ✗ Thickness = {thickness}, Source = {thickness_source} (expected 4.30 from TABLE_4)")
+            print(f"    [FAIL] Thickness = {thickness}, Source = {thickness_source} (expected 4.30 from TABLE_4)")
             all_pass = False
     
     return all_pass
@@ -172,14 +172,14 @@ if __name__ == "__main__":
     
     print("\n" + "="*70)
     if test1_pass and test2_pass:
-        print("✓ ALL TESTS PASSED")
+        print("[PASS] ALL TESTS PASSED")
         print("\nExpected Excel output for part 4509347C4:")
-        print("  ID1: 24.40 ± 0.50 mm")
-        print("  Thickness: 4.30 ± 0.80 mm")
+        print("  ID1: 24.40 +/- 0.50 mm")
+        print("  Thickness: 4.30 +/- 0.80 mm")
         print("  OD: 33.0 mm (or similar computed value)")
         print("\nNOT:")
-        print("  Thickness: 3.50 ± 0.25 mm (computed from 31.4-24.4)/2)")
+        print("  Thickness: 3.50 +/- 0.25 mm (computed from 31.4-24.4)/2)")
         sys.exit(0)
     else:
-        print("✗ SOME TESTS FAILED")
+        print("[FAIL] SOME TESTS FAILED")
         sys.exit(1)
