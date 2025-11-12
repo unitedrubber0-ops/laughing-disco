@@ -179,24 +179,7 @@ def process_mpaps_dimensions(result: dict) -> dict:
         g = (grade_raw or "").upper().replace(' ', '').replace('-', '')
         g = re.sub(r'GRADE', '', g)
 
-        # AUTHORITATIVE OVERRIDE: Grade 1/1B/1BF should use TABLE 4 values (4.30 mm thickness, ±0.80 mm tol)
-        # This ensures consistency and prevents later code from using computed values
-        if g.startswith('1') or g in ('1B', '1BF', '1BFD'):
-            # Set TABLE 4 values as authoritative before attempting any fallback lookup
-            result['thickness_mm'] = 4.30
-            result['thickness_tolerance_mm'] = 0.80
-            result['thickness_source'] = 'TABLE_4_AUTHORITATIVE'
-            # Compute OD if missing (ID + 2*thickness)
-            if result.get('od_nominal_mm') in (None, '', 'Not Found') and result.get('id_nominal_mm'):
-                try:
-                    result['od_nominal_mm'] = round(float(result['id_nominal_mm']) + 2.0 * 4.30, 3)
-                except Exception:
-                    pass
-            # Set ID tolerance and other values from fallback lookup
-            # (but thickness is now protected from being overwritten)
-            logging.info(f"MPAPS F-30 Grade {g}: Set authoritative TABLE_4 thickness=4.30, tol=±0.80 for ID={id_val}mm")
-
-        # If Grade 1 or 1BF -> use Grade1/BF table entry (TABLE 4 / TABLE 8 semantics) for other fields
+        # If Grade 1 or 1BF -> use Grade1/BF table entry (TABLE 4 / TABLE 8 semantics)
         if g.startswith('1') or '1B' in g or '1BF' in g:
             try:
                 # Try primary exact lookup (existing helper)
@@ -297,19 +280,16 @@ def process_mpaps_dimensions(result: dict) -> dict:
                     result['id_tolerance_mm'] = float(id_tol)
 
                     # Wall thickness nominal -> set to table wall
-                    # GUARD: Only overwrite if not already set by authoritative override
                     wall_mm = grade_entry.get('wall_mm')
-                    if wall_mm is not None and result.get('thickness_source') != 'TABLE_4_AUTHORITATIVE':
+                    if wall_mm is not None:
                         result['thickness_mm'] = float(wall_mm)
 
                     # Wall thickness tolerance -> set to table wall_tol
-                    # GUARD: Only overwrite if not already set by authoritative override
                     wall_tol = grade_entry.get('wall_tolerance_mm')
                     if wall_tol is None:
                         # default for Grade1 per Table 4 is ±0.80 for 1" entry; fallback to 0.8
                         wall_tol = 0.8
-                    if result.get('thickness_source') != 'TABLE_4_AUTHORITATIVE':
-                        result['thickness_tolerance_mm'] = float(wall_tol)
+                    result['thickness_tolerance_mm'] = float(wall_tol)
 
                     # OD: either from grade_entry (TABLE_8) or compute from ID+2*thickness
                     od_from_entry = grade_entry.get('od_mm')
@@ -326,7 +306,6 @@ def process_mpaps_dimensions(result: dict) -> dict:
                     ds = 'MPAPS F-30/F-1 TABLE 4/8 (Grade1 fallback)'
                     result.setdefault('dimension_sources', []).append(ds)
                     result['dimension_source'] = ds
-                    result['thickness_source'] = 'TABLE_4_GRADE_1'  # Mark provenance
                 else:
                     logging.warning(f"Unable to determine Grade1 table entry for ID {id_val}; leaving thickness/ID tol unset")
             except Exception as e:

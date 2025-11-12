@@ -145,19 +145,14 @@ def ensure_result_fields(result: Dict) -> Dict:
             thickness = float(thickness)
     except Exception:
         thickness = None
-    # Only compute thickness from OD/ID if thickness is not already set by a table source
     if thickness is None and od_nom is not None and id_nom is not None:
-        # Check if thickness was already set by a table (don't override if it came from TABLE_4, TABLE_8, etc.)
-        thickness_source = res.get('thickness_source')
-        if thickness_source is None:  # Only compute if no table source
-            try:
-                thickness = round((od_nom - id_nom) / 2.0, 3)
-                # Don't set a tight tolerance for computed thickness; leave as None so Excel shows N/A
-                if thickness_tol is None:
-                    thickness_tol = None  # Leave None instead of assuming 0.25
-                res['thickness_source'] = 'COMPUTED_FROM_OD_ID'
-            except Exception:
-                thickness = None
+        try:
+            thickness = round((od_nom - id_nom) / 2.0, 3)
+            # set a reasonable default tolerance if not supplied
+            if thickness_tol is None:
+                thickness_tol = 0.25
+        except Exception:
+            thickness = None
     res['thickness_mm'] = thickness
     res['thickness_tolerance_mm'] = thickness_tol
     res['thickness_formatted'] = format_tolerance(thickness, thickness_tol) or "N/A"
@@ -252,9 +247,6 @@ def generate_corrected_excel_sheet(analysis_results, dimensions, coordinates):
             logging.debug(f"process_mpaps_dimensions failed inside excel generator: {e}", exc_info=True)
 
         analysis_results = ensure_result_fields(analysis_results)
-        
-        # DEBUG: Log the state before Excel generation
-        logging.info(f"DEBUG BEFORE EXCEL: id_nominal_mm={analysis_results.get('id_nominal_mm')}, id_tol={analysis_results.get('id_tolerance_mm')}, od_nominal_mm={analysis_results.get('od_nominal_mm')}, thickness_mm={analysis_results.get('thickness_mm')}, thickness_tol={analysis_results.get('thickness_tolerance_mm')}, dimension_source={analysis_results.get('dimension_source')}, thickness_source={analysis_results.get('thickness_source')}")
         
         # Get formatted values with proper handling of N/A
         thickness_calculated = analysis_results.get('thickness_formatted', "N/A")

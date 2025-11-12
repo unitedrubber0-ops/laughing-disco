@@ -62,47 +62,47 @@ def test_id_24_4_matches_table_24_6():
     
     # Should find thickness
     if result.get('thickness_mm') == 4.30:
-        print("  [OK] Thickness correctly set to 4.30 mm (from TABLE_8 24.6 entry)")
+        print("  ✓ Thickness correctly set to 4.30 mm (from TABLE_8 24.6 entry)")
     else:
-        print(f"  [FAIL] Thickness incorrect: {result.get('thickness_mm')} (expected 4.30)")
+        print(f"  ✗ Thickness incorrect: {result.get('thickness_mm')} (expected 4.30)")
         success = False
     
     # Should find thickness tolerance
     if result.get('thickness_tolerance_mm') == 0.8:
-        print("  [OK] Thickness tolerance correctly set to 0.8 mm")
+        print("  ✓ Thickness tolerance correctly set to 0.8 mm")
     else:
-        print(f"  [FAIL] Thickness tolerance incorrect: {result.get('thickness_tolerance_mm')} (expected 0.8)")
+        print(f"  ✗ Thickness tolerance incorrect: {result.get('thickness_tolerance_mm')} (expected 0.8)")
         success = False
     
     # Should find ID tolerance
     if result.get('id_tolerance_mm') == 0.5:
-        print("  [OK] ID tolerance correctly set to 0.5 mm")
+        print("  ✓ ID tolerance correctly set to 0.5 mm")
     else:
-        print(f"  [FAIL] ID tolerance incorrect: {result.get('id_tolerance_mm')} (expected 0.5)")
+        print(f"  ✗ ID tolerance incorrect: {result.get('id_tolerance_mm')} (expected 0.5)")
         success = False
     
     # Should compute OD
     expected_od = round(24.4 + 2.0 * 4.30, 3)
     if result.get('od_nominal_mm') == expected_od:
-        print(f"  [OK] OD correctly computed to {expected_od} mm (ID + 2*thickness)")
+        print(f"  ✓ OD correctly computed to {expected_od} mm (ID + 2*thickness)")
     else:
-        print(f"  [FAIL] OD incorrect: {result.get('od_nominal_mm')} (expected {expected_od})")
+        print(f"  ✗ OD incorrect: {result.get('od_nominal_mm')} (expected {expected_od})")
         success = False
     
     # Should show dimension source
     if 'Grade1 fallback' in result.get('dimension_source', ''):
-        print(f"  [OK] Dimension source correctly set to fallback logic")
+        print(f"  ✓ Dimension source correctly set to fallback logic")
     else:
-        print(f"  [FAIL] Dimension source not set: {result.get('dimension_source')}")
+        print(f"  ✗ Dimension source not set: {result.get('dimension_source')}")
         success = False
     
     print("\n" + "="*70)
     if success:
-        print("[PASS] TEST PASSED: All fields populated correctly")
+        print("✓ TEST PASSED: All fields populated correctly")
         print("  Excel will now show actual values instead of N/A")
         return True
     else:
-        print("[FAIL] TEST FAILED: Some fields not populated correctly")
+        print("✗ TEST FAILED: Some fields not populated correctly")
         return False
 
 def test_additional_grade_1_ids():
@@ -140,10 +140,10 @@ def test_additional_grade_1_ids():
         print(f"    Thickness: {thickness}, OD: {od}, ID Tolerance: {id_tol}")
         
         if thickness is None or od is None or id_tol is None:
-            print(f"    [FAIL] Some fields not populated")
+            print(f"    ✗ Some fields not populated")
             all_pass = False
         else:
-            print(f"    [OK] Fields populated successfully")
+            print(f"    ✓ Fields populated successfully")
     
     return all_pass
 
@@ -159,7 +159,7 @@ if __name__ == "__main__":
     
     print("\n" + "="*70)
     if test1_pass:
-        print("[PASS] MAIN TEST PASSED")
+        print("✓ MAIN TEST PASSED")
         print("\nThe fallback logic successfully:")
         print("  1. Found nearest TABLE_8 entry (24.6mm, diff=0.2mm)")
         print("  2. Populated thickness_mm = 4.30")
@@ -169,6 +169,6 @@ if __name__ == "__main__":
         print("\nExcel output should now show actual values instead of N/A")
         sys.exit(0)
     else:
-        print("[FAIL] MAIN TEST FAILED")
+        print("✗ MAIN TEST FAILED")
         print("Some fields were not populated correctly")
         sys.exit(1)
