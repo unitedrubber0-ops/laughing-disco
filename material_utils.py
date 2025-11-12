@@ -13,6 +13,9 @@ def safe_material_lookup_entry(standard_raw, grade_raw, material_df, lookup_fn):
     Call lookup_fn with appropriate number of arguments based on its signature.
     Handles both 2-arg (standard, grade) and 3-arg (standard, grade, material_df) function styles.
     Also coerces dict inputs to strings and provides detailed error logging.
+    
+    NOTE: Authoritative mappings from material_mappings.py are consulted FIRST,
+    before any fuzzy or CSV lookups, to ensure specifications match user table.
     """
     try:
         # Log types to find leak
@@ -25,6 +28,19 @@ def safe_material_lookup_entry(standard_raw, grade_raw, material_df, lookup_fn):
         grd = normalize_grade(grade_raw)
 
         logging.debug("safe_material_lookup_entry: normalized standard=%r grade=%r", std, grd)
+
+        # ==== AUTHORITATIVE LOOKUP FIRST ====
+        # Check authoritative mapping from material_mappings.py before fuzzy matching
+        try:
+            from material_mappings import get_material_by_standard_grade
+            auth_material, auth_reinforce = get_material_by_standard_grade(std, grd)
+            if auth_material and auth_material != (None, None):
+                # Found in authoritative table, return immediately
+                logging.info(f"safe_material_lookup_entry: Using authoritative mapping for {std}/{grd}: {auth_material}")
+                return auth_material
+        except (ImportError, Exception) as e:
+            logging.debug(f"Authoritative lookup unavailable or failed: {e}")
+        # ==== END AUTHORITATIVE LOOKUP ====
 
         # Check function signature and call appropriately
         try:
