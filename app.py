@@ -56,6 +56,19 @@ import google.generativeai as genai
 from gemini_helper import process_pages_with_vision_or_ocr, extract_text_from_image_wrapper
 import fitz  # PyMuPDF for PDF handling
 from development_length import calculate_development_length as calculate_development_length_safe
+try:
+    from claude_vision import analyze_image_with_claude
+    claude_available = True
+except Exception:
+    analyze_image_with_claude = None
+    claude_available = False
+
+try:
+    from multi_vision import extract_text, extract_coordinates, extract_drawing_specs, get_provider_status
+    multi_vision_available = True
+except Exception as e:
+    multi_vision_available = False
+    logging.debug("Multi-vision orchestrator not available: %s", e)
 
 # Define custom exceptions
 class BlockedPromptException(Exception):
@@ -2782,9 +2795,49 @@ def analyze_drawing_with_gemini(pdf_bytes):
         logger.info(combined_text[:1000])
         logger.info("=== END OF EXTRACTED TEXT FOR DEBUGGING ===")
         
-        # Initial coordinate extraction
-        results["coordinates"] = extract_coordinates_from_text(combined_text)
-        logger.info(f"Initial coordinates extracted: {len(results['coordinates'])} points")
+        # Try multi-vision (Claude or Google Vision) for coordinate extraction (non-blocking, defensive)
+        coords_from_vision = []
+        if multi_vision_available:
+            try:
+                # If we have PDF bytes in scope, render the first page to an image for vision APIs
+                if 'pdf_bytes' in locals() and pdf_bytes:
+                    try:
+                        pages = convert_from_bytes(pdf_bytes, first_page=1, last_page=1)
+                        if pages:
+                            tmp_img = None
+                            try:
+                                tmp_img = os.path.join(tempfile.gettempdir(), f'vision_page_{os.getpid()}.png')
+                                pages[0].save(tmp_img, format='PNG')
+                                # Try multi-vision orchestrator (tries Claude, then Google Vision)
+                                coords_from_vision = extract_coordinates(tmp_img)
+                                if coords_from_vision:
+                                    logger.info("Coordinates extracted using multi-vision: %d points", len(coords_from_vision))
+                            finally:
+                                # Clean up
+                                try:
+                                    if tmp_img and os.path.exists(tmp_img):
+                                        os.remove(tmp_img)
+                                except Exception:
+                                    pass
+                        else:
+                            logger.warning("Failed to render PDF page for vision extraction")
+                    except Exception as e:
+                        logger.warning("Failed to render PDF page for multi-vision: %s", e)
+                else:
+                    logger.debug("No pdf_bytes available for vision extraction, will use text-based fallback")
+            except Exception as e:
+                logger.warning("Multi-vision coordinate extraction failed: %s", e)
+        else:
+            logger.debug("Multi-vision orchestrator not available, using text-based extraction")
+
+        # Use vision-extracted coordinates if available, otherwise fall back to text-based extraction
+        if coords_from_vision:
+            results["coordinates"] = coords_from_vision
+            logger.info("Coordinates obtained from vision APIs: %d points", len(coords_from_vision))
+        else:
+            # Initial coordinate extraction (fallback to text parser)
+            results["coordinates"] = extract_coordinates_from_text(combined_text)
+            logger.info(f"Initial coordinates extracted from text: {len(results['coordinates'])} points")
 
         # Normalize coordinates robustly and compute development length
         raw_coords = results.get('coordinates', [])
